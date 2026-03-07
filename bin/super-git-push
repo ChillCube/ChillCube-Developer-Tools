@@ -5,62 +5,60 @@ set -e
 echo "🧊 Chillcube Git Sync Initializing..."
 echo "--------------------------------------------------"
 
-# 1. Get current status
+# Get current status
 CURRENT_BR=$(git branch --show-current)
 echo "📍 Currently on branch: $CURRENT_BR"
 
-# 2. Stage everything and fix permissions
-# We use -A to ensure deletions and new files are all caught
-git add -A
-
+# Preparation: Fix permissions BEFORE we stage for commit
 if [ -d "bin" ]; then
     echo "🛡️  Ensuring bin/ files are executable..."
     find bin/ -type f -exec git update-index --chmod=+x {} +
 fi
 
-# 3. Commit
-read -p "📝 Enter commit message: " COMMIT_MSG
-COMMIT_MSG=${COMMIT_MSG:-"update: chillcube tools sync"}
+# Stage and Commit
+# We use -A to ensure we catch everything (new, modified, deleted)
+git add -A
 
-# Only commit if there are actually changes to avoid "nothing to commit" errors
+# Only commit if there are actually changes
 if ! git diff-index --quiet HEAD --; then
+    read -p "📝 Enter commit message: " COMMIT_MSG
+    COMMIT_MSG=${COMMIT_MSG:-"update: chillcube tools sync"}
     git commit -m "$COMMIT_MSG"
 else
-    echo "empty: No new changes to commit."
+    echo "✨ Nothing new to commit (working tree clean)."
 fi
 
-# 4. Branch Selection
+# Branch Selection
 echo "--------------------------------------------------"
 echo "🌍 Available Remote Branches:"
 git fetch --prune --quiet
-# Lists remote branches clearly
 git branch -r | sed 's/origin\///' | grep -v "HEAD" | sort -u
 echo "--------------------------------------------------"
 
 read -p "🎯 Target branch (default: $CURRENT_BR): " TARGET_BRANCH
 TARGET_BRANCH=${TARGET_BRANCH:-$CURRENT_BR}
 
-# 5. Sync and Push
-echo "🔄 Fetching and Rebasin' on $TARGET_BRANCH..."
+# The "Clean Rebase" Strategy
+echo "🔄 Syncing with origin/$TARGET_BRANCH..."
 
-# Final 'add' just in case something changed during the prompts
-git add -A 
+# Check if there are any stray changes (like if a file was modified during the prompt)
+HAS_CHANGES=$(git status --porcelain)
 
-# If there are still unstaged changes, we stash them temporarily
-STASHED=false
-if ! git diff --quiet; then
-    echo "📦 Stashing temporary changes..."
-    git stash --quiet
-    STASHED=true
+if [ -n "$HAS_CHANGES" ]; then
+    echo "📦 Stashing temporary changes to allow rebase..."
+    git stash push -m "temp-stash-before-rebase"
 fi
 
+# Pull with rebase
 git pull origin "$TARGET_BRANCH" --rebase
 
-if [ "$STASHED" = true ]; then
-    echo "📥 Unstashing temporary changes..."
-    git stash pop --quiet
+# If we stashed changes, bring them back
+if [ -n "$HAS_CHANGES" ]; then
+    echo "📥 Applying stashed changes back..."
+    git stash pop
 fi
 
+# Final Push
 git push origin "$TARGET_BRANCH"
 
 echo "--------------------------------------------------"
