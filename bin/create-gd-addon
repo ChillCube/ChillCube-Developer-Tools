@@ -56,7 +56,7 @@ curl -s "https://raw.githubusercontent.com/MariaDBCorporation/BSL-1.1/master/BSL
 
 if [ ! -f "project.godot" ]; then
     echo "📥 Fetching README template for standalone repo..."
-    TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_TEMPLATE.md"
+    TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
     curl -s "$TEMPLATE_URL" -o README.md
     sed -i "s/{{NAME}}/$ADDON_NAME/g" README.md
     sed -i "s/{{DESC}}/$ADDON_DESC/g" README.md
