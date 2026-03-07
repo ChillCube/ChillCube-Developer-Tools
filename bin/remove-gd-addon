@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # --- Chillcube Addon Remover ---
 # Usage: remove-gd-addon <addon_name>

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # --- Chillcube Addon Bootstrapper ---
 # Usage: clone-gd-addon <github_url>

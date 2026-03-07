@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # --- Chillcube Tools Linux Installer ---
 INSTALL_DIR="$HOME/.chillcube-tools"
