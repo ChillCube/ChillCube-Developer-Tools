@@ -1,44 +1,50 @@
 #!/usr/bin/env bash
 set -e
 
-echo "🧊 Chillcube Addon Initializer"
+echo "🧊 Chillcube Addon Initializer (Project Mode)"
 echo "--------------------------------------------------"
 
-# Collect Project Info
+# 1. Detect Godot Project
+if [ -f "project.godot" ]; then
+    echo "🏠 Godot project detected in current directory."
+    BASE_DIR="addons"
+else
+    echo "⚠️  No project.godot found. Creating a standalone repo instead."
+    read -p "📂 Enter new repository folder name: " REPO_NAME
+    mkdir -p "$REPO_NAME"
+    cd "$REPO_NAME"
+    git init -q
+    BASE_DIR="addons"
+fi
+
+# 2. Collect Addon Info
 read -p "🏷️  Addon Name: " ADDON_NAME
 read -p "📝 Description: " ADDON_DESC
 read -p "👤 Author Name: " AUTHOR_NAME
 read -p "📦 Dependencies (comma separated): " DEPS
 YEAR=$(date +%Y)
 
-# Safe folder name (e.g., "Chill Inventory") -> "chill-inventory"
-FOLDER_NAME=$(echo "$ADDON_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+# Convert Name to folder-style (e.g., "Chill Inventory" -> "chill_inventory")
+# Godot prefers underscores for internal addon folders
+SAFE_NAME=$(echo "$ADDON_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '_')
+TARGET_PATH="$BASE_DIR/$SAFE_NAME"
 
-# Create Directory Structure
-echo "📂 Creating directory structure..."
-mkdir -p "$FOLDER_NAME/addons/$FOLDER_NAME"
-cd "$FOLDER_NAME"
+# 3. Create Structure
+echo "📂 Creating $TARGET_PATH..."
+mkdir -p "$TARGET_PATH"
 
-# Initialize Git
-git init -q
-
-# Create DEPENDENCIES.txt (Inside the addon folder)
+# 4. Create DEPENDENCIES.txt
 echo "📄 Generating DEPENDENCIES.txt..."
 {
     echo "🧊 Chillcube Dependency Manifest"
     echo "Project: $ADDON_NAME"
     echo "--------------------------------------------------"
-    if [ -z "$DEPS" ]; then
-        echo "None"
-    else
-        echo "$DEPS" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/^[[:space:]]*/ - /'
-    fi
-} > "addons/$FOLDER_NAME/DEPENDENCIES.txt"
+    if [ -z "$DEPS" ]; then echo "None"; else echo "$DEPS" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/^/ - /'; fi
+} > "$TARGET_PATH/DEPENDENCIES.txt"
 
-# Create Godot plugin.cfg
-# Even if it's just a library, this lets users see the version/author in Godot
+# 5. Create plugin.cfg
 echo "⚙️  Generating plugin.cfg..."
-cat <<EOF > "addons/$FOLDER_NAME/plugin.cfg"
+cat <<EOF > "$TARGET_PATH/plugin.cfg"
 [plugin]
 name="$ADDON_NAME"
 description="$ADDON_DESC"
@@ -47,24 +53,19 @@ version="0.1.0"
 script=""
 EOF
 
-# Fetch README and License
-# Replace with your actual repo raw URL
-TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_TEMPLATE.md"
+# 6. Fetch License (README is only created if in Standalone mode)
+echo "⚖️  Applying BSL-1.1 License..."
+curl -s "https://raw.githubusercontent.com/MariaDBCorporation/BSL-1.1/master/BSL-1.1.txt" -o "$TARGET_PATH/LICENSE"
 
-echo "📥 Fetching templates..."
-curl -s "$TEMPLATE_URL" -o README.md || echo "⚠️  README template not found; created empty file."
-
-if [ -f README.md ]; then
+if [ ! -f "project.godot" ]; then
+    echo "📥 Fetching README template for standalone repo..."
+    TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_TEMPLATE.md"
+    curl -s "$TEMPLATE_URL" -o README.md
     sed -i "s/{{NAME}}/$ADDON_NAME/g" README.md
     sed -i "s/{{DESC}}/$ADDON_DESC/g" README.md
     sed -i "s/{{AUTHOR}}/$AUTHOR_NAME/g" README.md
     sed -i "s/{{YEAR}}/$YEAR/g" README.md
 fi
 
-echo "⚖️  Applying BSL-1.1 License..."
-curl -s "https://raw.githubusercontent.com/MariaDBCorporation/BSL-1.1/master/BSL-1.1.txt" -o LICENSE
-
-# Finalize
 echo "--------------------------------------------------"
-echo "✅ Done! Addon initialized in: $FOLDER_NAME"
-echo "🚀 Next step: cd $FOLDER_NAME and open in Godot."
+echo "✅ Done! Addon initialized at: $TARGET_PATH"
