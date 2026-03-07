@@ -42,7 +42,8 @@ Super git push handles a lot of the git commands you normally have to type manua
 > [!IMPORTANT]
 > If you're working on a godot addon, use ```push-all-addons``` instead.
 ### Godot
-
+> [!IMPORTANT]
+> All of the godot CLI tools are run from the root of your godot project!
 ```Bash
 clone-gd-addon https://github.com/ChillCube/[ADDON NAME].git
 ```
