@@ -50,6 +50,8 @@ Super git push handles a lot of the git commands you normally have to type manua
 clone-gd-addon https://github.com/ChillCube/[ADDON NAME].git
 ```
 This clones addons created by ChillCube and ensures the necessary dependencies are cloned as well.
+> [!IMPORTANT]
+> Make sure to enable the addon in the project settings!
 
 #### Removing a godot addon made by ChillCube
 ```Bash
@@ -62,6 +64,8 @@ This removes addons and its dependencies from your godot project.
 create-gd-addon
 ```
 Use this to create a new addon within your project. It will push it into ChillCube's repositories automatically and initiate everything, included the LICENSE and a default README.
+> [!IMPORTANT]
+> Make sure to enable the addon in the project settings!
 
 #### Push changes you've made to any of the addons
 ```Bash
