@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
-echo "🧊 ChillCube Addon Initializer (Addon-as-Repo Mode)"
+echo "🧊 ChillCube Addon Initializer"
 echo "--------------------------------------------------"
 
-# Setup Directory Structure
+# 1. Setup Directory Structure
 if [ -f "project.godot" ]; then
     echo "🏠 Godot project detected. Addon will be its own repo inside addons/."
     BASE_DIR="addons"
@@ -13,32 +13,33 @@ else
     BASE_DIR="."
 fi
 
-# Collect Addon Info
+# 2. Collect Addon Info
 read -p "🏷️  Addon Name: " ADDON_NAME
 read -p "📝 Description: " ADDON_DESC
 read -p "👤 Author Name: " AUTHOR_NAME
 YEAR=$(date +%Y)
 
-# Convert Name to folder-style
+# Convert Name to folder-style (The exact name used for Folder and GitHub Repo)
 SAFE_NAME=$(echo "$ADDON_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '_')
 TARGET_PATH="$BASE_DIR/$SAFE_NAME"
 
-# Create Folder and INITIALIZE GIT IMMEDIATELY
+# 3. Create Folder and INITIALIZE GIT
 echo "📂 Creating folder at $TARGET_PATH..."
 mkdir -p "$TARGET_PATH"
 cd "$TARGET_PATH"
 
-echo "🔧 Initializing Git repository for the addon..."
-git init
+echo "🔧 Initializing Git repository..."
+git init -q
+git branch -m main  # Force branch name to 'main'
 
-# Create .gitignore (Specific to the addon repo)
+# 4. Create .gitignore
 cat <<EOF > .gitignore
 .godot/
 *.import/
 *.tmp
 EOF
 
-# Create Addon Files
+# 5. Create Addon Files
 touch "DEPENDENCIES.txt"
 
 cat <<EOF > "plugin.cfg"
@@ -50,14 +51,13 @@ version="0.1.0"
 script=""
 EOF
 
-# Apply Boost Software License 1.0
+# 6. Apply Boost Software License 1.0
 echo "⚖️  Downloading Boost Software License..."
-# Using the standard Boost license URL
 curl -sSL "https://www.boost.org/LICENSE_1_0.txt" -o "LICENSE"
 
-# Generate README
+# 7. Generate README
 echo "📥 Fetching and customizing README template..."
-TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README__GODOT_ADDON_TEMPLATE.md"
+TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
 curl -sSL "$TEMPLATE_URL" -o "README.md"
 
 sed -i "s/{{NAME}}/$ADDON_NAME/g" "README.md"
@@ -65,20 +65,19 @@ sed -i "s/{{DESC}}/$ADDON_DESC/g" "README.md"
 sed -i "s/{{AUTHOR}}/$AUTHOR_NAME/g" "README.md"
 sed -i "s/{{YEAR}}/$YEAR/g" "README.md"
 
-# Finalize Git Tracking & GitHub Org
+# 8. Finalize Git Tracking & GitHub Org
 echo "--------------------------------------------------"
-echo "📦 Staging files for the addon repo..."
+echo "📦 Staging files..."
 git add .
 git commit -m "initial: initialize $ADDON_NAME as a ChillCube addon"
 
 if command -v gh &> /dev/null && gh auth status &> /dev/null; then
-    # We use the SAFE_NAME for the GitHub repo name to keep it URL friendly
-    GITHUB_REPO_NAME="addon-$SAFE_NAME"
-    echo "🌐 Creating GitHub repository: ChillCube/$GITHUB_REPO_NAME"
-    gh repo create "ChillCube/$GITHUB_REPO_NAME" --public --source=. --remote=origin --push
+    # Removed the "addon-" prefix here
+    echo "🌐 Creating GitHub repository: ChillCube/$SAFE_NAME"
+    gh repo create "ChillCube/$SAFE_NAME" --public --source=. --remote=origin --push
 else
-    echo "⚠️  Note: Local repo created, but GitHub push skipped (gh CLI not ready)."
+    echo "⚠️  Note: Local repo created, but GitHub push skipped."
 fi
 
 echo "--------------------------------------------------"
-echo "✅ Done! Addon Repo initialized at: $(pwd)"
+echo "✅ Done! Repo live at https://github.com/ChillCube/$SAFE_NAME"
