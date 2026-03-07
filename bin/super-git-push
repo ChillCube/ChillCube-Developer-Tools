@@ -36,10 +36,10 @@ git pull origin "$TARGET_BRANCH" --rebase --allow-unrelated-histories
 git add .
 # Automatically ensure everything in bin/ is executable in the Git index
 if [ -d "bin" ]; then
-    git update-index --chmod=+x bin/*
+    git update-index --add --chmod=+x bin/*
 fi
 if [ -f "install.sh" ]; then
-    git update-index --chmod=+x install.sh
+    git update-index --add --chmod=+x install.sh
 fi
 
 # Commit Message
