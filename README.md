@@ -4,7 +4,5 @@ This repository provides tools that will be needed to work with ChillCube's proj
 ## Installation 
 ### Linux/MacOS
 ```Bash
-chmod +x install.sh
-./install.sh
-source ~/.bashrc || source ~/.zshrc || source ~/.bash_profile
+git clone https://github.com/ChillCube/ChillCube-Developer-Tools.git && cd chillcube-cli && chmod +x install.sh && ./install.sh && cd .. && rm -rf chillcube-cli && exec $SHELL
 ```
