@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# --- Chillcube Smart Push ---
+echo "🧊 Chillcube Git Sync Initializing..."
+
+# Show current status and available branches
+echo "--------------------------------------------------"
+echo "📍 Current Branch: $(git branch --show-current)"
+echo "🌿 Available Local Branches:"
+git branch | sed 's/* //g'
+echo "--------------------------------------------------"
+
+# Ask for the target branch
+read -p "🎯 Enter target branch (default: main): " TARGET_BRANCH
+TARGET_BRANCH=${TARGET_BRANCH:-main}
+
+# Check if the branch exists, if not, ask to create it
+if ! git rev-parse --verify "$TARGET_BRANCH" >/dev/null 2>&1; then
+    read -p "❓ Branch '$TARGET_BRANCH' does not exist. Create it? (y/n): " CREATE_B
+    if [[ "$CREATE_B" == "y" ]]; then
+        git checkout -b "$TARGET_BRANCH"
+    else
+        echo "❌ Aborting."
+        exit 1
+    fi
+else
+    git checkout "$TARGET_BRANCH"
+fi
+
+# Sync with remote to prevent conflicts
+echo "🔄 Fetching latest from origin..."
+git fetch origin
+git pull origin "$TARGET_BRANCH" --rebase --allow-unrelated-histories
+
+# Stage and fix permissions
+git add .
+# Automatically ensure everything in bin/ is executable in the Git index
+if [ -d "bin" ]; then
+    git update-index --chmod=+x bin/*
+fi
+if [ -f "install.sh" ]; then
+    git update-index --chmod=+x install.sh
+fi
+
+# Commit Message
+read -p "📝 Enter commit message: " COMMIT_MSG
+if [ -z "$COMMIT_MSG" ]; then
+    COMMIT_MSG="update: chillcube tools sync"
+fi
+
+# Final Push
+git commit -m "$COMMIT_MSG"
+git push origin "$TARGET_BRANCH"
+
+echo "--------------------------------------------------"
+echo "✅ Successfully pushed to $TARGET_BRANCH!"
