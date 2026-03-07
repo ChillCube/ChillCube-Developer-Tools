@@ -46,6 +46,11 @@ clone-gd-addon https://github.com/ChillCube/[ADDON NAME].git
 ```
 This clones addons created by ChillCube and ensures the necessary dependencies are cloned as well.
 ```Bash
-clone-gd-addon https://github.com/ChillCube/[ADDON NAME].git
+remove-gd-addon [ADDON NAME]
 ```
-This clones addons created by ChillCube and ensures the necessary dependencies are cloned as well.
+This removes addons and its dependencies from your project. 
+```Bash
+push-all-addons
+```
+This allows you to push changes to addons you've made to its repository.
+
