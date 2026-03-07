@@ -3,10 +3,12 @@ This repository provides tools that will be needed to work with ChillCube's proj
 
 ## Installation 
 ### Linux/MacOS
+Simply copy paste this into terminal to install the tools:
 ```Bash
 git clone https://github.com/ChillCube/ChillCube-Developer-Tools.git && cd chillcube-cli && chmod +x install.sh && ./install.sh && cd .. && rm -rf chillcube-cli && exec $SHELL
 ```
 ### NixOS
+You can add this repository to NixOS using flakes:
 ```Nix
 inputs = {
   nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
