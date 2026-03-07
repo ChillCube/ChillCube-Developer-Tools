@@ -12,7 +12,7 @@ git clone https://github.com/ChillCube/ChillCube-Developer-Tools.git && cd chill
 #### Temporary
 Copy paste the into terminal to temporarily install the tools:
 ```Bash
-nix shell github:YOUR_USER/chillcube-clinix shell github:ChillCube/ChillCube-Developer-Tools
+nix --extra-experimental-features 'nix-command flakes' shell github:ChillCube/ChillCube-Developer-Tools
 ```
 #### Declarative
 You can add this repository to NixOS using flakes:
