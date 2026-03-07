@@ -35,8 +35,7 @@ outputs = { self, nixpkgs, chillcube, ... }: {
 
 ## Usage
 ### CLI-Tools
-#### Super Git Push
-Super git push handles a lot of the git commands you normally have to type manually. It will prompt you to decide on a branch as well as give a name to the commit. 
 ```Bash
 super-git-push
 ```
+Super git push handles a lot of the git commands you normally have to type manually. It will prompt you to decide on a branch as well as give a name to the commit. 
