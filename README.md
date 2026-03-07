@@ -40,6 +40,8 @@ outputs = { self, nixpkgs, chillcube, ... }: {
 super-git-push
 ```
 Super git push handles a lot of the git commands you normally have to type manually. It will prompt you to decide on a branch as well as give a name to the commit. 
+> [!IMPORTANT]
+> If you're working on a godot addon, use ```push-all-addons``` instead.
 #### Godot
 
 ```Bash
