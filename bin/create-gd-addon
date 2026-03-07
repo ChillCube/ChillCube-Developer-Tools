@@ -36,9 +36,6 @@ mkdir -p "$TARGET_PATH"
 # 4. Create DEPENDENCIES.txt
 echo "📄 Generating DEPENDENCIES.txt..."
 {
-    echo "🧊 Chillcube Dependency Manifest"
-    echo "Project: $ADDON_NAME"
-    echo "--------------------------------------------------"
     if [ -z "$DEPS" ]; then echo "None"; else echo "$DEPS" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/^/ - /'; fi
 } > "$TARGET_PATH/DEPENDENCIES.txt"
 
