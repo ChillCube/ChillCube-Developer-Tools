@@ -1,0 +1,46 @@
+#!/bin/bash
+set -e
+
+# --- Chillcube Bulk Addon Pusher ---
+# This script iterates through all addons and pushes changes to their respective remotes.
+
+if [ ! -d "addons" ]; then
+    echo "❌ No addons/ directory found in the current path."
+    exit 1
+fi
+
+echo "🧊 Starting bulk push for all addons..."
+echo "--------------------------------------------------"
+
+# Store the root path of your main project
+PROJECT_ROOT=$(pwd)
+
+# Loop through every directory in addons/
+shopt -s nullglob
+for addon_path in addons/*; do
+    if [ -d "$addon_path/.git" ]; then
+        addon_name=$(basename "$addon_path")
+        echo "🚀 Processing addon: $addon_name"
+        
+        # Enter the addon directory
+        cd "$addon_path"
+        
+        # Call your existing super-git-push script
+        # We use the absolute path to ensure it's found
+        if command -v super-git-push >/dev/null 2>&1; then
+            super-git-push
+        else
+            echo "⚠️  super-git-push not found in PATH. Attempting to run from project bin..."
+            $PROJECT_ROOT/bin/super-git-push
+        fi
+        
+        # Return to project root for the next iteration
+        cd "$PROJECT_ROOT"
+        echo "✅ Finished $addon_name"
+        echo "--------------------------------------------------"
+    else
+        echo "⏭️  Skipping $(basename "$addon_path") (Not a Git repository)."
+    fi
+done
+
+echo "🎉 All addons processed."
