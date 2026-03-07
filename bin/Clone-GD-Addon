@@ -1,0 +1,50 @@
+#!/bin/bash
+
+# --- Chillcube Addon Bootstrapper ---
+# Usage: clone-gd-addon <github_url>
+
+REPO_URL=$1
+
+if [ -z "$REPO_URL" ]; then
+    echo "Usage: clone-gd-addon <git_url>"
+    exit 1
+fi
+
+ADDON_NAME=$(basename "$REPO_URL" .git)
+TARGET_DIR="addons/$ADDON_NAME"
+
+echo "🧊 Initializing Addon: $ADDON_NAME"
+
+mkdir -p addons
+
+if [ ! -d "$TARGET_DIR" ]; then
+    echo "📥 Cloning main addon into $TARGET_DIR..."
+    git clone --depth 1 "$REPO_URL" "$TARGET_DIR"
+else
+    echo "⏭️  $ADDON_NAME already exists. Checking for dependencies..."
+fi
+
+DEP_FILE="$TARGET_DIR/DEPENDENCIES.txt"
+
+if [ -f "$DEP_FILE" ]; then
+    echo "📜 Found dependencies in $ADDON_NAME. Processing..."
+    
+    while read -r dep_url || [ -n "$dep_url" ]; do
+        # Skip empty lines or comments
+        [[ -z "$dep_url" || "$dep_url" =~ ^# ]] && continue
+        
+        dep_name=$(basename "$dep_url" .git)
+        dep_target="addons/$dep_name"
+        
+        if [ ! -d "$dep_target" ]; then
+            echo "🔗 Cloning dependency: $dep_name..."
+            git clone --depth 1 "$dep_url" "$dep_target"
+        else
+            echo "⏭️  Dependency $dep_name already exists."
+        fi
+    done < "$DEP_FILE"
+else
+    echo "ℹ️  No DEPENDENCIES.txt found in $ADDON_NAME."
+fi
+
+echo "✅ Done! Addon and its dependencies are ready in /addons."
