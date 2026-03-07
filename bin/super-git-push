@@ -1,64 +1,51 @@
 #!/bin/bash
-set -e  # Exit immediately if a command fails
+set -e  # Exit immediately if any command fails
 
 echo "🧊 Chillcube Git Push Initializing..."
 
-# Stage all changes immediately 
-# This allows 'git pull --rebase' to work even if you have local edits
-git add .
-
-# Show branch info
+# Show Status
 echo "--------------------------------------------------"
+echo "📍 Current Branch: $(git branch --show-current)"
+git status -s
+echo "--------------------------------------------------"
+
+# Target Branch
 CURRENT_BR=$(git branch --show-current)
-echo "📍 Current Branch: $CURRENT_BR"
-echo "🌿 Available Local Branches:"
-git branch | sed 's/* //g'
-echo "--------------------------------------------------"
-
-# Target Branch Selection
-read -p "🎯 Enter target branch (default: $CURRENT_BR): " TARGET_BRANCH
+read -p "🎯 Target branch (default: $CURRENT_BR): " TARGET_BRANCH
 TARGET_BRANCH=${TARGET_BRANCH:-$CURRENT_BR}
 
-# Handle Branch Creation/Checkout
-if ! git rev-parse --verify "$TARGET_BRANCH" >/dev/null 2>&1; then
-    read -p "❓ Branch '$TARGET_BRANCH' does not exist. Create it? (y/n): " CREATE_B
-    if [[ "$CREATE_B" == "y" ]]; then
-        git checkout -b "$TARGET_BRANCH"
-    else
-        echo "❌ Aborting."
-exit 1
-    fi
-else
-    # Only checkout if we aren't already on the target branch
-    if [ "$CURRENT_BR" != "$TARGET_BRANCH" ]; then
-        git checkout "$TARGET_BRANCH"
-    fi
+# Stage and Commit FIRST
+# This is required for a clean rebase
+git add .
+if ! git diff-index --quiet HEAD; then
+    read -p "📝 Enter commit message: " COMMIT_MSG
+    COMMIT_MSG=${COMMIT_MSG:-"update: tools sync"}
+    git commit -m "$COMMIT_MSG"
 fi
 
-# Sync with remote
-# Now that files are staged, rebase will succeed
-echo "🔄 Fetching latest from origin..."
+# Sync with Remote
+echo "🔄 Fetching and Rebasin'..."
 git fetch origin
-git pull origin "$TARGET_BRANCH" --rebase --allow-unrelated-histories
+# Rebase puts your local commits on top of origin's commits
+git rebase "origin/$TARGET_BRANCH"
 
-# Safe Permission Fixes
-# Check if directory/file exists before trying to update index
-if [ -d "bin" ] && [ "$(ls -A bin)" ]; then
-    echo "🛡️  Marking bin/ contents as executable..."
-    git update-index --add --chmod=+x bin/*
+# Permission Insurance (Handles missing folders/files gracefully)
+if [ -d "bin" ] && [ "$(ls -A bin 2>/dev/null)" ]; then
+    echo "🛡️  Ensuring bin/ is executable..."
+    git update-index --add --chmod=+x bin/* [cite: 7]
 fi
 
 if [ -f "install.sh" ]; then
-    echo "🛡️  Marking install.sh as executable..."
-    git update-index --add --chmod=+x install.sh
+    echo "🛡️  Ensuring install.sh is executable..."
+    git update-index --add --chmod=+x install.sh [cite: 8]
 fi
 
-# Commit Message
-read -p "📝 Enter commit message: " COMMIT_MSG
-COMMIT_MSG=${COMMIT_MSG:-"update: chillcube tools sync"}
-
 # Final Push
-git commit -m "$COMMIT_MSG"
+# If permissions changed the index, we amend the previous commit
+if ! git diff-index --quiet HEAD; then
+    git commit --amend --no-edit
+fi
+
 git push origin "$TARGET_BRANCH"
 
 echo "--------------------------------------------------"
