@@ -1,35 +1,16 @@
 #!/usr/bin/env bash
 set -e
 
-echo "🧊 ChillCube Addon Initializer"
+echo "🧊 ChillCube Addon Initializer (Addon-as-Repo Mode)"
 echo "--------------------------------------------------"
 
-# Detect Mode
+# Setup Directory Structure
 if [ -f "project.godot" ]; then
-    echo "🏠 Godot project detected."
+    echo "🏠 Godot project detected. Addon will be its own repo inside addons/."
     BASE_DIR="addons"
-    IS_STANDALONE=false
 else
-    echo "⚠️  No project.godot found. Creating standalone repository."
-    read -p "📂 Enter repository name: " REPO_NAME
-    mkdir -p "$REPO_NAME"
-    cd "$REPO_NAME"
-    
-    # FORCE GIT INIT HERE
-    git init
-    echo "✅ Git repository initialized in $(pwd)"
-    
-    # Create Godot-friendly .gitignore
-    cat <<EOF > .gitignore
-.godot/
-*.import/
-export_presets.cfg
-.utest/
-*.tmp
-EOF
-    
-    BASE_DIR="addons"
-    IS_STANDALONE=true
+    echo "⚠️  No project.godot found. Creating standalone addon directory."
+    BASE_DIR="."
 fi
 
 # Collect Addon Info
@@ -38,16 +19,29 @@ read -p "📝 Description: " ADDON_DESC
 read -p "👤 Author Name: " AUTHOR_NAME
 YEAR=$(date +%Y)
 
+# Convert Name to folder-style
 SAFE_NAME=$(echo "$ADDON_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '_')
 TARGET_PATH="$BASE_DIR/$SAFE_NAME"
 
-# 3. Create Structure
+# Create Folder and INITIALIZE GIT IMMEDIATELY
+echo "📂 Creating folder at $TARGET_PATH..."
 mkdir -p "$TARGET_PATH"
+cd "$TARGET_PATH"
 
-# 4. Create Files
-touch "$TARGET_PATH/DEPENDENCIES.txt"
+echo "🔧 Initializing Git repository for the addon..."
+git init
 
-cat <<EOF > "$TARGET_PATH/plugin.cfg"
+# Create .gitignore (Specific to the addon repo)
+cat <<EOF > .gitignore
+.godot/
+*.import/
+*.tmp
+EOF
+
+# Create Addon Files
+touch "DEPENDENCIES.txt"
+
+cat <<EOF > "plugin.cfg"
 [plugin]
 name="$ADDON_NAME"
 description="$ADDON_DESC"
@@ -56,32 +50,35 @@ version="0.1.0"
 script=""
 EOF
 
-# License & README
-curl -s "https://raw.githubusercontent.com/MariaDBCorporation/BSL-1.1/master/BSL-1.1.txt" -o "$TARGET_PATH/LICENSE"
+# Apply Boost Software License 1.0
+echo "⚖️  Downloading Boost Software License..."
+# Using the standard Boost license URL
+curl -sSL "https://www.boost.org/LICENSE_1_0.txt" -o "LICENSE"
 
+# Generate README
+echo "📥 Fetching and customizing README template..."
 TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_TEMPLATE.md"
-README_DEST=$([ "$IS_STANDALONE" = true ] && echo "README.md" || echo "$TARGET_PATH/README.md")
+curl -sSL "$TEMPLATE_URL" -o "README.md"
 
-curl -s "$TEMPLATE_URL" -o "$README_DEST"
+sed -i "s/{{NAME}}/$ADDON_NAME/g" "README.md"
+sed -i "s/{{DESC}}/$ADDON_DESC/g" "README.md"
+sed -i "s/{{AUTHOR}}/$AUTHOR_NAME/g" "README.md"
+sed -i "s/{{YEAR}}/$YEAR/g" "README.md"
 
-sed -i "s/{{NAME}}/$ADDON_NAME/g" "$README_DEST"
-sed -i "s/{{DESC}}/$ADDON_DESC/g" "$README_DEST"
-sed -i "s/{{AUTHOR}}/$AUTHOR_NAME/g" "$README_DEST"
-sed -i "s/{{YEAR}}/$YEAR/g" "$README_DEST"
+# Finalize Git Tracking & GitHub Org
+echo "--------------------------------------------------"
+echo "📦 Staging files for the addon repo..."
+git add .
+git commit -m "initial: initialize $ADDON_NAME as a ChillCube addon"
 
-# Finalize Git & GitHub
-if [ "$IS_STANDALONE" = true ]; then
-    echo "--------------------------------------------------"
-    git add .
-    git commit -m "initial: initialize ChillCube addon structure"
-    
-    if command -v gh &> /dev/null && gh auth status &> /dev/null; then
-        echo "🌐 Creating GitHub repository under ChillCube..."
-        gh repo create "ChillCube/$REPO_NAME" --public --source=. --remote=origin --push
-    else
-        echo "⚠️  Note: GitHub repo not created (gh CLI missing or not logged in)."
-    fi
+if command -v gh &> /dev/null && gh auth status &> /dev/null; then
+    # We use the SAFE_NAME for the GitHub repo name to keep it URL friendly
+    GITHUB_REPO_NAME="addon-$SAFE_NAME"
+    echo "🌐 Creating GitHub repository: ChillCube/$GITHUB_REPO_NAME"
+    gh repo create "ChillCube/$GITHUB_REPO_NAME" --public --source=. --remote=origin --push
+else
+    echo "⚠️  Note: Local repo created, but GitHub push skipped (gh CLI not ready)."
 fi
 
 echo "--------------------------------------------------"
-echo "✅ Done! Addon initialized at: $TARGET_PATH"
+echo "✅ Done! Addon Repo initialized at: $(pwd)"
