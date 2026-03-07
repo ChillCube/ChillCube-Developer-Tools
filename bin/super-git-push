@@ -1,79 +1,42 @@
 #!/bin/bash
+set -e
 
-# --- Chillcube Addon Remover ---
-# Usage: remove-gd-addon <addon_name>
+# --- Chillcube Smart Push ---
+echo "🧊 Chillcube Git Sync Initializing..."
+echo "--------------------------------------------------"
 
-TARGET_ADDON=$1
+# 1. Get current branch
+CURRENT_BR=$(git branch --show-current)
+echo "📍 Current Branch: $CURRENT_BR"
 
-if [ -z "$TARGET_ADDON" ]; then
-    echo "Usage: remove-gd-addon <addon_name>"
-    echo "Example: remove-gd-addon godot-git-plugin"
-    exit 1
+# 2. Stage all changes
+# Resetting first clears the index of any ghost paths or errors
+git reset
+git add .
+
+# 3. Ensure binaries are executable in the Git Index
+if [ -d "bin" ]; then
+    echo "🛡️  Ensuring bin/ files are executable..."
+    # Using find prevents shell expansion errors from comments
+    find bin/ -type f -exec git update-index --chmod=+x {} +
 fi
 
-ADDON_PATH="addons/$TARGET_ADDON"
-
-if [ ! -d "$ADDON_PATH" ]; then
-    echo "❌ Addon '$TARGET_ADDON' not found in addons/ directory."
-    exit 1
+if [ -f "install.sh" ]; then
+    git update-index --chmod=+x install.sh
 fi
 
-echo "🧊 Preparing to remove: $TARGET_ADDON"
+# 4. Commit
+read -p "📝 Enter commit message: " COMMIT_MSG
+COMMIT_MSG=${COMMIT_MSG:-"update: chillcube tools sync"}
+git commit -m "$COMMIT_MSG"
 
-# Collect all dependencies of the addon we ARE deleting
-DEPS_TO_REMOVE=()
-DEP_FILE="$ADDON_PATH/DEPENDENCIES.txt"
-if [ -f "$DEP_FILE" ]; then
-    while read -r dep_url || [ -n "$dep_url" ]; do
-        [[ -z "$dep_url" || "$dep_url" =~ ^# ]] && continue
-        dep_name=$(basename "$dep_url" .git)
-        DEPS_TO_REMOVE+=("$dep_name")
-    done < "$DEP_FILE"
-fi
+# 5. Sync and Push
+read -p "🎯 Target branch (default: $CURRENT_BR): " TARGET_BRANCH
+TARGET_BRANCH=${TARGET_BRANCH:-$CURRENT_BR}
 
-# Identify dependencies required by OTHER addons (the ones staying)
-REQUIRED_BY_OTHERS=()
-for other_addon in addons/*; do
-    other_name=$(basename "$other_addon")
-    
-    # Skip the one we are deleting and non-directories
-    if [ "$other_name" == "$TARGET_ADDON" ] || [ ! -d "$other_addon" ]; then
-        continue
-    fi
-    
-    OTHER_DEP_FILE="$other_addon/DEPENDENCIES.txt"
-    if [ -f "$OTHER_DEP_FILE" ]; then
-        while read -r dep_url || [ -n "$dep_url" ]; do
-            [[ -z "$dep_url" || "$dep_url" =~ ^# ]] && continue
-            req_name=$(basename "$dep_url" .git)
-            REQUIRED_BY_OTHERS+=("$req_name")
-        done < "$OTHER_DEP_FILE"
-    fi
-done
+echo "🔄 Fetching and Rebasin'..."
+git pull origin "$TARGET_BRANCH" --rebase
+git push origin "$TARGET_BRANCH"
 
-# Delete the main addon
-echo "🗑️  Removing main addon: $TARGET_ADDON"
-rm -rf "$ADDON_PATH"
-
-# Delete dependencies ONLY if no one else needs them
-for dep in "${DEPS_TO_REMOVE[@]}"; do
-    # Check if 'dep' exists in the 'REQUIRED_BY_OTHERS' list
-    is_required=false
-    for req in "${REQUIRED_BY_OTHERS[@]}"; do
-        if [ "$dep" == "$req" ]; then
-            is_required=true
-            break
-        fi
-    done
-
-    if [ "$is_required" = true ]; then
-        echo "⏭️  Skipping dependency '$dep' (still required by another addon)."
-    else
-        if [ -d "addons/$dep" ]; then
-            echo "🗑️  Removing unused dependency: $dep"
-            rm -rf "addons/$dep"
-        fi
-    fi
-done
-
-echo "✅ Cleanup complete."
+echo "--------------------------------------------------"
+echo "✅ Successfully pushed to $TARGET_BRANCH!"te."
