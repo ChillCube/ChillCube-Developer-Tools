@@ -1,24 +1,39 @@
 #!/usr/bin/env bash
 set -e
 
-echo "🧊 Chillcube Addon Initializer"
+echo "🧊 ChillCube Addon Initializer"
 echo "--------------------------------------------------"
 
-# Detect Godot Project
+# 1. Detect Mode & Initialize Local Repo
 if [ -f "project.godot" ]; then
-    echo "🏠 Godot project detected in current directory."
+    echo "🏠 Godot project detected. Adding addon to existing project."
     BASE_DIR="addons"
+    IS_STANDALONE=false
 else
-    echo "⚠️  No project.godot found. Creating a standalone repo instead."
-    read -p "📂 Enter new repository folder name: " REPO_NAME
+    echo "⚠️  No project.godot found. Creating standalone repository."
+    read -p "📂 Enter repository name (e.g., chill-inventory): " REPO_NAME
     mkdir -p "$REPO_NAME"
     cd "$REPO_NAME"
-    git init -q
+    
+    # Initialize Git
+    if [ ! -d ".git" ]; then
+        git init -q
+        echo "✅ Git repository initialized locally."
+    fi
+    
+    # Create Godot-friendly .gitignore
+    echo ".godot/
+*.import/
+export_presets.cfg
+.utest/
+*.tmp" > .gitignore
+    
     BASE_DIR="addons"
+    IS_STANDALONE=true
 fi
 
-# Collect Addon Info
-read -p "🏷️  Addon Name: " ADDON_NAME
+# 2. Collect Addon Info
+read -p "🏷️  Addon Display Name (e.g., Chill Inventory): " ADDON_NAME
 read -p "📝 Description: " ADDON_DESC
 read -p "👤 Author Name: " AUTHOR_NAME
 YEAR=$(date +%Y)
@@ -32,10 +47,9 @@ echo "📂 Creating $TARGET_PATH..."
 mkdir -p "$TARGET_PATH"
 
 # 4. Create empty DEPENDENCIES.txt
-echo "📄 Initializing empty DEPENDENCIES.txt..."
 touch "$TARGET_PATH/DEPENDENCIES.txt"
 
-# Create plugin.cfg
+# 5. Create plugin.cfg
 echo "⚙️  Generating plugin.cfg..."
 cat <<EOF > "$TARGET_PATH/plugin.cfg"
 [plugin]
@@ -46,29 +60,49 @@ version="0.1.0"
 script=""
 EOF
 
-# Apply License
+# 6. Apply License
 echo "⚖️  Applying BSL-1.1 License..."
 curl -s "https://raw.githubusercontent.com/MariaDBCorporation/BSL-1.1/master/BSL-1.1.txt" -o "$TARGET_PATH/LICENSE"
 
-# Generate README (Always)
+# 7. Generate README
 echo "📥 Fetching and customizing README template..."
-# Note: Ensure this URL matches your actual template filename on GitHub
 TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
 
-# If in a project, put README inside the addon folder. If standalone, put it in root.
-if [ -f "../../project.godot" ]; then
-    README_DEST="$TARGET_PATH/README.md"
-else
+if [ "$IS_STANDALONE" = true ]; then
     README_DEST="README.md"
+else
+    README_DEST="$TARGET_PATH/README.md"
 fi
 
 curl -s "$TEMPLATE_URL" -o "$README_DEST"
 
-# Replace placeholders
+# Replace placeholders in README
 sed -i "s/{{NAME}}/$ADDON_NAME/g" "$README_DEST"
 sed -i "s/{{DESC}}/$ADDON_DESC/g" "$README_DEST"
 sed -i "s/{{AUTHOR}}/$AUTHOR_NAME/g" "$README_DEST"
 sed -i "s/{{YEAR}}/$YEAR/g" "$README_DEST"
+
+# 8. GitHub Organization Integration
+if [ "$IS_STANDALONE" = true ]; then
+    echo "--------------------------------------------------"
+    echo "🌐 Attempting to create GitHub repository under ChillCube..."
+    
+    if command -v gh &> /dev/null; then
+        # Check if logged in
+        if gh auth status &> /dev/null; then
+            git add .
+            git commit -m "initial: initialize ChillCube addon structure"
+            
+            # Create the repo in the org, set remote, and push
+            gh repo create "ChillCube/$REPO_NAME" --public --source=. --remote=origin --push
+            echo "🚀 Success! Live at https://github.com/ChillCube/$REPO_NAME"
+        else
+            echo "❌ Error: Not logged into GitHub CLI. Run 'gh auth login'."
+        fi
+    else
+        echo "⚠️  gh CLI not found. Repo remains local-only."
+    fi
+fi
 
 echo "--------------------------------------------------"
 echo "✅ Done! Addon initialized at: $TARGET_PATH"
