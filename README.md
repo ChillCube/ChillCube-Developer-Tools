@@ -9,10 +9,11 @@ git clone https://github.com/ChillCube/ChillCube-Developer-Tools.git && cd chill
 ```
 ### NixOS
 #### Temporary
+Copy paste the into terminal to temporarily install the tools:
 ```Bash
 nix shell github:YOUR_USER/chillcube-clinix shell github:YOUR_USER/chillcube-cli
 ```
-#### Declaratively
+#### Declarative
 You can add this repository to NixOS using flakes:
 ```Nix
 inputs = {
