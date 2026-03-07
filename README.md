@@ -12,8 +12,7 @@ git clone https://github.com/ChillCube/ChillCube-Developer-Tools.git && cd Chill
 #### Temporary
 Copy paste the into terminal to temporarily install the tools:
 ```Bash
-export NIXPKGS_ALLOW_UNFREE=1
-nix --extra-experimental-features 'nix-command flakes' shell github:ChillCube/ChillCube-Developer-Tools --impure --no-write-lock-file
+export NIXPKGS_ALLOW_UNFREE=1 && nix --extra-experimental-features 'nix-command flakes' shell github:ChillCube/ChillCube-Developer-Tools --refresh --impure --no-write-lock-file
 ```
 #### Declarative
 You can add this repository to NixOS using flakes:
@@ -48,7 +47,11 @@ This clones addons created by ChillCube and ensures the necessary dependencies a
 ```Bash
 remove-gd-addon [ADDON NAME]
 ```
-This removes addons and its dependencies from your project. 
+This removes addons and its dependencies from your godot project. 
+```Bash
+create-gd-addon
+```
+Use this to create a new addon within your project.
 ```Bash
 push-all-addons
 ```
