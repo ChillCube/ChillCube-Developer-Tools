@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
-echo "🧊 Chillcube Addon Initializer (Project Mode)"
+echo "🧊 Chillcube Addon Initializer"
 echo "--------------------------------------------------"
 
-# 1. Detect Godot Project
+# Detect Godot Project
 if [ -f "project.godot" ]; then
     echo "🏠 Godot project detected in current directory."
     BASE_DIR="addons"
@@ -17,15 +17,13 @@ else
     BASE_DIR="addons"
 fi
 
-# 2. Collect Addon Info
+# Collect Addon Info
 read -p "🏷️  Addon Name: " ADDON_NAME
 read -p "📝 Description: " ADDON_DESC
 read -p "👤 Author Name: " AUTHOR_NAME
-read -p "📦 Dependencies (comma separated): " DEPS
 YEAR=$(date +%Y)
 
 # Convert Name to folder-style (e.g., "Chill Inventory" -> "chill_inventory")
-# Godot prefers underscores for internal addon folders
 SAFE_NAME=$(echo "$ADDON_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '_')
 TARGET_PATH="$BASE_DIR/$SAFE_NAME"
 
@@ -33,13 +31,11 @@ TARGET_PATH="$BASE_DIR/$SAFE_NAME"
 echo "📂 Creating $TARGET_PATH..."
 mkdir -p "$TARGET_PATH"
 
-# 4. Create DEPENDENCIES.txt
-echo "📄 Generating DEPENDENCIES.txt..."
-{
-    if [ -z "$DEPS" ]; then echo "None"; else echo "$DEPS" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/^/ - /'; fi
-} > "$TARGET_PATH/DEPENDENCIES.txt"
+# 4. Create empty DEPENDENCIES.txt
+echo "📄 Initializing empty DEPENDENCIES.txt..."
+touch "$TARGET_PATH/DEPENDENCIES.txt"
 
-# 5. Create plugin.cfg
+# Create plugin.cfg
 echo "⚙️  Generating plugin.cfg..."
 cat <<EOF > "$TARGET_PATH/plugin.cfg"
 [plugin]
@@ -50,19 +46,29 @@ version="0.1.0"
 script=""
 EOF
 
-# 6. Fetch License (README is only created if in Standalone mode)
+# Apply License
 echo "⚖️  Applying BSL-1.1 License..."
 curl -s "https://raw.githubusercontent.com/MariaDBCorporation/BSL-1.1/master/BSL-1.1.txt" -o "$TARGET_PATH/LICENSE"
 
-if [ ! -f "project.godot" ]; then
-    echo "📥 Fetching README template for standalone repo..."
-    TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
-    curl -s "$TEMPLATE_URL" -o README.md
-    sed -i "s/{{NAME}}/$ADDON_NAME/g" README.md
-    sed -i "s/{{DESC}}/$ADDON_DESC/g" README.md
-    sed -i "s/{{AUTHOR}}/$AUTHOR_NAME/g" README.md
-    sed -i "s/{{YEAR}}/$YEAR/g" README.md
+# Generate README (Always)
+echo "📥 Fetching and customizing README template..."
+# Note: Ensure this URL matches your actual template filename on GitHub
+TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_TEMPLATE.md"
+
+# If in a project, put README inside the addon folder. If standalone, put it in root.
+if [ -f "../../project.godot" ]; then
+    README_DEST="$TARGET_PATH/README.md"
+else
+    README_DEST="README.md"
 fi
+
+curl -s "$TEMPLATE_URL" -o "$README_DEST"
+
+# Replace placeholders
+sed -i "s/{{NAME}}/$ADDON_NAME/g" "$README_DEST"
+sed -i "s/{{DESC}}/$ADDON_DESC/g" "$README_DEST"
+sed -i "s/{{AUTHOR}}/$AUTHOR_NAME/g" "$README_DEST"
+sed -i "s/{{YEAR}}/$YEAR/g" "$README_DEST"
 
 echo "--------------------------------------------------"
 echo "✅ Done! Addon initialized at: $TARGET_PATH"
