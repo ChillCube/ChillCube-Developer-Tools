@@ -44,3 +44,4 @@ Super git push handles a lot of the git commands you normally have to type manua
 ```Bash
 clone-gd-addon https://github.com/ChillCube/[ADDON NAME].git
 ```
+This clones addons created by ChillCube and ensures the necessary dependencies are cloned as well.
