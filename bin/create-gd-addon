@@ -57,7 +57,7 @@ curl -sSL "https://www.boost.org/LICENSE_1_0.txt" -o "LICENSE"
 
 # Generate README
 echo "📥 Fetching and customizing README template..."
-TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_TEMPLATE.md"
+TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README__GODOT_ADDON_TEMPLATE.md"
 curl -sSL "$TEMPLATE_URL" -o "README.md"
 
 sed -i "s/{{NAME}}/$ADDON_NAME/g" "README.md"
