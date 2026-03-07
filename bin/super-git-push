@@ -5,38 +5,63 @@ set -e
 echo "🧊 Chillcube Git Sync Initializing..."
 echo "--------------------------------------------------"
 
-# 1. Get current branch
+# 1. Get current status
 CURRENT_BR=$(git branch --show-current)
-echo "📍 Current Branch: $CURRENT_BR"
+echo "📍 Currently on branch: $CURRENT_BR"
 
-# 2. Stage all changes
-# Resetting first clears the index of any ghost paths or errors
-git reset
-git add .
+# 2. Stage everything and fix permissions
+# We use -A to ensure deletions and new files are all caught
+git add -A
 
-# 3. Ensure binaries are executable in the Git Index
 if [ -d "bin" ]; then
     echo "🛡️  Ensuring bin/ files are executable..."
-    # Using find prevents shell expansion errors from comments
     find bin/ -type f -exec git update-index --chmod=+x {} +
 fi
 
-if [ -f "install.sh" ]; then
-    git update-index --chmod=+x install.sh
-fi
-
-# 4. Commit
+# 3. Commit
 read -p "📝 Enter commit message: " COMMIT_MSG
 COMMIT_MSG=${COMMIT_MSG:-"update: chillcube tools sync"}
-git commit -m "$COMMIT_MSG"
 
-# 5. Sync and Push
+# Only commit if there are actually changes to avoid "nothing to commit" errors
+if ! git diff-index --quiet HEAD --; then
+    git commit -m "$COMMIT_MSG"
+else
+    echo "empty: No new changes to commit."
+fi
+
+# 4. Branch Selection
+echo "--------------------------------------------------"
+echo "🌍 Available Remote Branches:"
+git fetch --prune --quiet
+# Lists remote branches clearly
+git branch -r | sed 's/origin\///' | grep -v "HEAD" | sort -u
+echo "--------------------------------------------------"
+
 read -p "🎯 Target branch (default: $CURRENT_BR): " TARGET_BRANCH
 TARGET_BRANCH=${TARGET_BRANCH:-$CURRENT_BR}
 
-echo "🔄 Fetching and Rebasin'..."
+# 5. Sync and Push
+echo "🔄 Fetching and Rebasin' on $TARGET_BRANCH..."
+
+# Final 'add' just in case something changed during the prompts
+git add -A 
+
+# If there are still unstaged changes, we stash them temporarily
+STASHED=false
+if ! git diff --quiet; then
+    echo "📦 Stashing temporary changes..."
+    git stash --quiet
+    STASHED=true
+fi
+
 git pull origin "$TARGET_BRANCH" --rebase
+
+if [ "$STASHED" = true ]; then
+    echo "📥 Unstashing temporary changes..."
+    git stash pop --quiet
+fi
+
 git push origin "$TARGET_BRANCH"
 
 echo "--------------------------------------------------"
-echo "✅ Successfully pushed to $TARGET_BRANCH!"te."
+echo "✅ Successfully synced and pushed to $TARGET_BRANCH!"
