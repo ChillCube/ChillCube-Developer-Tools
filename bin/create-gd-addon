@@ -53,7 +53,7 @@ curl -s "https://raw.githubusercontent.com/MariaDBCorporation/BSL-1.1/master/BSL
 # Generate README (Always)
 echo "📥 Fetching and customizing README template..."
 # Note: Ensure this URL matches your actual template filename on GitHub
-TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_TEMPLATE.md"
+TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
 
 # If in a project, put README inside the addon folder. If standalone, put it in root.
 if [ -f "../../project.godot" ]; then
