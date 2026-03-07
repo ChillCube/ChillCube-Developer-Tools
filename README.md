@@ -6,7 +6,7 @@ People who would like to contribute or use our libraries may also need to instal
 ### Linux/MacOS
 Simply copy paste this into terminal to install the tools:
 ```Bash
-git clone https://github.com/ChillCube/ChillCube-Developer-Tools.git && cd ChillCube-Developer-Tools && chmod +x install.sh && ./install.sh && cd .. && rm -rf ChillCube-Developer-Tools && source ~/.bashrc
+git clone https://github.com/ChillCube/ChillCube-Developer-Tools.git && cd ChillCube-Developer-Tools && chmod +x install.sh && bash ./install.sh && cd .. && rm -rf ChillCube-Developer-Tools && exec $SHELL
 ```
 ### NixOS
 #### Temporary
