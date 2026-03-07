@@ -11,6 +11,8 @@ To add this to your project, copy paste these commands into terminal at the root
 ```bash
 clone-gd-addon https://github.com/ChillCube/{{NAME}}.git
 ```
+> [!IMPORTANT]
+> Make sure to enable the addon, including its dependencies in the project settings!
 
 ## Deinstallation
 ### Linux
@@ -25,3 +27,4 @@ Run this at the root of your directory to push changes to any addons you have:
 ```bash
 push-all-addons
 ```
+
