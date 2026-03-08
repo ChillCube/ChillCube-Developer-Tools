@@ -14,23 +14,29 @@ else
 fi
 
 # 2. Collect Addon Info
-read -p "🏷️  Addon Name: " ADDON_NAME
+read -p "🏷️  Addon Name (e.g., MyCoolAddon): " ADDON_NAME
 read -p "📝 Description: " ADDON_DESC
 read -p "👤 Author Name: " AUTHOR_NAME
 YEAR=$(date +%Y)
 
-# Convert Name to folder-style (The exact name used for Folder and GitHub Repo)
-SAFE_NAME=$(echo "$ADDON_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '_')
+# --- THE CAPITALIZATION FIX ---
+# Replaces spaces with underscores but keeps Uppercase letters intact
+SAFE_NAME=$(echo "$ADDON_NAME" | tr ' ' '_')
 TARGET_PATH="$BASE_DIR/$SAFE_NAME"
 
 # 3. Create Folder and INITIALIZE GIT
+if [ -d "$TARGET_PATH" ]; then
+    echo "❌ Error: Folder $TARGET_PATH already exists. Aborting to prevent data loss."
+    exit 1
+fi
+
 echo "📂 Creating folder at $TARGET_PATH..."
 mkdir -p "$TARGET_PATH"
 cd "$TARGET_PATH"
 
 echo "🔧 Initializing Git repository..."
 git init -q
-git branch -m main  # Force branch name to 'main'
+git branch -m main
 
 # 4. Create .gitignore
 cat <<EOF > .gitignore
@@ -60,10 +66,11 @@ echo "📥 Fetching and customizing README template..."
 TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
 curl -sSL "$TEMPLATE_URL" -o "README.md"
 
-sed -i "s/{{NAME}}/$ADDON_NAME/g" "README.md"
-sed -i "s/{{DESC}}/$ADDON_DESC/g" "README.md"
-sed -i "s/{{AUTHOR}}/$AUTHOR_NAME/g" "README.md"
-sed -i "s/{{YEAR}}/$YEAR/g" "README.md"
+# Use | as a delimiter in sed so it doesn't break on descriptions with / or _
+sed -i "s|{{NAME}}|$ADDON_NAME|g" "README.md"
+sed -i "s|{{DESC}}|$ADDON_DESC|g" "README.md"
+sed -i "s|{{AUTHOR}}|$AUTHOR_NAME|g" "README.md"
+sed -i "s|{{YEAR}}|$YEAR|g" "README.md"
 
 # 8. Finalize Git Tracking & GitHub Org
 echo "--------------------------------------------------"
@@ -72,11 +79,11 @@ git add .
 git commit -m "initial: initialize $ADDON_NAME as a ChillCube addon"
 
 if command -v gh &> /dev/null && gh auth status &> /dev/null; then
-    # Removed the "addon-" prefix here
+    # This will now create ChillCube/My_Cool_Addon instead of chillcube/my_cool_addon
     echo "🌐 Creating GitHub repository: ChillCube/$SAFE_NAME"
     gh repo create "ChillCube/$SAFE_NAME" --public --source=. --remote=origin --push
 else
-    echo "⚠️  Note: Local repo created, but GitHub push skipped."
+    echo "⚠️  Note: Local repo created, but GitHub push skipped (gh CLI not found or not auth'd)."
 fi
 
 echo "--------------------------------------------------"
