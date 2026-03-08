@@ -77,3 +77,5 @@ push-all-addons
 ```
 This allows you to push changes to addons you've made to its repository. 
 It will also update the README to the newest version and generate a DOCUMENTATION.md based on the double hashtag (##) comments in the GDScript.
+It will also download any dependencies you've added to the dependency list!
+
