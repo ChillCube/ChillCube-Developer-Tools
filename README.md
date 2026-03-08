@@ -64,6 +64,9 @@ This removes addons and its dependencies from your godot project.
 ```Bash
 create-gd-addon
 ```
+> [!WARNING]
+> Make sure to not use spaces in the name of the addon you are creating, as this will mess with the file system!
+
 Use this to create a new addon within your project. It will push it into ChillCube's repositories automatically and initiate everything, including the LICENSE and a default README.
 > [!IMPORTANT]
 > Make sure to enable the addon in the project settings!
