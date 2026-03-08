@@ -23,7 +23,7 @@ if [[ "$SHELL" == *"zsh"* ]]; then SHELL_CONFIG="$HOME/.zshrc"; fi
 if ! grep -q "$CENTRAL_DIR/bin" "$SHELL_CONFIG"; then
     echo "🔗 Adding Godocs to your PATH in $SHELL_CONFIG..."
     echo "export PATH=\"\$PATH:$CENTRAL_DIR/bin\"" >> "$SHELL_CONFIG"
-    echo "✅ Success! Restart your terminal or run: source $SHELL_CONFIG"
+    echo "✅ Success!"
 else
     echo "✅ Godocs is already in your PATH."
 fi
