@@ -4,18 +4,6 @@
 INSTALL_DIR="$HOME/.chillcube-tools"
 BIN_DIR="$INSTALL_DIR/bin"
 
-echo "🧊 Installing Chillcube Developer Tools..."
-
-if ! command -v npm &> /dev/null; then
-    echo "❌ Error: 'npm' is not installed or not in your PATH."
-    echo "Please install Node.js from https://nodejs.org/ to continue."
-    exit 1
-fi
-
-echo "✅ npm found. Proceeding with documentation..."
-
-npm install gdscriptify -g
-
 mkdir -p "$BIN_DIR"
 
 if [ -d "bin" ]; then
