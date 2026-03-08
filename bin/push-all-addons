@@ -20,13 +20,14 @@ for addon_path in addons/*; do
     echo "--------------------------------------------------"
     echo "🚀 Addon: $addon_name"
 
-    # Fix indentation
+    # Fix indentation (Space to Tabs)
     find "$addon_path" -name "*.gd" -exec sed -i 's/    /\t/g' {} +
 
     TEMP_XML="$PROJECT_ROOT/temp_xml_$addon_name"
     TEMP_OUT="$PROJECT_ROOT/docs_out_$addon_name"
     mkdir -p "$TEMP_XML" "$TEMP_OUT"
 
+    # Extract
     godot --headless --doctool "$TEMP_XML" --no-docbase --gdscript-docs "res://addons/$addon_name"
     
     if [ "$(ls -A "$TEMP_XML" 2>/dev/null)" ]; then
@@ -39,37 +40,73 @@ for addon_path in addons/*; do
 
         for f in "$TEMP_OUT"/*.md; do
             [ -e "$f" ] || continue
-            filename=$(basename "$f")
-            if [[ "$filename" != "index.md" ]]; then
-                echo -e "\n---\n" >> "$DOC_FILE"
+            if [[ $(basename "$f") != "index.md" ]]; then
                 
-                # CLEANUP PIPELINE:
-                # 1. Remove RST Table markers (* -, :header-rows:, etc)
-                # 2. Remove empty property indices
-                # 3. Use Awk to only keep Descriptions that aren't empty
-                sed -e '/:header-rows:/d' \
-                    -e '/^\s*\* -/d' \
-                    -e 's/:ref:`\([^<]*\) <[^>]*>`/`\1`/g' \
-                    -e '/^\.\. /d' \
+                # PRE-CLEAN: Remove RST garbage and unnecessary headers
+                sed -e 's/:ref:`\([^<]*\) <[^>]*>`/`\1`/g' \
+                    -e 's/\\//g' \
+                    -e '/^Inherits:/d' \
                     -e '/^===/d' \
                     -e '/^---/d' \
-                    -e 's/\\//g' "$f" | \
+                    -e '/^Index/d' \
+                    -e '/^Descriptions/d' "$f" | \
                 awk '
-                    BEGIN { print_line = 1 }
-                    # If we hit a property/method description without a following description, skip
-                    /^`.*`.*$/ { last_header = $0; next_is_desc = 1; next }
-                    next_is_desc {
-                        if (NF == 0) { next } # skip empty lines after header
-                        print "### " last_header;
-                        print "";
-                        print $0;
-                        next_is_desc = 0;
+                    # Logic to capture Properties and Functions
+                    # Format: `Type` name = `Default`
+                    /^`[^`]+` [^` ]+( = `[^`]+`)?$/ {
+                        split($0, parts, " ")
+                        type = parts[1]
+                        name = parts[2]
+                        default_val = ""
+                        
+                        # Extract default if it exists
+                        if ($0 ~ / = /) {
+                            match($0, / = `.*`/)
+                            default_val = substr($0, RSTART + 3, RLENGTH - 3)
+                        }
+
+                        # Print the Header
+                        print "### " name
+                        print "**Type:** " type
+                        if (default_val != "") print "**Default:** " default_val
+                        print ""
+                        
+                        in_desc = 1
                         next
                     }
-                    # Filter out the broken Index tables entirely
-                    /Index/ { skip_index = 1; next }
-                    /Descriptions/ { skip_index = 0; next }
-                    !skip_index { print }
+
+                    # Capture Function Signatures
+                    # Format: `Type` name(...)
+                    /^`[^`]+` [^` ]+\(.*\)$/ {
+                        split($0, parts, " ")
+                        type = parts[1]
+                        # Remove the return type to just get name(...)
+                        sig = $0
+                        sub(/^`[^`]+` /, "", sig)
+
+                        print "### " sig
+                        print "**Returns:** " type
+                        print ""
+                        
+                        in_desc = 1
+                        next
+                    }
+
+                    # Handle the description text
+                    in_desc {
+                        if ($0 ~ /^[ \t]*$/) { # Empty line signals end of block or spacer
+                            print ""
+                            next
+                        }
+                        # If the line looks like a new header, reset
+                        if ($0 ~ /^`/) { in_desc = 0 }
+                        else { print $0; print "" }
+                    }
+
+                    # Keep general class descriptions at the top
+                    !in_desc && NF > 0 && $0 !~ /^`/ && $0 !~ /^#/ {
+                        print $0
+                    }
                 ' >> "$DOC_FILE"
             fi
         done
