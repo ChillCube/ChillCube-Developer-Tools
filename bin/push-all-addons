@@ -3,12 +3,9 @@
 # --- Chillcube Bulk Addon Pusher & Doc Generator ---
 
 VENV_PATH="/tmp/chillcube_docs_env"
-
 if ! command -v godocs &> /dev/null; then
-    echo "🐍 Godocs not found. Setting up temporary environment..."
     if [ ! -d "$VENV_PATH" ]; then
         python3 -m venv "$VENV_PATH"
-        # We install the base tool and the jinja constructor
         "$VENV_PATH/bin/pip" install godocs godocs-jinja --quiet
     fi
     export PATH="$VENV_PATH/bin:$PATH"
@@ -23,55 +20,62 @@ for addon_path in addons/*; do
     echo "--------------------------------------------------"
     echo "🚀 Addon: $addon_name"
 
-    # 🛠️ Fix indentation before extraction
+    # Fix indentation
     find "$addon_path" -name "*.gd" -exec sed -i 's/    /\t/g' {} +
 
     TEMP_XML="$PROJECT_ROOT/temp_xml_$addon_name"
     TEMP_OUT="$PROJECT_ROOT/docs_out_$addon_name"
     mkdir -p "$TEMP_XML" "$TEMP_OUT"
 
-    echo "📝 Extracting Godot 4 XML..."
     godot --headless --doctool "$TEMP_XML" --no-docbase --gdscript-docs "res://addons/$addon_name"
     
-    # Check if XML files exist
     if [ "$(ls -A "$TEMP_XML" 2>/dev/null)" ]; then
-        echo "📝 Converting to Markdown..."
-        # We use jinja with the 'md' format which is the most stable for Godocs
+        echo "📝 Converting and Formatting..."
         godocs construct jinja --format md "$TEMP_XML" "$TEMP_OUT"
         
         DOC_FILE="$PROJECT_ROOT/$addon_path/DOCUMENTATION.md"
-        
-        # Start the file with a clean Header
         echo "# $addon_name API Reference" > "$DOC_FILE"
         echo -e "Generated on: $(date)\n" >> "$DOC_FILE"
 
-        # Loop through generated files
-        # We use a glob that matches .md or .markdown depending on what godocs chose
-        for f in "$TEMP_OUT"/*; do
+        for f in "$TEMP_OUT"/*.md; do
+            [ -e "$f" ] || continue
             filename=$(basename "$f")
-            # Skip indices and non-markdown files
-            if [[ "$filename" == *.md || "$filename" == *.markdown ]]; then
-                if [[ "$filename" != "index.md" ]]; then
-                    echo -e "\n---\n" >> "$DOC_FILE"
-                    # Clean up RST artifacts like :ref: and .. blocks on the fly
-                    sed -e 's/:ref:`\([^<]*\) <[^>]*>`/`\1`/g' \
-                        -e '/^\.\. /d' \
-                        -e '/^===/d' \
-                        -e '/^---/d' "$f" >> "$DOC_FILE"
-                fi
+            if [[ "$filename" != "index.md" ]]; then
+                echo -e "\n---\n" >> "$DOC_FILE"
+                
+                # CLEANUP PIPELINE:
+                # 1. Remove RST Table markers (* -, :header-rows:, etc)
+                # 2. Remove empty property indices
+                # 3. Use Awk to only keep Descriptions that aren't empty
+                sed -e '/:header-rows:/d' \
+                    -e '/^\s*\* -/d' \
+                    -e 's/:ref:`\([^<]*\) <[^>]*>`/`\1`/g' \
+                    -e '/^\.\. /d' \
+                    -e '/^===/d' \
+                    -e '/^---/d' \
+                    -e 's/\\//g' "$f" | \
+                awk '
+                    BEGIN { print_line = 1 }
+                    # If we hit a property/method description without a following description, skip
+                    /^`.*`.*$/ { last_header = $0; next_is_desc = 1; next }
+                    next_is_desc {
+                        if (NF == 0) { next } # skip empty lines after header
+                        print "### " last_header;
+                        print "";
+                        print $0;
+                        next_is_desc = 0;
+                        next
+                    }
+                    # Filter out the broken Index tables entirely
+                    /Index/ { skip_index = 1; next }
+                    /Descriptions/ { skip_index = 0; next }
+                    !skip_index { print }
+                ' >> "$DOC_FILE"
             fi
         done
-        
-        # Final cleanup: if the file only has the header, it's basically empty
-        if [ $(wc -l < "$DOC_FILE") -le 4 ]; then
-            echo "⚠️  Markdown conversion resulted in empty content."
-            rm "$DOC_FILE"
-        fi
-    else
-        echo "⚠️  No XML generated. Check if scripts have ## comments and no syntax errors."
     fi
 
-    # PUSH CHANGES
+    # 3. PUSH
     cd "$PROJECT_ROOT/$addon_path"
     if [ -f "DOCUMENTATION.md" ]; then
         git add DOCUMENTATION.md
@@ -91,6 +95,3 @@ for addon_path in addons/*; do
     rm -rf "$TEMP_XML" "$TEMP_OUT"
     echo "✅ Finished $addon_name"
 done
-
-echo "--------------------------------------------------"
-echo "🎉 All addons processed."
