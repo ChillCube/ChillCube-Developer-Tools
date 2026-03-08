@@ -25,26 +25,33 @@ for addon_path in addons/*; do
     # 1. FIX INDENTATION
     find "$addon_path" -name "*.gd" -exec sed -i 's/    /\t/g' {} +
 
-    # 2. UPDATE README FROM TEMPLATE
-    echo "📥 Refreshing README template..."
+    # 2. REGENERATE README FROM REMOTE TEMPLATE
     if [ -f "$addon_path/plugin.cfg" ]; then
-        # Extract metadata from plugin.cfg to keep the README accurate
-        A_NAME=$(grep 'name=' "$addon_path/plugin.cfg" | cut -d'"' -f2)
-        A_DESC=$(grep 'description=' "$addon_path/plugin.cfg" | cut -d'"' -f2)
-        A_AUTH=$(grep 'author=' "$addon_path/plugin.cfg" | cut -d'"' -f2)
+        echo "♻️  Regenerating README from master template..."
+        
+        # Extract metadata from plugin.cfg
+        A_NAME=$(grep -E "^name[[:space:]]*=" "$addon_path/plugin.cfg" | sed 's/.*=[[:space:]]*"//;s/".*//')
+        A_DESC=$(grep -E "^description[[:space:]]*=" "$addon_path/plugin.cfg" | sed 's/.*=[[:space:]]*"//;s/".*//')
+        A_AUTH=$(grep -E "^author[[:space:]]*=" "$addon_path/plugin.cfg" | sed 's/.*=[[:space:]]*"//;s/".*//')
         A_YEAR=$(date +%Y)
 
-        # Download fresh template to a temp file
+        # Download fresh template to a temporary file
         curl -sSL "$TEMPLATE_URL" -o "$addon_path/README.md.tmp"
         
-        # Apply metadata to the fresh template
-        sed -i "s/{{NAME}}/$A_NAME/g" "$addon_path/README.md.tmp"
-        sed -i "s/{{DESC}}/$A_DESC/g" "$addon_path/README.md.tmp"
-        sed -i "s/{{AUTHOR}}/$A_AUTH/g" "$addon_path/README.md.tmp"
-        sed -i "s/{{YEAR}}/$A_YEAR/g" "$addon_path/README.md.tmp"
-        
-        # Replace old README with updated template
-        mv "$addon_path/README.md.tmp" "$addon_path/README.md"
+        if [ -s "$addon_path/README.md.tmp" ]; then
+            # Apply metadata to the fresh template
+            sed -i "s/{{NAME}}/$A_NAME/g" "$addon_path/README.md.tmp"
+            sed -i "s/{{DESC}}/$A_DESC/g" "$addon_path/README.md.tmp"
+            sed -i "s/{{AUTHOR}}/$A_AUTH/g" "$addon_path/README.md.tmp"
+            sed -i "s/{{YEAR}}/$A_YEAR/g" "$addon_path/README.md.tmp"
+            
+            # Force overwrite the old README
+            mv "$addon_path/README.md.tmp" "$addon_path/README.md"
+            echo "✅ README regenerated for $A_NAME"
+        else
+            rm -f "$addon_path/README.md.tmp"
+            echo "❌ Error: Could not download template. Keeping existing README."
+        fi
     fi
 
     # 3. GENERATE API DOCUMENTATION
@@ -59,7 +66,9 @@ for addon_path in addons/*; do
         godocs construct jinja --format md "$TEMP_XML" "$TEMP_OUT"
         
         DOC_FILE="$PROJECT_ROOT/$addon_path/DOCUMENTATION.md"
-        echo "# $A_NAME API Reference" > "$DOC_FILE"
+        DISPLAY_NAME=${A_NAME:-$addon_name_folder}
+        
+        echo "# $DISPLAY_NAME API Reference" > "$DOC_FILE"
         echo -e "Generated on: $(date)\n\n---\n" >> "$DOC_FILE"
 
         for f in "$TEMP_OUT"/*.md; do
@@ -136,23 +145,22 @@ for addon_path in addons/*; do
 
     # 4. INTERACTIVE GIT SYNC
     cd "$PROJECT_ROOT/$addon_path"
-    if [ -f "DOCUMENTATION.md" ]; then
-        git add DOCUMENTATION.md README.md
-        if ! git diff-index --quiet HEAD; then
-            echo -e "\n💬 Enter commit message for [$addon_name_folder]:"
-            read -p "> " user_message
-            
-            if [ -z "$user_message" ]; then
-                user_message="update: docs and readme template sync"
-            fi
-
-            git commit -m "docs($addon_name_folder): $user_message"
-            
-            echo "📤 Pushing changes..."
-            super-git-push || "$PROJECT_ROOT/bin/super-git-push"
-        else
-            echo "ℹ️  No changes detected for $addon_name_folder."
+    git add DOCUMENTATION.md README.md
+    
+    if ! git diff-index --quiet HEAD; then
+        echo -e "\n💬 Enter commit message for [$addon_name_folder]:"
+        read -p "> " user_message
+        
+        if [ -z "$user_message" ]; then
+            user_message="sync: regenerate docs and readme template"
         fi
+
+        git commit -m "docs($addon_name_folder): $user_message"
+        
+        echo "📤 Pushing changes..."
+        super-git-push || "$PROJECT_ROOT/bin/super-git-push"
+    else
+        echo "ℹ️  No changes detected for $addon_name_folder."
     fi
 
     cd "$PROJECT_ROOT"
