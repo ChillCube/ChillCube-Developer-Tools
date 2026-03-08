@@ -2,7 +2,9 @@
 
 # --- Chillcube Bulk Addon Pusher & Doc Generator ---
 
+TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
 VENV_PATH="/tmp/chillcube_docs_env"
+
 if ! command -v godocs &> /dev/null; then
     if [ ! -d "$VENV_PATH" ]; then
         python3 -m venv "$VENV_PATH"
@@ -15,26 +17,49 @@ PROJECT_ROOT=$(pwd)
 
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
-    addon_name=$(basename "$addon_path")
+    addon_name_folder=$(basename "$addon_path")
     
     echo "--------------------------------------------------"
-    echo "🚀 Processing Addon: $addon_name"
+    echo "🚀 Processing Addon: $addon_name_folder"
 
-    # Fix indentation for Godot Parser
+    # 1. FIX INDENTATION
     find "$addon_path" -name "*.gd" -exec sed -i 's/    /\t/g' {} +
 
-    TEMP_XML="$PROJECT_ROOT/temp_xml_$addon_name"
-    TEMP_OUT="$PROJECT_ROOT/docs_out_$addon_name"
+    # 2. UPDATE README FROM TEMPLATE
+    echo "📥 Refreshing README template..."
+    if [ -f "$addon_path/plugin.cfg" ]; then
+        # Extract metadata from plugin.cfg to keep the README accurate
+        A_NAME=$(grep 'name=' "$addon_path/plugin.cfg" | cut -d'"' -f2)
+        A_DESC=$(grep 'description=' "$addon_path/plugin.cfg" | cut -d'"' -f2)
+        A_AUTH=$(grep 'author=' "$addon_path/plugin.cfg" | cut -d'"' -f2)
+        A_YEAR=$(date +%Y)
+
+        # Download fresh template to a temp file
+        curl -sSL "$TEMPLATE_URL" -o "$addon_path/README.md.tmp"
+        
+        # Apply metadata to the fresh template
+        sed -i "s/{{NAME}}/$A_NAME/g" "$addon_path/README.md.tmp"
+        sed -i "s/{{DESC}}/$A_DESC/g" "$addon_path/README.md.tmp"
+        sed -i "s/{{AUTHOR}}/$A_AUTH/g" "$addon_path/README.md.tmp"
+        sed -i "s/{{YEAR}}/$A_YEAR/g" "$addon_path/README.md.tmp"
+        
+        # Replace old README with updated template
+        mv "$addon_path/README.md.tmp" "$addon_path/README.md"
+    fi
+
+    # 3. GENERATE API DOCUMENTATION
+    TEMP_XML="$PROJECT_ROOT/temp_xml_$addon_name_folder"
+    TEMP_OUT="$PROJECT_ROOT/docs_out_$addon_name_folder"
     mkdir -p "$TEMP_XML" "$TEMP_OUT"
 
-    godot --headless --doctool "$TEMP_XML" --no-docbase --gdscript-docs "res://addons/$addon_name"
+    godot --headless --doctool "$TEMP_XML" --no-docbase --gdscript-docs "res://addons/$addon_name_folder"
     
     if [ "$(ls -A "$TEMP_XML" 2>/dev/null)" ]; then
         echo "📝 Reconstructing Documentation..."
         godocs construct jinja --format md "$TEMP_XML" "$TEMP_OUT"
         
         DOC_FILE="$PROJECT_ROOT/$addon_path/DOCUMENTATION.md"
-        echo "# $addon_name API Reference" > "$DOC_FILE"
+        echo "# $A_NAME API Reference" > "$DOC_FILE"
         echo -e "Generated on: $(date)\n\n---\n" >> "$DOC_FILE"
 
         for f in "$TEMP_OUT"/*.md; do
@@ -70,7 +95,6 @@ for addon_path in addons/*; do
                     current_item = "### " head[2] "\n**Type:** " head[1] "\n"
                     if ($0 ~ /=/) {
                         def = parts[2]; sub(/^[ ]+/, "", def); sub(/[ ]+$/, "", def)
-                        # Added newline below for visual separation
                         current_item = current_item "**Default:** " def "\n"
                     }
                     current_item = current_item "\n"
@@ -113,25 +137,25 @@ for addon_path in addons/*; do
     # 4. INTERACTIVE GIT SYNC
     cd "$PROJECT_ROOT/$addon_path"
     if [ -f "DOCUMENTATION.md" ]; then
-        git add DOCUMENTATION.md
+        git add DOCUMENTATION.md README.md
         if ! git diff-index --quiet HEAD; then
-            echo -e "\n💬 Enter commit message for [$addon_name]:"
+            echo -e "\n💬 Enter commit message for [$addon_name_folder]:"
             read -p "> " user_message
             
             if [ -z "$user_message" ]; then
-                user_message="auto-generate api reference"
+                user_message="update: docs and readme template sync"
             fi
 
-            git commit -m "docs($addon_name): $user_message"
+            git commit -m "docs($addon_name_folder): $user_message"
             
             echo "📤 Pushing changes..."
             super-git-push || "$PROJECT_ROOT/bin/super-git-push"
         else
-            echo "ℹ️  No changes detected for $addon_name."
+            echo "ℹ️  No changes detected for $addon_name_folder."
         fi
     fi
 
     cd "$PROJECT_ROOT"
     rm -rf "$TEMP_XML" "$TEMP_OUT"
-    echo "✅ Finished $addon_name"
+    echo "✅ Finished $addon_name_folder"
 done
