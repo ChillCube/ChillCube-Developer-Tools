@@ -27,11 +27,10 @@ for addon_path in addons/*; do
     TEMP_OUT="$PROJECT_ROOT/docs_out_$addon_name"
     mkdir -p "$TEMP_XML" "$TEMP_OUT"
 
-    # Extract
     godot --headless --doctool "$TEMP_XML" --no-docbase --gdscript-docs "res://addons/$addon_name"
     
     if [ "$(ls -A "$TEMP_XML" 2>/dev/null)" ]; then
-        echo "📝 Converting and Formatting..."
+        echo "📝 Reconstructing Documentation..."
         godocs construct jinja --format md "$TEMP_XML" "$TEMP_OUT"
         
         DOC_FILE="$PROJECT_ROOT/$addon_path/DOCUMENTATION.md"
@@ -40,72 +39,65 @@ for addon_path in addons/*; do
 
         for f in "$TEMP_OUT"/*.md; do
             [ -e "$f" ] || continue
+            # We ignore the index file entirely
             if [[ $(basename "$f") != "index.md" ]]; then
                 
-                # PRE-CLEAN: Remove RST garbage and unnecessary headers
-                sed -e 's/:ref:`\([^<]*\) <[^>]*>`/`\1`/g' \
-                    -e 's/\\//g' \
-                    -e '/^Inherits:/d' \
-                    -e '/^===/d' \
-                    -e '/^---/d' \
-                    -e '/^Index/d' \
-                    -e '/^Descriptions/d' "$f" | \
-                awk '
-                    # Logic to capture Properties and Functions
-                    # Format: `Type` name = `Default`
-                    /^`[^`]+` [^` ]+( = `[^`]+`)?$/ {
-                        split($0, parts, " ")
-                        type = parts[1]
-                        name = parts[2]
-                        default_val = ""
-                        
-                        # Extract default if it exists
-                        if ($0 ~ / = /) {
-                            match($0, / = `.*`/)
-                            default_val = substr($0, RSTART + 3, RLENGTH - 3)
-                        }
+                # Filter the file to extract only the juicy parts
+                cat "$f" | sed -e 's/:ref:`\([^<]*\) <[^>]*>`/`\1`/g' -e 's/\\//g' | awk '
+                    BEGIN { section = "none" }
 
-                        # Print the Header
-                        print "### " name
-                        print "**Type:** " type
-                        if (default_val != "") print "**Default:** " default_val
+                    # 1. Identify Sections
+                    /Property Descriptions/ { section = "props"; next }
+                    /Method Descriptions/ { section = "methods"; next }
+                    /Signal Descriptions/ { section = "signals"; next }
+
+                    # 2. Extract Class Description (Before any Description section)
+                    section == "none" && !/^#/ && !/^=/ && !/^---/ && !/^Inherits/ && NF > 0 && $0 !~ /Index/ {
+                        class_desc = class_desc $0 "\n"
+                    }
+
+                    # 3. Handle Properties
+                    section == "props" && /^`.*` .*$/ {
+                        match($0, /^`([^`]+)` ([^` ]+)( = `(.*)`)?/, m)
+                        print "### " m[2]
+                        print "**Type:** " m[1]
+                        if (m[4] != "") print "**Default:** " m[4]
                         print ""
-                        
-                        in_desc = 1
+                        getting_desc = 1
                         next
                     }
 
-                    # Capture Function Signatures
-                    # Format: `Type` name(...)
-                    /^`[^`]+` [^` ]+\(.*\)$/ {
-                        split($0, parts, " ")
-                        type = parts[1]
-                        # Remove the return type to just get name(...)
-                        sig = $0
-                        sub(/^`[^`]+` /, "", sig)
-
-                        print "### " sig
-                        print "**Returns:** " type
+                    # 4. Handle Methods
+                    section == "methods" && /^`.*` .*\)$/ {
+                        match($0, /^`([^`]+)` (.*)$/, m)
+                        print "### " m[2]
+                        print "**Returns:** " m[1]
                         print ""
-                        
-                        in_desc = 1
+                        getting_desc = 1
                         next
                     }
 
-                    # Handle the description text
-                    in_desc {
-                        if ($0 ~ /^[ \t]*$/) { # Empty line signals end of block or spacer
-                            print ""
-                            next
-                        }
-                        # If the line looks like a new header, reset
-                        if ($0 ~ /^`/) { in_desc = 0 }
-                        else { print $0; print "" }
+                    # 5. Handle Signals
+                    section == "signals" && /^[a-zA-Z0-0_]+\(.*\)$/ {
+                        print "### " $0
+                        print "**Event: Signal**"
+                        print ""
+                        getting_desc = 1
+                        next
                     }
 
-                    # Keep general class descriptions at the top
-                    !in_desc && NF > 0 && $0 !~ /^`/ && $0 !~ /^#/ {
-                        print $0
+                    # 6. Capture the Description text
+                    getting_desc {
+                        if ($0 ~ /^#/ || $0 ~ /^`/) { getting_desc = 0 }
+                        else if (NF > 0 && $0 !~ /^===/ && $0 !~ /^---/) {
+                            print $0 "\n"
+                        }
+                    }
+
+                    END {
+                        if (class_desc != "") {
+                            print "## Description\n" class_desc "\n---\n"
+                        }
                     }
                 ' >> "$DOC_FILE"
             fi
