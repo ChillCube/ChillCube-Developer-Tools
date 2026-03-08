@@ -88,20 +88,20 @@ for addon_path in addons/*; do
     if [ -f "$TARGET_SCRIPT" ]; then
         echo "📄 Parsing script: $TARGET_SCRIPT"
         
-        # TABLE: PROPERTIES
+        # TABLE: PROPERTIES (Only with ##)
         echo "## Properties" >> "$DOC_FILE"
         echo "| Property | Type | Default | Description |" >> "$DOC_FILE"
         echo "| :--- | :--- | :--- | :--- |" >> "$DOC_FILE"
         
         awk '
-            /(@export|var) / {
-                line = $0; desc = "No description provided.";
-                if (line ~ /##/) {
-                    split(line, parts, "##"); desc = parts[2];
-                    gsub(/^[ \t]+|[ \t]+$/, "", desc); line = parts[1];
-                }
+            /(@export|var) .*##/ {
+                line = $0; 
+                split(line, parts, "##"); desc = parts[2];
+                gsub(/^[ \t]+|[ \t]+$/, "", desc); line = parts[1];
+                
                 name = ""; if (line ~ /var /) { split(line, a, "var "); split(a[2], b, /[ :={]/); name = b[1]; }
-                if (name == "" || name == "unknown") next;
+                if (name == "") next;
+
                 type = "Variant"; if (line ~ /:[ \t]*[A-zA-Z0-9_]+/) { 
                     split(line, a, ":"); split(a[2], b, /[= ]/); type = b[1]; gsub(/[ \t]+/, "", type);
                 }
@@ -112,30 +112,33 @@ for addon_path in addons/*; do
             }
         ' "$TARGET_SCRIPT" >> "$DOC_FILE"
 
-        # TABLE: METHODS
+        # TABLE: METHODS (Only with ## and skip leading underscores)
         echo -e "\n## Methods" >> "$DOC_FILE"
         echo "| Method | Returns | Description |" >> "$DOC_FILE"
         echo "| :--- | :--- | :--- |" >> "$DOC_FILE"
         awk '
-            /^func / || /func .*##/ {
-                line = $0; desc = "No description provided.";
-                if (line ~ /##/) { split(line, p, "##"); desc = p[2]; line = p[1]; }
+            /func .*##/ {
+                line = $0;
+                split(line, p, "##"); desc = p[2]; line = p[1];
+                
                 split(line, a, "func "); split(a[2], b, "("); name = b[1];
-                if (name == "") next;
+                # Skip internal methods starting with _
+                if (name == "" || name ~ /^_/) next;
+
                 ret = "void"; if (line ~ /->/) { split(line, c, "->"); split(c[2], d, ":"); ret = d[1]; gsub(/[ \t]+/, "", ret); }
                 gsub(/^[ \t]+|[ \t]+$/, "", desc);
                 printf("| **%s()** | `%s` | %s |\n", name, ret, desc);
             }
         ' "$TARGET_SCRIPT" >> "$DOC_FILE"
         
-        # TABLE: SIGNALS
+        # TABLE: SIGNALS (Only with ##)
         echo -e "\n## Signals" >> "$DOC_FILE"
         echo "| Signal | Description |" >> "$DOC_FILE"
         echo "| :--- | :--- |" >> "$DOC_FILE"
         awk '
-            /^signal / {
-                line = $0; desc = "No description provided.";
-                if (line ~ /##/) { split(line, p, "##"); desc = p[2]; line = p[1]; }
+            /signal .*##/ {
+                line = $0;
+                split(line, p, "##"); desc = p[2]; line = p[1];
                 split(line, a, "signal "); split(a[2], b, /[ (]/); name = b[1];
                 gsub(/^[ \t]+|[ \t]+$/, "", desc);
                 printf("| **%s** | %s |\n", name, desc);
