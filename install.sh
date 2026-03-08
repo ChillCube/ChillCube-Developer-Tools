@@ -6,6 +6,8 @@ BIN_DIR="$INSTALL_DIR/bin"
 
 echo "🧊 Installing Chillcube Developer Tools..."
 
+npm install gdscriptify -g
+
 mkdir -p "$BIN_DIR"
 
 if [ -d "bin" ]; then
