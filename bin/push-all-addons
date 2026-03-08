@@ -86,22 +86,13 @@ for addon_path in addons/*; do
     fi
 
     if [ -f "$TARGET_SCRIPT" ]; then
-        echo "📄 Parsing script: $TARGET_SCRIPT"
-        
-        # TABLE: PROPERTIES (Only with ##)
-        echo "## Properties" >> "$DOC_FILE"
-        echo "| Property | Type | Default | Description |" >> "$DOC_FILE"
-        echo "| :--- | :--- | :--- | :--- |" >> "$DOC_FILE"
-        
-        awk '
+        # 3a. Capture Properties
+        PROP_DATA=$(awk '
             /(@export|var) .*##/ {
-                line = $0; 
-                split(line, parts, "##"); desc = parts[2];
+                line = $0; split(line, parts, "##"); desc = parts[2];
                 gsub(/^[ \t]+|[ \t]+$/, "", desc); line = parts[1];
-                
                 name = ""; if (line ~ /var /) { split(line, a, "var "); split(a[2], b, /[ :={]/); name = b[1]; }
                 if (name == "") next;
-
                 type = "Variant"; if (line ~ /:[ \t]*[A-zA-Z0-9_]+/) { 
                     split(line, a, ":"); split(a[2], b, /[= ]/); type = b[1]; gsub(/[ \t]+/, "", type);
                 }
@@ -110,40 +101,53 @@ for addon_path in addons/*; do
                 }
                 printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc);
             }
-        ' "$TARGET_SCRIPT" >> "$DOC_FILE"
+        ' "$TARGET_SCRIPT")
 
-        # TABLE: METHODS (Only with ## and skip leading underscores)
-        echo -e "\n## Methods" >> "$DOC_FILE"
-        echo "| Method | Returns | Description |" >> "$DOC_FILE"
-        echo "| :--- | :--- | :--- |" >> "$DOC_FILE"
-        awk '
+        if [ -n "$PROP_DATA" ]; then
+            echo "## Properties" >> "$DOC_FILE"
+            echo "| Property | Type | Default | Description |" >> "$DOC_FILE"
+            echo "| :--- | :--- | :--- | :--- |" >> "$DOC_FILE"
+            echo "$PROP_DATA" >> "$DOC_FILE"
+            echo "" >> "$DOC_FILE"
+        fi
+
+        # 3b. Capture Methods
+        METHOD_DATA=$(awk '
             /func .*##/ {
-                line = $0;
-                split(line, p, "##"); desc = p[2]; line = p[1];
-                
+                line = $0; split(line, p, "##"); desc = p[2]; line = p[1];
                 split(line, a, "func "); split(a[2], b, "("); name = b[1];
-                # Skip internal methods starting with _
                 if (name == "" || name ~ /^_/) next;
-
                 ret = "void"; if (line ~ /->/) { split(line, c, "->"); split(c[2], d, ":"); ret = d[1]; gsub(/[ \t]+/, "", ret); }
                 gsub(/^[ \t]+|[ \t]+$/, "", desc);
                 printf("| **%s()** | `%s` | %s |\n", name, ret, desc);
             }
-        ' "$TARGET_SCRIPT" >> "$DOC_FILE"
-        
-        # TABLE: SIGNALS (Only with ##)
-        echo -e "\n## Signals" >> "$DOC_FILE"
-        echo "| Signal | Description |" >> "$DOC_FILE"
-        echo "| :--- | :--- |" >> "$DOC_FILE"
-        awk '
+        ' "$TARGET_SCRIPT")
+
+        if [ -n "$METHOD_DATA" ]; then
+            echo "## Methods" >> "$DOC_FILE"
+            echo "| Method | Returns | Description |" >> "$DOC_FILE"
+            echo "| :--- | :--- | :--- |" >> "$DOC_FILE"
+            echo "$METHOD_DATA" >> "$DOC_FILE"
+            echo "" >> "$DOC_FILE"
+        fi
+
+        # 3c. Capture Signals
+        SIGNAL_DATA=$(awk '
             /signal .*##/ {
-                line = $0;
-                split(line, p, "##"); desc = p[2]; line = p[1];
+                line = $0; split(line, p, "##"); desc = p[2]; line = p[1];
                 split(line, a, "signal "); split(a[2], b, /[ (]/); name = b[1];
                 gsub(/^[ \t]+|[ \t]+$/, "", desc);
                 printf("| **%s** | %s |\n", name, desc);
             }
-        ' "$TARGET_SCRIPT" >> "$DOC_FILE"
+        ' "$TARGET_SCRIPT")
+
+        if [ -n "$SIGNAL_DATA" ]; then
+            echo "## Signals" >> "$DOC_FILE"
+            echo "| Signal | Description |" >> "$DOC_FILE"
+            echo "| :--- | :--- |" >> "$DOC_FILE"
+            echo "$SIGNAL_DATA" >> "$DOC_FILE"
+            echo "" >> "$DOC_FILE"
+        fi
     fi
 
     # --- 4. INTERACTIVE GIT SYNC ---
