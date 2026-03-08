@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Bulk Addon Pusher & Doc Generator ---
+# --- Chillcube Bulk Addon Pusher & Doc Generator (V3) ---
 
 VENV_PATH="/tmp/chillcube_docs_env"
 if ! command -v godocs &> /dev/null; then
@@ -20,7 +20,7 @@ for addon_path in addons/*; do
     echo "--------------------------------------------------"
     echo "🚀 Addon: $addon_name"
 
-    # Fix indentation (Tabs required for Godot 4 Parser)
+    # Fix indentation for Godot Parser
     find "$addon_path" -name "*.gd" -exec sed -i 's/    /\t/g' {} +
 
     TEMP_XML="$PROJECT_ROOT/temp_xml_$addon_name"
@@ -34,97 +34,84 @@ for addon_path in addons/*; do
         godocs construct jinja --format md "$TEMP_XML" "$TEMP_OUT"
         
         DOC_FILE="$PROJECT_ROOT/$addon_path/DOCUMENTATION.md"
+        
+        # 1. Start with the Header
         echo "# $addon_name API Reference" > "$DOC_FILE"
         echo -e "Generated on: $(date)\n\n---\n" >> "$DOC_FILE"
 
         for f in "$TEMP_OUT"/*.md; do
             [ -e "$f" ] || continue
-            if [[ $(basename "$f") != "index.md" ]]; then
+            [[ $(basename "$f") == "index.md" ]] && continue
+            
+            # 2. Process the file using a simpler line-by-line approach
+            cat "$f" | sed -E \
+                -e 's/:ref:`[^<]* <([^>]*)>`/\1/g' \
+                -e 's/\\//g' \
+                -e '/^Inherits:/d' \
+                -e '/^\.\. /d' \
+                -e '/^[=-]+$/d' \
+                -e '/^Description$/d' \
+                -e '/^Class Reference$/d' \
+                -e "/^$addon_name$/d" | \
+            awk '
+                BEGIN { body = "" }
                 
-                cat "$f" | awk -v addon="$addon_name" '
-                    BEGIN { 
-                        section = "none"; getting_desc = 0;
-                        header_done = 0; body = "";
-                    }
+                # Capture Signals
+                /^[a-zA-Z0-9_]+\(.*\)$/ && !/`/ {
+                    print "### " $0
+                    print "**Event:** Signal\n"
+                    next
+                }
 
-                    # Clean global artifacts
-                    {
-                        gsub(/:ref:`[^<]* <([^>]*)>`/, "\\1")
-                        gsub(/\\/, "")
-                    }
-
-                    # Global Skips
-                    /^\.\. / || /^\s+:header-rows:/ || /^\s+\* -/ || /^\s+- / || /^Inherits:/ || /^[=-]+$/ { next }
-
-                    # Section Headers
-                    /Property Descriptions/ { section = "props"; next }
-                    /Method Descriptions/ { section = "methods"; next }
-                    /Signal Descriptions/ { section = "signals"; next }
-
-                    # 1. Capture Header & Summary
-                    section == "none" && !/^#/ && NF > 0 && $0 !~ /Index/ {
-                        if ($0 == addon || $0 == "Class Reference" || $0 == "Description") next;
-                        if (!header_done) {
-                            print "## " $0 "\n"
-                            header_done = 1
-                        } else {
-                            print $0 "\n"
-                        }
-                    }
-
-                    # 2. Properties (Format: `Type` Name = `Default`)
-                    section == "props" && /^`[^`]+` [^` ]+/ {
-                        split($0, a, "`")
-                        type = a[2]
-                        # Capture name from after the second backtick
-                        rest = a[3]; sub(/^[ ]+/, "", rest)
-                        split(rest, b, " ")
-                        name = b[1]
-
-                        body = body "### " name "\n**Type:** " type "\n"
+                # Capture Property Lines: `Type` Name = `Default`
+                /^`[^`]+` [^` ]+/ {
+                    split($0, a, "`")
+                    type = a[2]
+                    
+                    # Split name and default
+                    rest = a[3]
+                    if (rest ~ /=/) {
+                        split(rest, b, "=")
+                        name = b[1]; gsub(/ /, "", name)
+                        default_val = a[4]
                         
-                        # Capture default if present
-                        if ($0 ~ /=/) {
-                            body = body "**Default:** " a[4] "\n"
-                        }
-                        
-                        body = body "\n"
-                        getting_desc = 1; next
+                        print "### " name
+                        print "**Type:** " type
+                        print "**Default:** " default_val "\n"
+                    } else {
+                        name = rest; gsub(/ /, "", name)
+                        print "### " name
+                        print "**Type:** " type "\n"
                     }
+                    next
+                }
 
-                    # 3. Methods
-                    section == "methods" && /^`[^`]+` [^` ]+\(.*\)$/ {
-                        split($0, a, "`")
-                        type = a[2]
-                        sig = a[3]; sub(/^[ ]+/, "", sig)
+                # Capture Method Lines: `Type` name(...)
+                /^`[^`]+` [^` ]+\(.*\)$/ {
+                    split($0, a, "`")
+                    type = a[2]
+                    sig = a[3]; sub(/^[ ]+/, "", sig)
+                    
+                    print "### " sig
+                    print "**Returns:** " type "\n"
+                    next
+                }
 
-                        body = body "### " sig "\n**Returns:** " type "\n\n"
-                        getting_desc = 1; next
-                    }
-
-                    # 4. Signals
-                    section == "signals" && /^[a-zA-Z0-9_]+\(.*\)$/ {
-                        body = body "### " $0 "\n**Event:** Signal\n\n"
-                        getting_desc = 1; next
-                    }
-
-                    # 5. Capture Content
-                    getting_desc {
-                        if ($0 ~ /^#/ || $0 ~ /^`/) { getting_desc = 0 }
-                        else if (NF > 0) {
-                            body = body $0 "\n\n"
-                        }
-                    }
-
-                    END {
-                        print body
-                    }
-                ' >> "$DOC_FILE"
-            fi
+                # Everything else is description text
+                {
+                    # Skip the weird table remnants
+                    if ($0 ~ /header-rows/ || $0 ~ /\* -/ || $0 ~ /Index/) next
+                    if (NF > 0) print $0 "\n"
+                }
+            ' >> "$DOC_FILE"
         done
+        
+        # 3. Clean up the Class Header (Make the first non-title line a ## Header)
+        # We find the first word (Addon name) and turn it into ## AddonName
+        sed -i "0,/^$addon_name/s/^$addon_name/## $addon_name/" "$DOC_FILE"
     fi
 
-    # 3. GIT SYNC
+    # 4. GIT SYNC
     cd "$PROJECT_ROOT/$addon_path"
     if [ -f "DOCUMENTATION.md" ]; then
         git add DOCUMENTATION.md
