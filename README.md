@@ -9,10 +9,6 @@ Simply copy paste this into terminal to install the tools:
 git clone https://github.com/ChillCube/ChillCube-Developer-Tools.git && cd ChillCube-Developer-Tools && chmod +x install.sh && bash ./install.sh && cd .. && rm -rf ChillCube-Developer-Tools && exec $SHELL
 ```
 
-## Additional Packages
-The ChillCube Developer Tool install script will install the following additional packages:
-- [GDScriptify](https://github.com/hiulit/GDScriptify) (Used for automatically generating documentation)
-
 ### NixOS
 #### Temporary
 Copy paste the into terminal to temporarily install the tools:
@@ -78,3 +74,6 @@ push-all-addons
 ```
 This allows you to push changes to addons you've made to its repository.
 
+## Additional Packages
+The ChillCube Developer Tool install script will install the following additional packages:
+- [GDScriptify](https://github.com/hiulit/GDScriptify) (Used for automatically generating documentation)
