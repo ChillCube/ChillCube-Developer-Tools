@@ -35,7 +35,7 @@ for addon_path in addons/*; do
         
         DOC_FILE="$PROJECT_ROOT/$addon_path/DOCUMENTATION.md"
         echo "# $addon_name API Reference" > "$DOC_FILE"
-        echo -e "Generated on: $(date)\n" >> "$DOC_FILE"
+        echo -e "Generated on: $(date)\n\n---\n" >> "$DOC_FILE"
 
         for f in "$TEMP_OUT"/*.md; do
             [ -e "$f" ] || continue
@@ -44,16 +44,16 @@ for addon_path in addons/*; do
                 cat "$f" | awk -v addon="$addon_name" '
                     BEGIN { 
                         section = "none"; getting_desc = 0;
-                        class_desc = ""; body = "";
+                        header_done = 0; body = "";
                     }
 
-                    # Clean global artifacts (RST refs and backslashes)
+                    # Clean global artifacts
                     {
-                        gsub(/:ref:`[^<]* <([^>]*)>`/, "`\\1`")
+                        gsub(/:ref:`[^<]* <([^>]*)>`/, "\\1")
                         gsub(/\\/, "")
                     }
 
-                    # Skip Junk
+                    # Global Skips
                     /^\.\. / || /^\s+:header-rows:/ || /^\s+\* -/ || /^\s+- / || /^Inherits:/ || /^[=-]+$/ { next }
 
                     # Section Headers
@@ -61,58 +61,44 @@ for addon_path in addons/*; do
                     /Method Descriptions/ { section = "methods"; next }
                     /Signal Descriptions/ { section = "signals"; next }
 
-                    # 1. Main Description
+                    # 1. Capture Header & Summary
                     section == "none" && !/^#/ && NF > 0 && $0 !~ /Index/ {
-                        if ($0 != addon && $0 != "Class Reference") {
-                            class_desc = class_desc $0 "\n\n"
+                        if ($0 == addon || $0 == "Class Reference" || $0 == "Description") next;
+                        if (!header_done) {
+                            print "## " $0 "\n"
+                            header_done = 1
+                        } else {
+                            print $0 "\n"
                         }
                     }
 
                     # 2. Properties (Format: `Type` Name = `Default`)
                     section == "props" && /^`[^`]+` [^` ]+/ {
-                        # Extract type: find content between first pair of backticks
-                        str = $0; 
-                        first_tick = index(str, "`"); 
-                        temp = substr(str, first_tick + 1);
-                        second_tick = index(temp, "`");
-                        type = substr(temp, 1, second_tick - 1);
+                        split($0, a, "`")
+                        type = a[2]
+                        # Capture name from after the second backtick
+                        rest = a[3]; sub(/^[ ]+/, "", rest)
+                        split(rest, b, " ")
+                        name = b[1]
 
-                        # Extract name: content after second backtick until space or "="
-                        after_type = substr(temp, second_tick + 1);
-                        sub(/^[ ]+/, "", after_type);
-                        name_end = index(after_type, " ");
-                        if (name_end == 0) name_end = length(after_type) + 1;
-                        name = substr(after_type, 1, name_end - 1);
-
-                        # Extract default
-                        default_val = "";
-                        if (str ~ /=/) {
-                           match(str, /=[ ]+`[^`]+`/);
-                           if (RSTART > 0) {
-                               def_part = substr(str, RSTART);
-                               sub(/=[ ]+`/, "", def_part);
-                               sub(/`$/, "", def_part);
-                               default_val = def_part;
-                           }
+                        body = body "### " name "\n**Type:** " type "\n"
+                        
+                        # Capture default if present
+                        if ($0 ~ /=/) {
+                            body = body "**Default:** " a[4] "\n"
                         }
-
-                        body = body "### " name "\n**Type:** `" type "`\n"
-                        if (default_val != "") body = body "**Default:** `" default_val "`\n"
+                        
                         body = body "\n"
                         getting_desc = 1; next
                     }
 
-                    # 3. Methods (Format: `Type` Name(...))
+                    # 3. Methods
                     section == "methods" && /^`[^`]+` [^` ]+\(.*\)$/ {
-                        str = $0;
-                        first_tick = index(str, "`");
-                        temp = substr(str, first_tick + 1);
-                        second_tick = index(temp, "`");
-                        type = substr(temp, 1, second_tick - 1);
-                        sig = substr(temp, second_tick + 1);
-                        sub(/^[ ]+/, "", sig);
+                        split($0, a, "`")
+                        type = a[2]
+                        sig = a[3]; sub(/^[ ]+/, "", sig)
 
-                        body = body "### " sig "\n**Returns:** `" type "`\n\n"
+                        body = body "### " sig "\n**Returns:** " type "\n\n"
                         getting_desc = 1; next
                     }
 
@@ -122,7 +108,7 @@ for addon_path in addons/*; do
                         getting_desc = 1; next
                     }
 
-                    # 5. Capture Description
+                    # 5. Capture Content
                     getting_desc {
                         if ($0 ~ /^#/ || $0 ~ /^`/) { getting_desc = 0 }
                         else if (NF > 0) {
@@ -131,13 +117,6 @@ for addon_path in addons/*; do
                     }
 
                     END {
-                        # Scrub table residue
-                        gsub(/Name\n\nDefault value\n\n/, "", class_desc)
-                        gsub(/Return type\n\nSignature\n\n/, "", class_desc)
-                        
-                        if (class_desc != "") {
-                            print "## Description\n" class_desc "\n---\n"
-                        }
                         print body
                     }
                 ' >> "$DOC_FILE"
@@ -151,14 +130,12 @@ for addon_path in addons/*; do
         git add DOCUMENTATION.md
         if ! git diff-index --quiet HEAD; then
             git commit -m "docs: auto-generate documentation"
+            if command -v super-git-push >/dev/null 2>&1; then
+                super-git-push
+            else
+                "$PROJECT_ROOT/bin/super-git-push"
+            fi
         fi
-    fi
-
-    echo "📤 Running push..."
-    if command -v super-git-push >/dev/null 2>&1; then
-        super-git-push
-    else
-        "$PROJECT_ROOT/bin/super-git-push"
     fi
 
     cd "$PROJECT_ROOT"
