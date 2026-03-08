@@ -41,7 +41,6 @@ for addon_path in addons/*; do
             [ -e "$f" ] || continue
             [[ $(basename "$f") == "index.md" ]] && continue
             
-            # Add horizontal rule between different classes in the same addon
             [ -s "$DOC_FILE" ] && [ "$(wc -l < "$DOC_FILE")" -gt 8 ] && echo -e "\n\n---\n" >> "$DOC_FILE"
 
             cat "$f" | sed -E \
@@ -61,14 +60,10 @@ for addon_path in addons/*; do
                     prop_text = ""; method_text = ""; signal_text = "";
                     current_item = ""; target = "";
                 }
-                
-                # Identify Signals
                 /^[a-zA-Z0-9_]+\(.*\)$/ && !/ / {
                     current_item = "### " $0 "\n**Event:** Signal\n\n"
                     target = "signal"; getting_desc = 1; next
                 }
-
-                # Identify Properties
                 /^[a-zA-Z0-9_]+ [a-zA-Z0-9_]+([ ]?=[ ]?.*)?$/ {
                     split($0, parts, "=")
                     split(parts[1], head, " ")
@@ -80,20 +75,15 @@ for addon_path in addons/*; do
                     current_item = current_item "\n"
                     target = "prop"; getting_desc = 1; next
                 }
-
-                # Identify Methods
                 /^[a-zA-Z0-9_]+ [a-zA-Z0-9_]+\(.*\)$/ {
                     split($0, head, " ")
                     sig = $0; sub(/^[a-zA-Z0-9_]+ /, "", sig)
                     current_item = "### " sig "\n**Returns:** " head[1] "\n\n"
                     target = "method"; getting_desc = 1; next
                 }
-
-                # Description capture
                 getting_desc {
-                    if ($0 ~ /^#/ || $0 ~ /^`/) { 
-                        getting_desc = 0 
-                    } else if (NF > 0) {
+                    if ($0 ~ /^#/ || $0 ~ /^`/) { getting_desc = 0 }
+                    else if (NF > 0) {
                         current_item = current_item $0 "\n\n"
                         if (target == "prop") prop_text = prop_text current_item;
                         else if (target == "method") method_text = method_text current_item;
@@ -101,8 +91,6 @@ for addon_path in addons/*; do
                         current_item = ""; next
                     }
                 }
-
-                # Class Header and General Summary
                 {
                     if ($0 ~ /header-rows/ || $0 ~ /\* -/ || $0 ~ /^[ ]+- /) next
                     if (!header_done && $0 !~ /^#/ && length($0) > 2) {
@@ -111,7 +99,6 @@ for addon_path in addons/*; do
                         print $0
                     }
                 }
-
                 END {
                     if (signal_text != "") print "\n## Signals\n" signal_text
                     if (prop_text != "") print "\n## Properties\n" prop_text
@@ -122,18 +109,25 @@ for addon_path in addons/*; do
         sed -i '/^$/N;/^\n$/D' "$DOC_FILE"
     fi
 
-    # 4. GIT SYNC
+    # 4. INTERACTIVE GIT SYNC
     cd "$PROJECT_ROOT/$addon_path"
     if [ -f "DOCUMENTATION.md" ]; then
         git add DOCUMENTATION.md
         if ! git diff-index --quiet HEAD; then
-            # AUTOMATIC COMMIT MESSAGE with Addon Name
-            git commit -m "docs($addon_name): auto-generate api reference"
+            echo -e "\n💬 Enter commit message for [$addon_name]:"
+            read -p "> " user_message
             
-            echo "📤 Pushing changes for $addon_name..."
+            # If input is empty, use default
+            if [ -z "$user_message" ]; then
+                user_message="auto-generate api reference"
+            fi
+
+            git commit -m "docs($addon_name): $user_message"
+            
+            echo "📤 Pushing changes..."
             super-git-push || "$PROJECT_ROOT/bin/super-git-push"
         else
-            echo "ℹ️  No changes detected in documentation for $addon_name."
+            echo "ℹ️  No changes detected for $addon_name."
         fi
     fi
 
