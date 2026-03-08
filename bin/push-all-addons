@@ -70,6 +70,7 @@ for addon_path in addons/*; do
                     current_item = "### " head[2] "\n**Type:** " head[1] "\n"
                     if ($0 ~ /=/) {
                         def = parts[2]; sub(/^[ ]+/, "", def); sub(/[ ]+$/, "", def)
+                        # Added newline below for visual separation
                         current_item = current_item "**Default:** " def "\n"
                     }
                     current_item = current_item "\n"
@@ -117,7 +118,6 @@ for addon_path in addons/*; do
             echo -e "\n💬 Enter commit message for [$addon_name]:"
             read -p "> " user_message
             
-            # If input is empty, use default
             if [ -z "$user_message" ]; then
                 user_message="auto-generate api reference"
             fi
