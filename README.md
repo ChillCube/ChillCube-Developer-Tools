@@ -72,4 +72,5 @@ Use this to create a new addon within your project. It will push it into ChillCu
 ```Bash
 push-all-addons
 ```
-This allows you to push changes to addons you've made to its repository.
+This allows you to push changes to addons you've made to its repository. 
+It will also update the README to the newest version and generate a DOCUMENTATION.md based on the double hashtag (##) comments in the GDScript.
