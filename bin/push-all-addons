@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 
 # --- Chillcube Bulk Addon Pusher & Doc Generator ---
+# This script regenerates READMEs from a master template and 
+# updates API documentation for all addons in the addons/ folder.
 
 TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
 VENV_PATH="/tmp/chillcube_docs_env"
 
+# Ensure godocs is available for API generation
 if ! command -v godocs &> /dev/null; then
     if [ ! -d "$VENV_PATH" ]; then
         python3 -m venv "$VENV_PATH"
@@ -17,76 +20,144 @@ PROJECT_ROOT=$(pwd)
 
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
-    addon_name_folder=$(basename "$addon_path")
+    addon_folder=$(basename "$addon_path")
     
     echo "--------------------------------------------------"
-    echo "🚀 Processing Addon: $addon_name_folder"
+    echo "🚀 Processing Addon: $addon_folder"
 
-    # 1. FIX INDENTATION
-    find "$addon_path" -name "*.gd" -exec sed -i 's/    /\t/g' {} +
-
-    # 2. REGENERATE README
+    # 1. SCRAPE METADATA FROM PLUGIN.CFG
     CFG_FILE="$addon_path/plugin.cfg"
     if [ -f "$CFG_FILE" ]; then
-        # Robust extraction: ignore case, ignore spaces, strip quotes
-        A_NAME=$(grep -i "^name" "$CFG_FILE" | cut -d'=' -f2 | tr -d '"' | xargs)
-        A_DESC=$(grep -i "^description" "$CFG_FILE" | cut -d'=' -f2 | tr -d '"' | xargs)
-        A_AUTH=$(grep -i "^author" "$CFG_FILE" | cut -d'=' -f2 | tr -d '"' | xargs)
+        # Use sed to grab the value between the first set of quotes for each key
+        A_NAME=$(grep "name" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+        A_DESC=$(grep "description" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+        A_AUTH=$(grep "author" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
         A_YEAR=$(date +%Y)
-
-        echo "🔍 Found in cfg: Name='$A_NAME', Author='$A_AUTH'"
-
-        if [ -n "$A_NAME" ]; then
-            echo "♻️  Downloading fresh template..."
-            curl -sSL "$TEMPLATE_URL" -o "$addon_path/README.md.tmp"
-            
-            if [ -s "$addon_path/README.md.tmp" ]; then
-                # Use @ as sed delimiter to avoid issues with slashes in descriptions
-                sed -i "s@{{NAME}}@$A_NAME@g" "$addon_path/README.md.tmp"
-                sed -i "s@{{DESC}}@$A_DESC@g" "$addon_path/README.md.tmp"
-                sed -i "s@{{AUTHOR}}@$A_AUTH@g" "$addon_path/README.md.tmp"
-                sed -i "s@{{YEAR}}@$A_YEAR@g" "$addon_path/README.md.tmp"
-                
-                mv "$addon_path/README.md.tmp" "$addon_path/README.md"
-                echo "✅ README REGENERATED."
-            else
-                echo "❌ ERROR: Template download failed (file is empty)."
-            fi
-        else
-            echo "⚠️  ERROR: Could not find 'name' inside $CFG_FILE"
-        fi
     else
-        echo "⚠️  SKIPPING README: plugin.cfg not found."
+        A_NAME="$addon_folder"
+        A_DESC="A Godot Addon"
+        A_AUTH="ChillCube"
+        A_YEAR=$(date +%Y)
     fi
 
+    # 2. REGENERATE README FROM REMOTE TEMPLATE
+    echo "📥 Regenerating README from template..."
+    curl -sSL "$TEMPLATE_URL" -o "$addon_path/README.md"
+    
+    # Apply placeholders (using @ as delimiter to handle special characters)
+    sed -i "s@{{NAME}}@$A_NAME@g" "$addon_path/README.md"
+    sed -i "s@{{DESC}}@$A_DESC@g" "$addon_path/README.md"
+    sed -i "s@{{AUTHOR}}@$A_AUTH@g" "$addon_path/README.md"
+    sed -i "s@{{YEAR}}@$A_YEAR@g" "$addon_path/README.md"
+
     # 3. GENERATE API DOCUMENTATION
-    # [ ... API Generation Logic remains the same ... ]
-    TEMP_XML="$PROJECT_ROOT/temp_xml_$addon_name_folder"
-    TEMP_OUT="$PROJECT_ROOT/docs_out_$addon_name_folder"
+    echo "📝 Generating API Reference..."
+    find "$addon_path" -name "*.gd" -exec sed -i 's/    /\t/g' {} + # Fix indentation for Godot
+
+    TEMP_XML="$PROJECT_ROOT/temp_xml_$addon_folder"
+    TEMP_OUT="$PROJECT_ROOT/docs_out_$addon_folder"
     mkdir -p "$TEMP_XML" "$TEMP_OUT"
-    godot --headless --doctool "$TEMP_XML" --no-docbase --gdscript-docs "res://addons/$addon_name_folder"
+
+    godot --headless --doctool "$TEMP_XML" --no-docbase --gdscript-docs "res://addons/$addon_folder"
     
     if [ "$(ls -A "$TEMP_XML" 2>/dev/null)" ]; then
-        DOC_FILE="$PROJECT_ROOT/$addon_path/DOCUMENTATION.md"
         godocs construct jinja --format md "$TEMP_XML" "$TEMP_OUT"
-        # [ Insert same API parsing logic as previous response here ]
-        # For brevity, assume the standard API generation block follows
+        
+        DOC_FILE="$PROJECT_ROOT/$addon_path/DOCUMENTATION.md"
+        echo "# $A_NAME API Reference" > "$DOC_FILE"
+        echo -e "Generated on: $(date)\n\n---\n" >> "$DOC_FILE"
+
+        for f in "$TEMP_OUT"/*.md; do
+            [ -e "$f" ] || continue
+            [[ $(basename "$f") == "index.md" ]] && continue
+            
+            # Class separator
+            [ -s "$DOC_FILE" ] && [ "$(wc -l < "$DOC_FILE")" -gt 8 ] && echo -e "\n\n---\n" >> "$DOC_FILE"
+
+            cat "$f" | sed -E \
+                -e 's/:ref:`[^<]* <([^>]*)>`/\1/g' \
+                -e 's/\\//g' \
+                -e 's/``//g' \
+                -e '/^Inherits:/d' \
+                -e '/^\*\*Inherits:\*\*/d' \
+                -e '/[A-Za-z ]+ Index/d' \
+                -e '/^\.\. /d' \
+                -e '/^[=-]+$/d' \
+                -e '/Descriptions$/d' \
+                -e '/^Index$/d' | \
+            awk '
+                BEGIN { 
+                    header_done = 0; getting_desc = 0;
+                    prop_text = ""; method_text = ""; signal_text = "";
+                    current_item = ""; target = "";
+                }
+                /^[a-zA-Z0-9_]+\(.*\)$/ && !/ / {
+                    current_item = "### " $0 "\n**Event:** Signal\n\n"
+                    target = "signal"; getting_desc = 1; next
+                }
+                /^[a-zA-Z0-9_]+ [a-zA-Z0-9_]+([ ]?=[ ]?.*)?$/ {
+                    split($0, parts, "=")
+                    split(parts[1], head, " ")
+                    current_item = "### " head[2] "\n**Type:** " head[1] "\n"
+                    if ($0 ~ /=/) {
+                        def = parts[2]; sub(/^[ ]+/, "", def); sub(/[ ]+$/, "", def)
+                        current_item = current_item "**Default:** " def "\n"
+                    }
+                    current_item = current_item "\n"
+                    target = "prop"; getting_desc = 1; next
+                }
+                /^[a-zA-Z0-9_]+ [a-zA-Z0-9_]+\(.*\)$/ {
+                    split($0, head, " ")
+                    sig = $0; sub(/^[a-zA-Z0-9_]+ /, "", sig)
+                    current_item = "### " sig "\n**Returns:** " head[1] "\n\n"
+                    target = "method"; getting_desc = 1; next
+                }
+                getting_desc {
+                    if ($0 ~ /^#/ || $0 ~ /^`/) { getting_desc = 0 }
+                    else if (NF > 0) {
+                        current_item = current_item $0 "\n\n"
+                        if (target == "prop") prop_text = prop_text current_item;
+                        else if (target == "method") method_text = method_text current_item;
+                        else if (target == "signal") signal_text = signal_text current_item;
+                        current_item = ""; next
+                    }
+                }
+                {
+                    if ($0 ~ /header-rows/ || $0 ~ /\* -/ || $0 ~ /^[ ]+- /) next
+                    if (!header_done && $0 !~ /^#/ && length($0) > 2) {
+                        print "## " $0 "\n"; header_done = 1
+                    } else if (!getting_desc && header_done) {
+                        print $0
+                    }
+                }
+                END {
+                    if (signal_text != "") print "\n## Signals\n" signal_text
+                    if (prop_text != "") print "\n## Properties\n" prop_text
+                    if (method_text != "") print "\n## Methods\n" method_text
+                }
+            ' >> "$DOC_FILE"
+        done
+        sed -i '/^$/N;/^\n$/D' "$DOC_FILE"
     fi
 
     # 4. INTERACTIVE GIT SYNC
     cd "$PROJECT_ROOT/$addon_path"
-    git add DOCUMENTATION.md README.md
+    git add README.md DOCUMENTATION.md
     
-    if ! git diff-index --quiet HEAD; then
-        echo -e "\n💬 Enter commit message for [$addon_name_folder]:"
-        read -p "> " user_message
-        user_message=${user_message:-"sync: regenerate docs and readme template"}
-        git commit -m "docs($addon_name_folder): $user_message"
+    if ! git diff --cached --quiet; then
+        echo -e "\n💬 Changes ready for [$addon_folder]."
+        read -p "Enter commit message (empty for default): " user_msg
+        user_msg=${user_msg:-"sync: update documentation and readme template"}
+        
+        git commit -m "docs($addon_folder): $user_msg"
+        
+        echo "📤 Pushing to GitHub..."
         super-git-push || "$PROJECT_ROOT/bin/super-git-push"
     else
-        echo "ℹ️  No changes detected for $addon_name_folder."
+        echo "ℹ️  No changes detected for $addon_folder."
     fi
 
     cd "$PROJECT_ROOT"
     rm -rf "$TEMP_XML" "$TEMP_OUT"
+    echo "✅ Finished $addon_folder"
 done
