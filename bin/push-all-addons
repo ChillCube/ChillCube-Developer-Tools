@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Bulk Addon Pusher & Doc Generator (Universal Version) ---
+# --- Chillcube Bulk Addon Pusher & Doc Generator ---
 
-# 1. SETUP TEMPORARY ENVIRONMENT
 VENV_PATH="/tmp/chillcube_docs_env"
 if ! command -v godocs &> /dev/null; then
     if [ ! -d "$VENV_PATH" ]; then
@@ -21,14 +20,13 @@ for addon_path in addons/*; do
     echo "--------------------------------------------------"
     echo "🚀 Addon: $addon_name"
 
-    # Fix indentation: Godot 4 parser requires Tabs, not Spaces
+    # Fix indentation (Tabs required for Godot 4 Parser)
     find "$addon_path" -name "*.gd" -exec sed -i 's/    /\t/g' {} +
 
     TEMP_XML="$PROJECT_ROOT/temp_xml_$addon_name"
     TEMP_OUT="$PROJECT_ROOT/docs_out_$addon_name"
     mkdir -p "$TEMP_XML" "$TEMP_OUT"
 
-    # Extracting XML from Godot
     godot --headless --doctool "$TEMP_XML" --no-docbase --gdscript-docs "res://addons/$addon_name"
     
     if [ "$(ls -A "$TEMP_XML" 2>/dev/null)" ]; then
@@ -43,20 +41,19 @@ for addon_path in addons/*; do
             [ -e "$f" ] || continue
             if [[ $(basename "$f") != "index.md" ]]; then
                 
-                # Use POSIX-compliant AWK logic for Nix/Linux compatibility
                 cat "$f" | awk -v addon="$addon_name" '
                     BEGIN { 
                         section = "none"; getting_desc = 0;
                         class_desc = ""; body = "";
                     }
 
-                    # Clean global artifacts
+                    # Clean global artifacts (RST refs and backslashes)
                     {
                         gsub(/:ref:`[^<]* <([^>]*)>`/, "`\\1`")
                         gsub(/\\/, "")
                     }
 
-                    # Skip RST/Table leftovers
+                    # Skip Junk
                     /^\.\. / || /^\s+:header-rows:/ || /^\s+\* -/ || /^\s+- / || /^Inherits:/ || /^[=-]+$/ { next }
 
                     # Section Headers
@@ -64,40 +61,56 @@ for addon_path in addons/*; do
                     /Method Descriptions/ { section = "methods"; next }
                     /Signal Descriptions/ { section = "signals"; next }
 
-                    # 1. Main Description Capture
+                    # 1. Main Description
                     section == "none" && !/^#/ && NF > 0 && $0 !~ /Index/ {
                         if ($0 != addon && $0 != "Class Reference") {
                             class_desc = class_desc $0 "\n\n"
                         }
                     }
 
-                    # 2. Properties (`Type` name = `Default`)
+                    # 2. Properties (Format: `Type` Name = `Default`)
                     section == "props" && /^`[^`]+` [^` ]+/ {
-                        split($0, parts, "`")
-                        type = parts[2]
-                        # Handle the rest of the line manually to avoid regex group failures
-                        rest = parts[3]
-                        if (rest ~ /=/) {
-                            # Extract name before =
-                            name_part = rest; sub(/ =.*/, "", name_part); gsub(/ /, "", name_part)
-                            # Default value is in the next backtick block
-                            default_val = parts[4]
-                        } else {
-                            name_part = rest; gsub(/ /, "", name_part)
-                            default_val = ""
+                        # Extract type: find content between first pair of backticks
+                        str = $0; 
+                        first_tick = index(str, "`"); 
+                        temp = substr(str, first_tick + 1);
+                        second_tick = index(temp, "`");
+                        type = substr(temp, 1, second_tick - 1);
+
+                        # Extract name: content after second backtick until space or "="
+                        after_type = substr(temp, second_tick + 1);
+                        sub(/^[ ]+/, "", after_type);
+                        name_end = index(after_type, " ");
+                        if (name_end == 0) name_end = length(after_type) + 1;
+                        name = substr(after_type, 1, name_end - 1);
+
+                        # Extract default
+                        default_val = "";
+                        if (str ~ /=/) {
+                           match(str, /=[ ]+`[^`]+`/);
+                           if (RSTART > 0) {
+                               def_part = substr(str, RSTART);
+                               sub(/=[ ]+`/, "", def_part);
+                               sub(/`$/, "", def_part);
+                               default_val = def_part;
+                           }
                         }
 
-                        body = body "### " name_part "\n**Type:** `" type "`\n"
+                        body = body "### " name "\n**Type:** `" type "`\n"
                         if (default_val != "") body = body "**Default:** `" default_val "`\n"
                         body = body "\n"
                         getting_desc = 1; next
                     }
 
-                    # 3. Methods (`Type` name(...))
+                    # 3. Methods (Format: `Type` Name(...))
                     section == "methods" && /^`[^`]+` [^` ]+\(.*\)$/ {
-                        split($0, parts, "`")
-                        type = parts[2]
-                        sig = parts[3]; sub(/^ /, "", sig)
+                        str = $0;
+                        first_tick = index(str, "`");
+                        temp = substr(str, first_tick + 1);
+                        second_tick = index(temp, "`");
+                        type = substr(temp, 1, second_tick - 1);
+                        sig = substr(temp, second_tick + 1);
+                        sub(/^[ ]+/, "", sig);
 
                         body = body "### " sig "\n**Returns:** `" type "`\n\n"
                         getting_desc = 1; next
@@ -109,7 +122,7 @@ for addon_path in addons/*; do
                         getting_desc = 1; next
                     }
 
-                    # 5. Description Block Logic
+                    # 5. Capture Description
                     getting_desc {
                         if ($0 ~ /^#/ || $0 ~ /^`/) { getting_desc = 0 }
                         else if (NF > 0) {
@@ -118,7 +131,7 @@ for addon_path in addons/*; do
                     }
 
                     END {
-                        # Scrub remaining table artifacts from description
+                        # Scrub table residue
                         gsub(/Name\n\nDefault value\n\n/, "", class_desc)
                         gsub(/Return type\n\nSignature\n\n/, "", class_desc)
                         
@@ -132,12 +145,11 @@ for addon_path in addons/*; do
         done
     fi
 
-    # 3. SYNC TO GIT
+    # 3. GIT SYNC
     cd "$PROJECT_ROOT/$addon_path"
     if [ -f "DOCUMENTATION.md" ]; then
         git add DOCUMENTATION.md
         if ! git diff-index --quiet HEAD; then
-            echo "💾 Committing documentation..."
             git commit -m "docs: auto-generate documentation"
         fi
     fi
