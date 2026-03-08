@@ -4,6 +4,30 @@
 INSTALL_DIR="$HOME/.chillcube-tools"
 BIN_DIR="$INSTALL_DIR/bin"
 
+echo "---- Installing ChillCube Developer Tools! ----"
+
+CENTRAL_DIR="$HOME/.godot_tools"
+
+if [ ! -d "$CENTRAL_DIR" ]; then
+    echo "📦 Creating central tools environment at $CENTRAL_DIR..."
+    python3 -m venv "$CENTRAL_DIR"
+fi
+
+echo "📥 Installing Godocs globally..."
+"$CENTRAL_DIR/bin/pip" install --upgrade pip
+"$CENTRAL_DIR/bin/pip" install godocs godocs-jinja
+
+SHELL_CONFIG="$HOME/.bashrc"
+if [[ "$SHELL" == *"zsh"* ]]; then SHELL_CONFIG="$HOME/.zshrc"; fi
+
+if ! grep -q "$CENTRAL_DIR/bin" "$SHELL_CONFIG"; then
+    echo "🔗 Adding Godocs to your PATH in $SHELL_CONFIG..."
+    echo "export PATH=\"\$PATH:$CENTRAL_DIR/bin\"" >> "$SHELL_CONFIG"
+    echo "✅ Success! Restart your terminal or run: source $SHELL_CONFIG"
+else
+    echo "✅ Godocs is already in your PATH."
+fi
+
 mkdir -p "$BIN_DIR"
 
 if [ -d "bin" ]; then
