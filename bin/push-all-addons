@@ -20,7 +20,6 @@ for addon_path in addons/*; do
     echo "--------------------------------------------------"
     echo "🚀 Addon: $addon_name"
 
-    # Fix indentation for Godot Parser
     find "$addon_path" -name "*.gd" -exec sed -i 's/    /\t/g' {} +
 
     TEMP_XML="$PROJECT_ROOT/temp_xml_$addon_name"
@@ -34,8 +33,6 @@ for addon_path in addons/*; do
         godocs construct jinja --format md "$TEMP_XML" "$TEMP_OUT"
         
         DOC_FILE="$PROJECT_ROOT/$addon_path/DOCUMENTATION.md"
-        
-        # 1. Start with the Header
         echo "# $addon_name API Reference" > "$DOC_FILE"
         echo -e "Generated on: $(date)\n\n---\n" >> "$DOC_FILE"
 
@@ -43,77 +40,93 @@ for addon_path in addons/*; do
             [ -e "$f" ] || continue
             [[ $(basename "$f") == "index.md" ]] && continue
             
-            # 2. Process the file
+            # Add class separator if file isn't empty
+            [ -s "$DOC_FILE" ] && [ "$(wc -l < "$DOC_FILE")" -gt 6 ] && echo -e "\n\n---\n" >> "$DOC_FILE"
+
             cat "$f" | sed -E \
                 -e 's/:ref:`[^<]* <([^>]*)>`/\1/g' \
                 -e 's/\\//g' \
                 -e 's/``//g' \
                 -e '/^Inherits:/d' \
                 -e '/^\*\*Inherits:\*\*/d' \
-                -e '/^Property Index/d' \
-                -e '/^Method Index/d' \
-                -e '/^Signal Index/d' \
+                -e '/[A-Za-z ]+ Index/d' \
                 -e '/^\.\. /d' \
                 -e '/^[=-]+$/d' \
                 -e '/Descriptions$/d' \
                 -e '/^Index$/d' | \
             awk '
-                BEGIN { header_done = 0; getting_desc = 0 }
+                BEGIN { 
+                    header_done = 0; getting_desc = 0;
+                    prop_text = ""; method_text = ""; signal_text = "";
+                    current_item = "";
+                }
                 
-                # Capture Signals: name()
+                # Signals
                 /^[a-zA-Z0-9_]+\(.*\)$/ && !/ / {
-                    print "### " $0
-                    print "**Event:** Signal\n"
+                    current_item = "### " $0 "\n**Event:** Signal\n\n"
+                    target = "signal"
                     getting_desc = 1; next
                 }
 
-                # Capture Property Lines: Type Name [= Default]
-                # Matches patterns like "bool on = true" or "Node2D cursor"
+                # Properties
                 /^[a-zA-Z0-9_]+ [a-zA-Z0-9_]+([ ]?=[ ]?.*)?$/ {
-                    type = $1
-                    name = $2
+                    split($0, parts, "=")
+                    split(parts[1], head, " ")
+                    type = head[1]; name = head[2]
                     
-                    print "### " name
-                    print "**Type:** " type
-                    
+                    current_item = "### " name "\n**Type:** " type "\n"
                     if ($0 ~ /=/) {
-                        split($0, parts, "=")
-                        # Clean up the default value string
-                        def_val = parts[2]; sub(/^[ ]+/, "", def_val); sub(/[ ]+$/, "", def_val)
-                        print "**Default:** " def_val
+                        def = parts[2]; sub(/^[ ]+/, "", def); sub(/[ ]+$/, "", def)
+                        current_item = current_item "**Default:** " def "\n"
                     }
-                    print ""
+                    current_item = current_item "\n"
+                    target = "prop"
                     getting_desc = 1; next
                 }
 
-                # Capture Methods: Type name(...)
+                # Methods
                 /^[a-zA-Z0-9_]+ [a-zA-Z0-9_]+\(.*\)$/ {
-                    type = $1
+                    split($0, head, " ")
+                    type = head[1]
                     sig = $0; sub(/^[a-zA-Z0-9_]+ /, "", sig)
                     
-                    print "### " sig
-                    print "**Returns:** " type "\n"
+                    current_item = "### " sig "\n**Returns:** " type "\n\n"
+                    target = "method"
                     getting_desc = 1; next
                 }
 
-                # Everything else
+                # Capturing description lines into the current item
+                getting_desc {
+                    if ($0 ~ /^#/ || $0 ~ /^`/) { 
+                        getting_desc = 0 
+                    } else if (NF > 0) {
+                        current_item = current_item $0 "\n\n"
+                        if (target == "prop") prop_text = prop_text current_item;
+                        if (target == "method") method_text = method_text current_item;
+                        if (target == "signal") signal_text = signal_text current_item;
+                        current_item = ""; # Reset so we dont double-append
+                        next
+                    }
+                }
+
+                # Main Class Header & Description
                 {
-                    # Skip noise
-                    if ($0 ~ /header-rows/ || $0 ~ /\* -/ || $0 ~ /^[ ]+- / || $0 ~ /Index/) next
-                    if (NF == 0) { print ""; next }
-                    
-                    # First real text line becomes ## Header
+                    if ($0 ~ /header-rows/ || $0 ~ /\* -/ || $0 ~ /^[ ]+- /) next
                     if (!header_done && $0 !~ /^#/ && length($0) > 2) {
                         print "## " $0 "\n"
                         header_done = 1
-                    } else {
+                    } else if (!getting_desc && header_done) {
                         print $0
                     }
                 }
+
+                END {
+                    if (signal_text != "") print "## Signals\n" signal_text
+                    if (prop_text != "") print "## Properties\n" prop_text
+                    if (method_text != "") print "## Methods\n" method_text
+                }
             ' >> "$DOC_FILE"
         done
-        
-        # Clean up empty lines and redundant spaces
         sed -i '/^$/N;/^\n$/D' "$DOC_FILE"
     fi
 
@@ -123,11 +136,7 @@ for addon_path in addons/*; do
         git add DOCUMENTATION.md
         if ! git diff-index --quiet HEAD; then
             git commit -m "docs: auto-generate documentation"
-            if command -v super-git-push >/dev/null 2>&1; then
-                super-git-push
-            else
-                "$PROJECT_ROOT/bin/super-git-push"
-            fi
+            super-git-push || "$PROJECT_ROOT/bin/super-git-push"
         fi
     fi
 
