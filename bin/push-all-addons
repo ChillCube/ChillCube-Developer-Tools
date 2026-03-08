@@ -18,8 +18,9 @@ for addon_path in addons/*; do
     addon_name=$(basename "$addon_path")
     
     echo "--------------------------------------------------"
-    echo "🚀 Addon: $addon_name"
+    echo "🚀 Processing Addon: $addon_name"
 
+    # Fix indentation for Godot Parser
     find "$addon_path" -name "*.gd" -exec sed -i 's/    /\t/g' {} +
 
     TEMP_XML="$PROJECT_ROOT/temp_xml_$addon_name"
@@ -40,8 +41,8 @@ for addon_path in addons/*; do
             [ -e "$f" ] || continue
             [[ $(basename "$f") == "index.md" ]] && continue
             
-            # Add class separator if file isn't empty
-            [ -s "$DOC_FILE" ] && [ "$(wc -l < "$DOC_FILE")" -gt 6 ] && echo -e "\n\n---\n" >> "$DOC_FILE"
+            # Add horizontal rule between different classes in the same addon
+            [ -s "$DOC_FILE" ] && [ "$(wc -l < "$DOC_FILE")" -gt 8 ] && echo -e "\n\n---\n" >> "$DOC_FILE"
 
             cat "$f" | sed -E \
                 -e 's/:ref:`[^<]* <([^>]*)>`/\1/g' \
@@ -58,72 +59,63 @@ for addon_path in addons/*; do
                 BEGIN { 
                     header_done = 0; getting_desc = 0;
                     prop_text = ""; method_text = ""; signal_text = "";
-                    current_item = "";
+                    current_item = ""; target = "";
                 }
                 
-                # Signals
+                # Identify Signals
                 /^[a-zA-Z0-9_]+\(.*\)$/ && !/ / {
                     current_item = "### " $0 "\n**Event:** Signal\n\n"
-                    target = "signal"
-                    getting_desc = 1; next
+                    target = "signal"; getting_desc = 1; next
                 }
 
-                # Properties
+                # Identify Properties
                 /^[a-zA-Z0-9_]+ [a-zA-Z0-9_]+([ ]?=[ ]?.*)?$/ {
                     split($0, parts, "=")
                     split(parts[1], head, " ")
-                    type = head[1]; name = head[2]
-                    
-                    current_item = "### " name "\n**Type:** " type "\n"
+                    current_item = "### " head[2] "\n**Type:** " head[1] "\n"
                     if ($0 ~ /=/) {
                         def = parts[2]; sub(/^[ ]+/, "", def); sub(/[ ]+$/, "", def)
                         current_item = current_item "**Default:** " def "\n"
                     }
                     current_item = current_item "\n"
-                    target = "prop"
-                    getting_desc = 1; next
+                    target = "prop"; getting_desc = 1; next
                 }
 
-                # Methods
+                # Identify Methods
                 /^[a-zA-Z0-9_]+ [a-zA-Z0-9_]+\(.*\)$/ {
                     split($0, head, " ")
-                    type = head[1]
                     sig = $0; sub(/^[a-zA-Z0-9_]+ /, "", sig)
-                    
-                    current_item = "### " sig "\n**Returns:** " type "\n\n"
-                    target = "method"
-                    getting_desc = 1; next
+                    current_item = "### " sig "\n**Returns:** " head[1] "\n\n"
+                    target = "method"; getting_desc = 1; next
                 }
 
-                # Capturing description lines into the current item
+                # Description capture
                 getting_desc {
                     if ($0 ~ /^#/ || $0 ~ /^`/) { 
                         getting_desc = 0 
                     } else if (NF > 0) {
                         current_item = current_item $0 "\n\n"
                         if (target == "prop") prop_text = prop_text current_item;
-                        if (target == "method") method_text = method_text current_item;
-                        if (target == "signal") signal_text = signal_text current_item;
-                        current_item = ""; # Reset so we dont double-append
-                        next
+                        else if (target == "method") method_text = method_text current_item;
+                        else if (target == "signal") signal_text = signal_text current_item;
+                        current_item = ""; next
                     }
                 }
 
-                # Main Class Header & Description
+                # Class Header and General Summary
                 {
                     if ($0 ~ /header-rows/ || $0 ~ /\* -/ || $0 ~ /^[ ]+- /) next
                     if (!header_done && $0 !~ /^#/ && length($0) > 2) {
-                        print "## " $0 "\n"
-                        header_done = 1
+                        print "## " $0 "\n"; header_done = 1
                     } else if (!getting_desc && header_done) {
                         print $0
                     }
                 }
 
                 END {
-                    if (signal_text != "") print "## Signals\n" signal_text
-                    if (prop_text != "") print "## Properties\n" prop_text
-                    if (method_text != "") print "## Methods\n" method_text
+                    if (signal_text != "") print "\n## Signals\n" signal_text
+                    if (prop_text != "") print "\n## Properties\n" prop_text
+                    if (method_text != "") print "\n## Methods\n" method_text
                 }
             ' >> "$DOC_FILE"
         done
@@ -135,8 +127,13 @@ for addon_path in addons/*; do
     if [ -f "DOCUMENTATION.md" ]; then
         git add DOCUMENTATION.md
         if ! git diff-index --quiet HEAD; then
-            git commit -m "docs: auto-generate documentation"
+            # AUTOMATIC COMMIT MESSAGE with Addon Name
+            git commit -m "docs($addon_name): auto-generate api reference"
+            
+            echo "📤 Pushing changes for $addon_name..."
             super-git-push || "$PROJECT_ROOT/bin/super-git-push"
+        else
+            echo "ℹ️  No changes detected in documentation for $addon_name."
         fi
     fi
 
