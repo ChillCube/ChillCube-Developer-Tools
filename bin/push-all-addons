@@ -1,76 +1,88 @@
 #!/usr/bin/env bash
-set -e
 
-# --- Chillcube Bulk Addon Pusher & Doc Generator ---
+# --- Chillcube Bulk Addon Pusher & Doc Generator (V2) ---
+# NO 'set -e' here so we don't stop on single addon failures.
 
 if [ ! -d "addons" ]; then
-    echo "❌ No addons/ directory found in the current path."
+    echo "❌ No addons/ directory found."
     exit 1
 fi
 
-echo "🧊 Starting bulk process for all addons..."
-echo "--------------------------------------------------"
-
 PROJECT_ROOT=$(pwd)
+echo "🧊 Starting bulk process..."
 
-shopt -s nullglob
+# Use a standard loop for better compatibility
 for addon_path in addons/*; do
+    [ -d "$addon_path" ] || continue # Skip if not a directory
+    
+    addon_name=$(basename "$addon_path")
+    
     if [ -d "$addon_path/.git" ]; then
-        addon_name=$(basename "$addon_path")
-        echo "🚀 Processing addon: $addon_name"
+        echo "--------------------------------------------------"
+        echo "🚀 Addon: $addon_name"
         
         # 1. GENERATE DOCUMENTATION
-        echo "📝 Generating Documentation for $addon_name..."
-        
-        # Create temp directories inside the addon for isolation
-        TEMP_XML="$PROJECT_ROOT/$addon_path/temp_xml"
-        TEMP_OUT="$PROJECT_ROOT/$addon_path/docs_out"
+        TEMP_XML="$PROJECT_ROOT/temp_xml_$addon_name"
+        TEMP_OUT="$PROJECT_ROOT/docs_out_$addon_name"
         mkdir -p "$TEMP_XML" "$TEMP_OUT"
 
-        # Extract XML from Godot 4 (pointing specifically to this addon's folder)
-        godot --headless --doctool "$TEMP_XML" --no-docbase --gdscript-docs "res://$addon_path"
+        echo "📝 Extracting Godot 4 XML..."
+        # We use the absolute path for doctool but res:// for the scan
+        godot --headless --doctool "$TEMP_XML" --no-docbase --gdscript-docs "res://addons/$addon_name"
         
-        # Convert to Markdown using your global godocs
-        godocs construct jinja --format md "$TEMP_XML" "$TEMP_OUT"
-        
-        # Stitch into a single DOCUMENTATION.md inside the addon
-        DOC_FILE="$PROJECT_ROOT/$addon_path/DOCUMENTATION.md"
-        echo "# $addon_name API Reference" > "$DOC_FILE"
-        echo "Generated on: $(date)" >> "$DOC_FILE"
-        echo -e "\n---\n" >> "$DOC_FILE"
-        
-        for f in "$TEMP_OUT"/*.md; do
-            if [[ $(basename "$f") != "index.md" ]]; then
-                cat "$f" >> "$DOC_FILE"
-                echo -e "\n\n---\n" >> "$DOC_FILE"
-            fi
-        done
-
-        # Cleanup temp doc files
-        rm -rf "$TEMP_XML" "$TEMP_OUT"
-        
-        # 2. PUSH CHANGES
-        cd "$addon_path"
-        
-        # Add the new documentation to git before pushing
-        git add DOCUMENTATION.md
-        if ! git diff-index --quiet HEAD; then
-            git commit -m "docs: auto-generate documentation"
-        fi
-
-        if command -v super-git-push >/dev/null 2>&1; then
-            super-git-push
+        # Check if we got any XML files
+        if [ "$(ls -A "$TEMP_XML")" ]; then
+            echo "📝 Converting to DOCUMENTATION.md..."
+            godocs construct jinja --format md "$TEMP_XML" "$TEMP_OUT"
+            
+            # Stitch into the addon folder
+            DOC_FILE="$PROJECT_ROOT/$addon_path/DOCUMENTATION.md"
+            echo "# $addon_name API Reference" > "$DOC_FILE"
+            echo -e "Generated: $(date)\n\n---\n" >> "$DOC_FILE"
+            
+            for f in "$TEMP_OUT"/*.md; do
+                if [[ $(basename "$f") != "index.md" ]]; then
+                    cat "$f" >> "$DOC_FILE"
+                    echo -e "\n\n---\n" >> "$DOC_FILE"
+                fi
+            done
         else
-            echo "⚠️ super-git-push not found in PATH. Attempting project bin..."
-            "$PROJECT_ROOT/bin/super-git-push"
+            echo "⚠️  No ## doc-comments found. Skipping docs."
         fi
+
+        # 2. GIT OPERATIONS
+        cd "$PROJECT_ROOT/$addon_path"
         
+        # Stage the new doc if it exists
+        if [ -f "DOCUMENTATION.md" ]; then
+            git add DOCUMENTATION.md
+        fi
+
+        # Check for any changes to commit
+        if ! git diff-index --quiet HEAD; then
+            echo "💾 Committing changes..."
+            git commit -m "docs: update auto-generated documentation"
+        else
+            echo "ℹ️  No changes to commit."
+        fi
+
+        # 3. PUSH
+        echo "📤 Running push..."
+        if command -v super-git-push >/dev/null 2>&1; then
+            super-git-push || echo "❌ Push failed for $addon_name"
+        else
+            "$PROJECT_ROOT/bin/super-git-push" || echo "❌ Push failed for $addon_name"
+        fi
+
+        # Cleanup & Return
         cd "$PROJECT_ROOT"
+        rm -rf "$TEMP_XML" "$TEMP_OUT"
         echo "✅ Finished $addon_name"
-        echo "--------------------------------------------------"
+        
     else
-        echo "⏭️ Skipping $(basename "$addon_path") (Not a Git repository)."
+        echo "⏭️  Skipping $addon_name (No .git)"
     fi
 done
 
-echo "🎉 All addons processed and documented."
+echo "--------------------------------------------------"
+echo "🎉 All addons processed."
