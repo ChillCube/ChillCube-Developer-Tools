@@ -2,15 +2,15 @@
 
 # --- Chillcube Bulk Addon Pusher & Doc Generator ---
 
-# SETUP TEMPORARY ENVIRONMENT (Nix-friendly)
-# We use /tmp so it doesn't mess with your project or Nix store
+# SETUP TEMPORARY ENVIRONMENT
 VENV_PATH="/tmp/chillcube_docs_env"
 
 if ! command -v godocs &> /dev/null; then
     echo "🐍 Godocs not found. Setting up temporary environment..."
     if [ ! -d "$VENV_PATH" ]; then
         python3 -m venv "$VENV_PATH"
-        "$VENV_PATH/bin/pip" install godocs godocs-jinja --quiet
+        # We install both to be safe, but we'll use 'markdown' specifically
+        "$VENV_PATH/bin/pip" install godocs godocs-markdown godocs-jinja --quiet
     fi
     export PATH="$VENV_PATH/bin:$PATH"
 fi
@@ -24,8 +24,7 @@ for addon_path in addons/*; do
     echo "--------------------------------------------------"
     echo "🚀 Addon: $addon_name"
 
-    # 🛠️ FIX: Auto-convert spaces to tabs for Godot 4 parser
-    # This fixes the "Used space character for indentation" error
+    # Auto-convert spaces to tabs for Godot 4 parser
     find "$addon_path" -name "*.gd" -exec sed -i 's/    /\t/g' {} +
 
     # GENERATE DOCUMENTATION
@@ -36,27 +35,34 @@ for addon_path in addons/*; do
     echo "📝 Extracting Godot 4 XML..."
     godot --headless --doctool "$TEMP_XML" --no-docbase --gdscript-docs "res://addons/$addon_name"
     
-    if [ "$(ls -A "$TEMP_XML")" ]; then
-        echo "📝 Converting to DOCUMENTATION.md..."
-        godocs construct jinja --format md "$TEMP_XML" "$TEMP_OUT"
+    if [ "$(ls -A "$TEMP_XML" 2>/dev/null)" ]; then
+        echo "📝 Converting to Markdown..."
+        # Using 'markdown' constructor instead of 'jinja' for better compatibility
+        godocs construct markdown "$TEMP_XML" "$TEMP_OUT"
         
         DOC_FILE="$PROJECT_ROOT/$addon_path/DOCUMENTATION.md"
         echo "# $addon_name API Reference" > "$DOC_FILE"
-        echo -e "Generated: $(date)\n\n---\n" >> "$DOC_FILE"
+        echo -e "Generated: $(date)\n" >> "$DOC_FILE"
         
-        # Merge all class files into one
-        cat "$TEMP_OUT"/*.md >> "$DOC_FILE" 2>/dev/null
+        # Merge files and clean up lingering RST artifacts
+        for f in "$TEMP_OUT"/*.md; do
+            if [[ $(basename "$f") != "index.md" ]]; then
+                echo -e "\n---\n" >> "$DOC_FILE"
+                # This sed command removes common RST artifacts like :ref:`something`
+                cat "$f" | sed -E 's/:ref:`([^<]*) <[^>]*>`/`\1`/g' >> "$DOC_FILE"
+            fi
+        done
     else
-        echo "⚠️  No ## doc-comments found."
+        echo "⚠️  Godot Parser Error or no ## comments. Skipping docs."
     fi
 
     # PUSH CHANGES
     cd "$PROJECT_ROOT/$addon_path"
     
-    # Add and commit docs if they exist
     if [ -f "DOCUMENTATION.md" ]; then
         git add DOCUMENTATION.md
         if ! git diff-index --quiet HEAD; then
+            echo "💾 Committing new documentation..."
             git commit -m "docs: auto-generate documentation"
         fi
     fi
@@ -68,7 +74,7 @@ for addon_path in addons/*; do
         "$PROJECT_ROOT/bin/super-git-push"
     fi
 
-    # Cleanup temp files for this addon
+    # Cleanup
     cd "$PROJECT_ROOT"
     rm -rf "$TEMP_XML" "$TEMP_OUT"
     echo "✅ Finished $addon_name"
