@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Bulk Addon Pusher & Doc Generator (V3) ---
+# --- Chillcube Bulk Addon Pusher & Doc Generator ---
 
 VENV_PATH="/tmp/chillcube_docs_env"
 if ! command -v godocs &> /dev/null; then
@@ -43,72 +43,74 @@ for addon_path in addons/*; do
             [ -e "$f" ] || continue
             [[ $(basename "$f") == "index.md" ]] && continue
             
-            # 2. Process the file using a simpler line-by-line approach
+            # Clean up raw artifacts first
             cat "$f" | sed -E \
                 -e 's/:ref:`[^<]* <([^>]*)>`/\1/g' \
                 -e 's/\\//g' \
+                -e 's/``//g' \
                 -e '/^Inherits:/d' \
                 -e '/^\.\. /d' \
                 -e '/^[=-]+$/d' \
-                -e '/^Description$/d' \
-                -e '/^Class Reference$/d' \
-                -e "/^$addon_name$/d" | \
+                -e '/Descriptions$/d' \
+                -e '/^Index$/d' | \
             awk '
-                BEGIN { body = "" }
+                BEGIN { body = ""; header_done = 0 }
                 
-                # Capture Signals
-                /^[a-zA-Z0-9_]+\(.*\)$/ && !/`/ {
+                # Capture Signals: name()
+                /^[a-zA-Z0-9_]+\(.*\)$/ && !/ / {
                     print "### " $0
                     print "**Event:** Signal\n"
                     next
                 }
 
-                # Capture Property Lines: `Type` Name = `Default`
-                /^`[^`]+` [^` ]+/ {
-                    split($0, a, "`")
-                    type = a[2]
+                # Capture Property Lines: Type Name [= Default]
+                # Matches patterns like "bool on = true" or "Node2D cursor"
+                /^[A-Z][a-zA-Z0-9_]* [a-z][a-zA-Z0-9_]*([ ]?=[ ]?.*)?$/ {
+                    type = $1
+                    name = $2
                     
-                    # Split name and default
-                    rest = a[3]
-                    if (rest ~ /=/) {
-                        split(rest, b, "=")
-                        name = b[1]; gsub(/ /, "", name)
-                        default_val = a[4]
-                        
-                        print "### " name
-                        print "**Type:** " type
-                        print "**Default:** " default_val "\n"
-                    } else {
-                        name = rest; gsub(/ /, "", name)
-                        print "### " name
-                        print "**Type:** " type "\n"
+                    print "### " name
+                    print "**Type:** " type
+                    
+                    if ($0 ~ /=/) {
+                        # Extract everything after the = sign
+                        split($0, parts, "=")
+                        sub(/^[ ]+/, "", parts[2])
+                        print "**Default:** " parts[2]
                     }
+                    print ""
                     next
                 }
 
-                # Capture Method Lines: `Type` name(...)
-                /^`[^`]+` [^` ]+\(.*\)$/ {
-                    split($0, a, "`")
-                    type = a[2]
-                    sig = a[3]; sub(/^[ ]+/, "", sig)
+                # Capture Methods: Type name(...)
+                /^[A-Z][a-zA-Z0-9_]* [a-z][a-zA-Z0-9_]+\(.*\)$/ {
+                    type = $1
+                    sig = $0; sub(/^[A-Z][a-zA-Z0-9_]* /, "", sig)
                     
                     print "### " sig
                     print "**Returns:** " type "\n"
                     next
                 }
 
-                # Everything else is description text
+                # Everything else
                 {
-                    # Skip the weird table remnants
-                    if ($0 ~ /header-rows/ || $0 ~ /\* -/ || $0 ~ /Index/) next
-                    if (NF > 0) print $0 "\n"
+                    # Skip list-table noise
+                    if ($0 ~ /header-rows/ || $0 ~ /\* -/ || $0 ~ /^[ ]+- /) next
+                    if (NF == 0) { print ""; next }
+                    
+                    # Format the first real text line as the Class Header
+                    if (!header_done && $0 !~ /^#/ && length($0) > 2) {
+                        print "## " $0 "\n"
+                        header_done = 1
+                    } else {
+                        print $0
+                    }
                 }
             ' >> "$DOC_FILE"
         done
         
-        # 3. Clean up the Class Header (Make the first non-title line a ## Header)
-        # We find the first word (Addon name) and turn it into ## AddonName
-        sed -i "0,/^$addon_name/s/^$addon_name/## $addon_name/" "$DOC_FILE"
+        # Final cleanup: Remove double-triple spacing
+        sed -i '/^$/N;/^\n$/D' "$DOC_FILE"
     fi
 
     # 4. GIT SYNC
@@ -116,6 +118,7 @@ for addon_path in addons/*; do
     if [ -f "DOCUMENTATION.md" ]; then
         git add DOCUMENTATION.md
         if ! git diff-index --quiet HEAD; then
+            echo "💾 Committing documentation..."
             git commit -m "docs: auto-generate documentation"
             if command -v super-git-push >/dev/null 2>&1; then
                 super-git-push
