@@ -4,10 +4,10 @@
 TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
 VENV_PATH="/tmp/chillcube_docs_env"
 
-# Ensure godocs is available for API generation (Optional: using built-in awk for tables now)
+# Ensure godocs is available for API generation (Internal awk logic handles tables)
 if ! command -v godocs &> /dev/null; then
     if [ ! -d "$VENV_PATH" ]; then
-        python3 -m venv "$VENV_PATH"
+        python3 -m venv "$VENV_PATH" &> /dev/null
         "$VENV_PATH/bin/pip" install godocs godocs-jinja --quiet 2>/dev/null || echo "Python venv setup skipped."
     fi
     export PATH="$VENV_PATH/bin:$PATH"
@@ -80,10 +80,9 @@ for addon_path in addons/*; do
     echo -e "\n$A_DESC" >> "$DOC_FILE"
     echo -e "\n---\n" >> "$DOC_FILE"
 
-    # Find the primary script. If plugin.cfg doesn't point to one, look for any .gd file
     TARGET_SCRIPT="$addon_path/$A_MAIN_SCRIPT"
     if [ ! -f "$TARGET_SCRIPT" ]; then
-        TARGET_SCRIPT=$(find "$addon_path" -name "*.gd" | head -n 1)
+        TARGET_SCRIPT=$(find "$addon_path" -maxdepth 2 -name "*.gd" | head -n 1)
     fi
 
     if [ -f "$TARGET_SCRIPT" ]; then
@@ -93,19 +92,24 @@ for addon_path in addons/*; do
         echo "## Properties" >> "$DOC_FILE"
         echo "| Property | Type | Default | Description |" >> "$DOC_FILE"
         echo "| :--- | :--- | :--- | :--- |" >> "$DOC_FILE"
+        
         awk '
-            /^#/ { last_comment = last_comment " " substr($0, 3) }
-            /^@export|^var / {
-                if ($0 ~ /^var / && last_comment == "") { next } # Skip local vars without comments
-                type = "Variant"; name = ""; default_val = "-";
-                split($0, a, "var "); split(a[2], b, "[:= ]"); name = b[1];
-                if ($0 ~ /:/) { split($0, c, ":"); split(c[2], d, "[:= ]"); type = d[1] }
-                if ($0 ~ /=/) { split($0, e, "="); default_val = e[2]; gsub(/^[ \t]+|[ \t]+$/, "", default_val) }
-                gsub(/^ /, "", last_comment); if (last_comment == "") last_comment = "No description provided.";
-                printf("| **%s** | `%s` | `%s` | %s |\n", name, type, default_val, last_comment);
-                last_comment = ""
+            /(@export|var) / {
+                line = $0; desc = "No description provided.";
+                if (line ~ /##/) {
+                    split(line, parts, "##"); desc = parts[2];
+                    gsub(/^[ \t]+|[ \t]+$/, "", desc); line = parts[1];
+                }
+                name = ""; if (line ~ /var /) { split(line, a, "var "); split(a[2], b, /[ :={]/); name = b[1]; }
+                if (name == "" || name == "unknown") next;
+                type = "Variant"; if (line ~ /:[ \t]*[A-zA-Z0-9_]+/) { 
+                    split(line, a, ":"); split(a[2], b, /[= ]/); type = b[1]; gsub(/[ \t]+/, "", type);
+                }
+                def = "-"; if (line ~ /=/) {
+                    split(line, a, "="); def = a[2]; gsub(/^[ \t;]+|[ \t;]+$/, "", def);
+                }
+                printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc);
             }
-            !/^#/ && !/^@export/ && !/^var / { last_comment = "" }
         ' "$TARGET_SCRIPT" >> "$DOC_FILE"
 
         # TABLE: METHODS
@@ -113,16 +117,15 @@ for addon_path in addons/*; do
         echo "| Method | Returns | Description |" >> "$DOC_FILE"
         echo "| :--- | :--- | :--- |" >> "$DOC_FILE"
         awk '
-            /^#/ { last_comment = last_comment " " substr($0, 3) }
-            /^func / {
-                split($0, a, "func "); split(a[2], b, "("); name = b[1]
-                ret = "void"
-                if ($0 ~ /->/) { split($0, c, "->"); split(c[2], d, ":"); ret = d[1]; gsub(/ /, "", ret) }
-                gsub(/^ /, "", last_comment); if (last_comment == "") last_comment = "No description provided.";
-                printf("| **%s()** | `%s` | %s |\n", name, ret, last_comment);
-                last_comment = ""
+            /^func / || /func .*##/ {
+                line = $0; desc = "No description provided.";
+                if (line ~ /##/) { split(line, p, "##"); desc = p[2]; line = p[1]; }
+                split(line, a, "func "); split(a[2], b, "("); name = b[1];
+                if (name == "") next;
+                ret = "void"; if (line ~ /->/) { split(line, c, "->"); split(c[2], d, ":"); ret = d[1]; gsub(/[ \t]+/, "", ret); }
+                gsub(/^[ \t]+|[ \t]+$/, "", desc);
+                printf("| **%s()** | `%s` | %s |\n", name, ret, desc);
             }
-            !/^#/ && !/^func / { last_comment = "" }
         ' "$TARGET_SCRIPT" >> "$DOC_FILE"
         
         # TABLE: SIGNALS
@@ -130,14 +133,13 @@ for addon_path in addons/*; do
         echo "| Signal | Description |" >> "$DOC_FILE"
         echo "| :--- | :--- |" >> "$DOC_FILE"
         awk '
-            /^#/ { last_comment = last_comment " " substr($0, 3) }
             /^signal / {
-                split($0, a, "signal "); name = a[2];
-                gsub(/^ /, "", last_comment); if (last_comment == "") last_comment = "No description provided.";
-                printf("| **%s** | %s |\n", name, last_comment);
-                last_comment = ""
+                line = $0; desc = "No description provided.";
+                if (line ~ /##/) { split(line, p, "##"); desc = p[2]; line = p[1]; }
+                split(line, a, "signal "); split(a[2], b, /[ (]/); name = b[1];
+                gsub(/^[ \t]+|[ \t]+$/, "", desc);
+                printf("| **%s** | %s |\n", name, desc);
             }
-            !/^#/ && !/^signal / { last_comment = "" }
         ' "$TARGET_SCRIPT" >> "$DOC_FILE"
     fi
 
@@ -153,7 +155,6 @@ for addon_path in addons/*; do
         git commit -m "docs($addon_folder): $user_msg"
         
         echo "📤 Pushing to GitHub..."
-        # Fallback sequence for the push command
         if command -v super-git-push &> /dev/null; then
             super-git-push
         elif [ -f "$PROJECT_ROOT/bin/super-git-push" ]; then
