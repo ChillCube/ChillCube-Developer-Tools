@@ -39,58 +39,67 @@ for addon_path in addons/*; do
 
         for f in "$TEMP_OUT"/*.md; do
             [ -e "$f" ] || continue
-            # We ignore the index file entirely
             if [[ $(basename "$f") != "index.md" ]]; then
                 
-                # Filter the file to extract only the juicy parts
-                cat "$f" | sed -e 's/:ref:`\([^<]*\) <[^>]*>`/`\1`/g' -e 's/\\//g' | awk '
-                    BEGIN { section = "none" }
+                # Use AWK to surgically build the file
+                cat "$f" | awk '
+                    BEGIN { 
+                        section = "none"
+                        class_desc = ""
+                        body = ""
+                    }
 
-                    # 1. Identify Sections
+                    # Clean up lines immediately
+                    {
+                        gsub(/:ref:`[^<]* <([^>]*)>`/, "`\\1`")
+                        gsub(/\\/, "")
+                    }
+
+                    # Skip RST anchors and table junk
+                    /^\.\. _/ { next }
+                    /^\.\. list-table::/ || /^\s+:header-rows:/ || /^\s+\* -/ { next }
+                    /^Inherits:/ { next }
+
+                    # Identify sections
                     /Property Descriptions/ { section = "props"; next }
                     /Method Descriptions/ { section = "methods"; next }
                     /Signal Descriptions/ { section = "signals"; next }
 
-                    # 2. Extract Class Description (Before any Description section)
-                    section == "none" && !/^#/ && !/^=/ && !/^---/ && !/^Inherits/ && NF > 0 && $0 !~ /Index/ {
-                        class_desc = class_desc $0 "\n"
+                    # Capture Main Class Description
+                    section == "none" && !/^#/ && !/^=/ && !/^---/ && NF > 0 && $0 !~ /Index/ {
+                        # Ignore the redundant class name repeat
+                        if ($0 !~ /^'${addon_name}'$/ && $0 !~ /^'${addon_name#Godot_}'$/) {
+                            class_desc = class_desc $0 "\n\n"
+                        }
                     }
 
-                    # 3. Handle Properties
+                    # Capture Properties
                     section == "props" && /^`.*` .*$/ {
                         match($0, /^`([^`]+)` ([^` ]+)( = `(.*)`)?/, m)
-                        print "### " m[2]
-                        print "**Type:** " m[1]
-                        if (m[4] != "") print "**Default:** " m[4]
-                        print ""
-                        getting_desc = 1
-                        next
+                        body = body "### " m[2] "\n**Type:** " m[1] "\n"
+                        if (m[4] != "") body = body "**Default:** " m[4] "\n"
+                        body = body "\n"
+                        getting_desc = 1; next
                     }
 
-                    # 4. Handle Methods
+                    # Capture Methods
                     section == "methods" && /^`.*` .*\)$/ {
                         match($0, /^`([^`]+)` (.*)$/, m)
-                        print "### " m[2]
-                        print "**Returns:** " m[1]
-                        print ""
-                        getting_desc = 1
-                        next
+                        body = body "### " m[2] "\n**Returns:** " m[1] "\n\n"
+                        getting_desc = 1; next
                     }
 
-                    # 5. Handle Signals
-                    section == "signals" && /^[a-zA-Z0-0_]+\(.*\)$/ {
-                        print "### " $0
-                        print "**Event: Signal**"
-                        print ""
-                        getting_desc = 1
-                        next
+                    # Capture Signals
+                    section == "signals" && /^[a-zA-Z0-9_]+\(.*\)$/ {
+                        body = body "### " $0 "\n**Event:** Signal\n\n"
+                        getting_desc = 1; next
                     }
 
-                    # 6. Capture the Description text
+                    # Capture Descriptions
                     getting_desc {
                         if ($0 ~ /^#/ || $0 ~ /^`/) { getting_desc = 0 }
-                        else if (NF > 0 && $0 !~ /^===/ && $0 !~ /^---/) {
-                            print $0 "\n"
+                        else if (NF > 0 && $0 !~ /^[=-]+$/) {
+                            body = body $0 "\n\n"
                         }
                     }
 
@@ -98,6 +107,7 @@ for addon_path in addons/*; do
                         if (class_desc != "") {
                             print "## Description\n" class_desc "\n---\n"
                         }
+                        print body
                     }
                 ' >> "$DOC_FILE"
             fi
