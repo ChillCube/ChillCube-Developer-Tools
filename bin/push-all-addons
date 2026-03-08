@@ -43,29 +43,33 @@ for addon_path in addons/*; do
             [ -e "$f" ] || continue
             [[ $(basename "$f") == "index.md" ]] && continue
             
-            # Clean up raw artifacts first
+            # 2. Process the file
             cat "$f" | sed -E \
                 -e 's/:ref:`[^<]* <([^>]*)>`/\1/g' \
                 -e 's/\\//g' \
                 -e 's/``//g' \
                 -e '/^Inherits:/d' \
+                -e '/^\*\*Inherits:\*\*/d' \
+                -e '/^Property Index/d' \
+                -e '/^Method Index/d' \
+                -e '/^Signal Index/d' \
                 -e '/^\.\. /d' \
                 -e '/^[=-]+$/d' \
                 -e '/Descriptions$/d' \
                 -e '/^Index$/d' | \
             awk '
-                BEGIN { body = ""; header_done = 0 }
+                BEGIN { header_done = 0; getting_desc = 0 }
                 
                 # Capture Signals: name()
                 /^[a-zA-Z0-9_]+\(.*\)$/ && !/ / {
                     print "### " $0
                     print "**Event:** Signal\n"
-                    next
+                    getting_desc = 1; next
                 }
 
                 # Capture Property Lines: Type Name [= Default]
                 # Matches patterns like "bool on = true" or "Node2D cursor"
-                /^[A-Z][a-zA-Z0-9_]* [a-z][a-zA-Z0-9_]*([ ]?=[ ]?.*)?$/ {
+                /^[a-zA-Z0-9_]+ [a-zA-Z0-9_]+([ ]?=[ ]?.*)?$/ {
                     type = $1
                     name = $2
                     
@@ -73,32 +77,32 @@ for addon_path in addons/*; do
                     print "**Type:** " type
                     
                     if ($0 ~ /=/) {
-                        # Extract everything after the = sign
                         split($0, parts, "=")
-                        sub(/^[ ]+/, "", parts[2])
-                        print "**Default:** " parts[2]
+                        # Clean up the default value string
+                        def_val = parts[2]; sub(/^[ ]+/, "", def_val); sub(/[ ]+$/, "", def_val)
+                        print "**Default:** " def_val
                     }
                     print ""
-                    next
+                    getting_desc = 1; next
                 }
 
                 # Capture Methods: Type name(...)
-                /^[A-Z][a-zA-Z0-9_]* [a-z][a-zA-Z0-9_]+\(.*\)$/ {
+                /^[a-zA-Z0-9_]+ [a-zA-Z0-9_]+\(.*\)$/ {
                     type = $1
-                    sig = $0; sub(/^[A-Z][a-zA-Z0-9_]* /, "", sig)
+                    sig = $0; sub(/^[a-zA-Z0-9_]+ /, "", sig)
                     
                     print "### " sig
                     print "**Returns:** " type "\n"
-                    next
+                    getting_desc = 1; next
                 }
 
                 # Everything else
                 {
-                    # Skip list-table noise
-                    if ($0 ~ /header-rows/ || $0 ~ /\* -/ || $0 ~ /^[ ]+- /) next
+                    # Skip noise
+                    if ($0 ~ /header-rows/ || $0 ~ /\* -/ || $0 ~ /^[ ]+- / || $0 ~ /Index/) next
                     if (NF == 0) { print ""; next }
                     
-                    # Format the first real text line as the Class Header
+                    # First real text line becomes ## Header
                     if (!header_done && $0 !~ /^#/ && length($0) > 2) {
                         print "## " $0 "\n"
                         header_done = 1
@@ -109,7 +113,7 @@ for addon_path in addons/*; do
             ' >> "$DOC_FILE"
         done
         
-        # Final cleanup: Remove double-triple spacing
+        # Clean up empty lines and redundant spaces
         sed -i '/^$/N;/^\n$/D' "$DOC_FILE"
     fi
 
@@ -118,7 +122,6 @@ for addon_path in addons/*; do
     if [ -f "DOCUMENTATION.md" ]; then
         git add DOCUMENTATION.md
         if ! git diff-index --quiet HEAD; then
-            echo "💾 Committing documentation..."
             git commit -m "docs: auto-generate documentation"
             if command -v super-git-push >/dev/null 2>&1; then
                 super-git-push
