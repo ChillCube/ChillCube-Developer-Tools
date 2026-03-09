@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Registry Engine (v6.4) ---
+# --- Chillcube Universal Doc & Registry Engine (v6.6) ---
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
 AUTO_MARKER="# --- Automated Dependencies (Managed by Script) ---"
@@ -101,7 +101,8 @@ for addon_path in addons/*; do
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
 
-    if [ -n "$AUTO_DEPS_URLS" ] || [ -n "$MANUAL_DEPS" ]; then
+    # --- THE DEPENDENCY TABLE (CORRECTED) ---
+    if [ -n "$AUTO_DEPS_URLS" ] || [ -n "$(echo "$MANUAL_DEPS" | grep -v "$MANUAL_MARKER")" ]; then
         echo -e "### 📦 Dependencies\n" >> "$TEMP_DOC"
         echo -e "| Source | Reference | Repository |" >> "$TEMP_DOC"
         echo -e "| :--- | :--- | :--- |" >> "$TEMP_DOC"
@@ -127,18 +128,7 @@ for addon_path in addons/*; do
         echo -e "\n---\n" >> "$TEMP_DOC"
     fi
 
-        # Add Manual Dependencies
-        if [ -n "$MANUAL_DEPS" ]; then
-            while read -r m_url; do
-                [[ "$m_url" =~ ^http ]] || continue
-                M_DEP_NAME=$(basename "$m_url" | sed 's/\.git$//')
-                M_DOC_LINK="${m_url}/blob/main/DOCUMENTATION.md"
-                echo "| Manual | [\`$M_DEP_NAME\`]($M_DOC_LINK) | [Repo]($m_url) |" >> "$TEMP_DOC"
-            done <<< "$(echo "$MANUAL_DEPS" | grep -v "$MANUAL_MARKER")"
-        fi
-        echo -e "\n---\n" >> "$TEMP_DOC"
-    fi
-
+    # --- CLASS SCANNING ---
     BODY_CONTENT=$(mktemp)
     while IFS= read -r -d '' script; do
         C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/ .*//'); [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
@@ -239,7 +229,7 @@ for addon_path in addons/*; do
     cd "$PROJECT_ROOT/$addon_path"
     if [[ -n $(git status -s) ]]; then
         git add .
-        git commit -m "docs: auto-sync v6.4 (all features restored)"
+        git commit -m "docs: auto-sync v6.6 (corrected dependency tables)"
         super-git-push
         ((UPDATED_COUNT++))
     fi
