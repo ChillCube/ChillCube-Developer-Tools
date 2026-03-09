@@ -5,7 +5,7 @@
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
 AUTO_MARKER="# --- Automated Dependencies (Managed by Script) ---"
-MANUAL_MARKER="# --- Manual Dependencies (Do Not Delete) ---"
+MANUAL_MARKER="# --- Manually Add Dependencies Here  ---"
 
 ORG_REPO="https://github.com/ChillCube/.github.git"
 REGISTRY_FILE="ADDONS.md"
