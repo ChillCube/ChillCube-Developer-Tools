@@ -61,11 +61,9 @@ for addon_path in addons/*; do
 
     # --- 3. GENERATE API REFERENCE ---
     DOC_FILE="$addon_path/DOCUMENTATION.md"
-    TEMP_DOC="/tmp/docs_gen_$(date +%s)"
-    
-    echo "# $A_NAME API Reference" > "$TEMP_DOC"
-    echo "Generated on: $(date +'%Y-%m-%d')" >> "$TEMP_DOC"
-    echo -e "\n$A_DESC\n\n---\n" >> "$TEMP_DOC"
+    echo "# $A_NAME API Reference" > "$DOC_FILE"
+    echo "Generated on: $(date)" >> "$DOC_FILE"
+    echo -e "\n$A_DESC\n\n---\n" >> "$DOC_FILE"
 
     TARGET_SCRIPT="$addon_path/$A_MAIN_SCRIPT"
     [ ! -f "$TARGET_SCRIPT" ] && TARGET_SCRIPT=$(find "$addon_path" -maxdepth 2 -name "*.gd" | head -n 1)
@@ -75,8 +73,10 @@ for addon_path in addons/*; do
         PROP_DATA=$(awk '
             /(@export|var) .*##/ {
                 line = $0; split(line, p, "##"); desc = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc); code = p[1];
+                # Extract Name
                 split(code, a, "var "); split(a[2], b, /[ :={]/); name = b[1];
                 if (name == "") next;
+                # Extract Type
                 type = "Variant";
                 if (code ~ /:[ \t]*[A-zA-Z0-9_]+/) { 
                     split(code, a, ":"); split(a[2], b, /[= ]/); type = b[1]; gsub(/[ \t]+/, "", type);
@@ -84,6 +84,7 @@ for addon_path in addons/*; do
                     if (code ~ /"/) type = "String"; else if (code ~ /true|false/) type = "bool";
                     else if (code ~ /[0-9]+\.[0-9]+/) type = "float"; else if (code ~ /[0-9]+/) type = "int";
                 }
+                # Extract Default
                 def = "-";
                 if (code ~ /:=/) { split(code, a, ":="); def = a[2]; }
                 else if (code ~ /=/) { split(code, a, "="); def = a[2]; }
@@ -93,8 +94,10 @@ for addon_path in addons/*; do
         ' "$TARGET_SCRIPT")
 
         if [ -n "$PROP_DATA" ]; then
-            echo -e "## Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |" >> "$TEMP_DOC"
-            echo "$PROP_DATA" >> "$TEMP_DOC"; echo "" >> "$TEMP_DOC"
+            echo "## Properties" >> "$DOC_FILE"
+            echo "| Property | Type | Default | Description |" >> "$DOC_FILE"
+            echo "| :--- | :--- | :--- | :--- |" >> "$DOC_FILE"
+            echo "$PROP_DATA" >> "$DOC_FILE"; echo "" >> "$DOC_FILE"
         fi
 
         # 3b. Methods Table
@@ -109,8 +112,10 @@ for addon_path in addons/*; do
         ' "$TARGET_SCRIPT")
 
         if [ -n "$METHOD_DATA" ]; then
-            echo -e "## Methods\n| Method | Returns | Description |\n| :--- | :--- | :--- |" >> "$TEMP_DOC"
-            echo "$METHOD_DATA" >> "$TEMP_DOC"; echo "" >> "$TEMP_DOC"
+            echo "## Methods" >> "$DOC_FILE"
+            echo "| Method | Returns | Description |" >> "$DOC_FILE"
+            echo "| :--- | :--- | :--- |" >> "$DOC_FILE"
+            echo "$METHOD_DATA" >> "$DOC_FILE"; echo "" >> "$DOC_FILE"
         fi
 
         # 3c. Signals Table
@@ -123,32 +128,23 @@ for addon_path in addons/*; do
         ' "$TARGET_SCRIPT")
 
         if [ -n "$SIGNAL_DATA" ]; then
-            echo -e "## Signals\n| Signal | Description |\n| :--- | :--- |" >> "$TEMP_DOC"
-            echo "$SIGNAL_DATA" >> "$TEMP_DOC"; echo "" >> "$TEMP_DOC"
+            echo "## Signals" >> "$DOC_FILE"
+            echo "| Signal | Description |" >> "$DOC_FILE"
+            echo "| :--- | :--- |" >> "$DOC_FILE"
+            echo "$SIGNAL_DATA" >> "$DOC_FILE"; echo "" >> "$DOC_FILE"
         fi
     fi
 
-    # --- 4. GIT SYNC WITH DIFF CHECK ---
-    # Move temp file to actual location
-    mv "$TEMP_DOC" "$DOC_FILE"
-
+    # --- 4. GIT SYNC ---
     cd "$PROJECT_ROOT/$addon_path"
     git add README.md DOCUMENTATION.md
-    
-    # Check if there are ACTUAL changes (ignoring the timestamp line)
-    # We check git diff --cached but ignore line 2 (the date)
-    if git diff --cached --quiet --ignore-matching-lines="^Generated on:"; then
-        echo "ℹ️  No functional changes for $addon_folder. Skipping commit."
-        git reset README.md DOCUMENTATION.md > /dev/null
-    else
+    if ! git diff --cached --quiet; then
         echo -e "\n💬 Documentation changes for [$addon_folder]."
         read -p "Commit message (default: docs update): " msg
         git commit -m "docs($addon_folder): ${msg:-docs update}"
-        if command -v super-git-push &> /dev/null; then 
-            super-git-push 
-        else 
-            git push origin main
-        fi
+        if command -v super-git-push &> /dev/null; then super-git-push; else git push origin main; fi
+    else
+        echo "ℹ️  No changes for $addon_folder."
     fi
     cd "$PROJECT_ROOT"
 done
