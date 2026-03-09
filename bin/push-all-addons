@@ -1,21 +1,37 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Global Link Resolver & Doc Generator ---
+# --- Chillcube Universal Doc Generator & Super-Pusher ---
+# Core Tooling for Godot Addon Management
+TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
+VENV_PATH="/tmp/chillcube_docs_env"
+
+# Ensure environment is ready
+if ! command -v godocs &> /dev/null; then
+    if [ ! -d "$VENV_PATH" ]; then
+        python3 -m venv "$VENV_PATH" &> /dev/null
+        "$VENV_PATH/bin/pip" install godocs godocs-jinja --quiet 2>/dev/null
+    fi
+    export PATH="$VENV_PATH/bin:$PATH"
+fi
+
 PROJECT_ROOT=$(pwd)
-declare -A CLASS_TO_REPO  # Map: ClassName -> GitHub URL
-declare -A CLASS_TO_ADDON # Map: ClassName -> Addon Folder Name
+declare -A CLASS_TO_REPO  # Map: ClassName -> GitHub Web URL
+declare -A CLASS_TO_ADDON # Map: ClassName -> Local Addon Folder Name
 
 echo "🔍 Indexing Project & Dependencies..."
 
-# --- 1. PRE-SCAN: Map all classes to their respective GitHub Repos ---
+# --- 1. GLOBAL PRE-SCAN ---
+# Map every class in the project to its repository for cross-repo linking
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
     
-    # Get the GitHub URL (and clean it to a standard https format)
-    REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//' | sed 's/git@github\.com:/https:\/\/github\.com\//')
+    # Standardize Repo URL to HTTPS for web-clickable links
+    REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | \
+               sed 's/\.git$//' | \
+               sed 's/git@github\.com:/https:\/\/github\.com\//' | \
+               sed 's/ssh:\/\/git@github\.com\//https:\/\/github\.com\//')
     
-    # Find all class_names in this specific addon
     while read -r cname; do
         if [ -n "$cname" ]; then
             CLASS_TO_REPO["$cname"]="$REPO_URL"
@@ -24,18 +40,38 @@ for addon_path in addons/*; do
     done < <(grep -r "class_name" "$addon_path" --include="*.gd" | sed 's/.*class_name //; s/[ \t]*$//; s/ .*//')
 done
 
-# --- 2. GENERATION LOOP ---
+# --- 2. GENERATION & PUSH LOOP ---
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
+    
+    echo "--------------------------------------------------"
     echo "🚀 Processing: $addon_folder"
 
     DOC_FILE="$addon_path/DOCUMENTATION.md"
     TEMP_DOC=$(mktemp)
     
-    # Header logic (metadata, name, etc)
-    echo "# $(basename "$addon_path") API Reference" > "$TEMP_DOC"
-    echo -e "Generated: $(date +'%Y-%m-%d')\n---\n" >> "$TEMP_DOC"
+    # Metadata Extraction
+    CFG_FILE="$addon_path/plugin.cfg"
+    if [ -f "$CFG_FILE" ]; then
+        A_NAME=$(grep "name" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+        A_DESC=$(grep "description" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+        A_AUTH=$(grep "author" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+    else
+        A_NAME="$addon_folder"; A_DESC="Godot Addon"; A_AUTH="ChillCube"
+    fi
+
+    # Update README from Template
+    curl -sSL "$TEMPLATE_URL" -o "$addon_path/README.md"
+    sed -i "s@{{NAME}}@$A_NAME@g" "$addon_path/README.md"
+    sed -i "s@{{DESC}}@$A_DESC@g" "$addon_path/README.md"
+    sed -i "s@{{AUTHOR}}@$A_AUTH@g" "$addon_path/README.md"
+    sed -i "s@{{YEAR}}@$(date +%Y)@g" "$addon_path/README.md"
+
+    # Start Documentation File
+    echo "# $A_NAME API Reference" > "$TEMP_DOC"
+    echo "Generated on: $(date +'%Y-%m-%d')" >> "$TEMP_DOC"
+    echo -e "\n$A_DESC\n\n---\n" >> "$TEMP_DOC"
 
     mapfile -t SCRIPTS < <(find "$addon_path" -name "*.gd")
 
@@ -43,40 +79,92 @@ for addon_path in addons/*; do
         C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/[ \t]*$//' | sed 's/ .*//')
         [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
 
-        # --- SMART LINK RESOLVER ---
+        # Smart Inheritance Resolver
         RAW_EXT=$(grep "^extends " "$script" | sed 's/extends //' | sed 's/[ \t]*$//' | sed 's/ .*//')
         [ -z "$RAW_EXT" ] && RAW_EXT="Object"
 
         if [[ -n "${CLASS_TO_REPO[$RAW_EXT]}" ]]; then
-            # Is it internal or a dependency?
             if [[ "${CLASS_TO_ADDON[$RAW_EXT]}" == "$addon_folder" ]]; then
                 EXT_LINK="[\`$RAW_EXT\`](#class-$RAW_EXT)"
             else
-                # External dependency: Links to the GitHub Documentation file of that repo
                 EXT_LINK="[\`$RAW_EXT\`](${CLASS_TO_REPO[$RAW_EXT]}/blob/main/DOCUMENTATION.md#class-$RAW_EXT)"
             fi
         elif [[ "$RAW_EXT" =~ ^[A-Z] ]] && [[ ! "$RAW_EXT" =~ [./\"] ]]; then
-            # Godot Engine Class
             EXT_LINK="[\`$RAW_EXT\`](https://docs.godotengine.org/en/stable/classes/class_${RAW_EXT,,}.html)"
         else
             EXT_LINK="\`$RAW_EXT\`"
         fi
 
-        # [AWK Logic for Properties, Signals, Methods remains the same]
-        # ... (Insert the stable AWK blocks from previous steps here) ...
+        CLASS_DESC=$(awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script")
+        
+        # --- FULL PROPERTY PARSING (State Machine) ---
+        PROP_DATA=$(awk '
+            BEGIN { recording = 0; buffer = ""; desc = ""; name = ""; type = ""; }
+            /^[ \t]*(@export.*)?var/ && /##/ {
+                recording = 1; split($0, parts, "##"); desc = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc);
+                code = parts[1]; split(code, n_p, "var "); split(n_p[2], b, /[ :={]/); name = b[1];
+                type = "Variant"; if (code ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
+                    match(code, /:[ \t]*[A-zA-Z0-9_\[\]]+/); type = substr(code, RSTART+1, RLENGTH-1);
+                }
+                buffer = code; if (code !~ /\{/ && code !~ /\[/) finish_up();
+            }
+            recording == 1 && $0 !~ /var/ {
+                nl = $0; if (nl ~ /##/) { split(nl, tmp, "##"); nl = tmp[1]; }
+                buffer = buffer " " nl;
+            }
+            recording == 1 && ($0 ~ /\}/ || $0 ~ /\]/) { finish_up(); }
+            function finish_up() {
+                def = "-"; if (buffer ~ /=/) {
+                    eq_idx = index(buffer, "="); after_eq = substr(buffer, eq_idx + 1);
+                    b_idx = (after_eq ~ /\{/) ? index(after_eq, "{") : (after_eq ~ /\[/ ? index(after_eq, "[") : 0);
+                    def = (b_idx > 0) ? substr(after_eq, b_idx) : after_eq;
+                }
+                gsub(/[ \t]+/, " ", def); sub(/;[ \t]*$/, "", def); gsub(/^[ \t]+|[ \t]+$/, "", def);
+                if (name != "") printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc);
+                recording = 0; buffer = ""; name = "";
+            }
+        ' "$script")
 
-        # Append to Temp Doc
-        echo -e "## Class: $C_NAME" >> "$TEMP_DOC"
-        echo -e "**Inherits:** $EXT_LINK\n" >> "$TEMP_DOC"
-        # ... (Append Table Data) ...
-        echo -e "\n---\n" >> "$TEMP_DOC"
+        # --- FULL SIGNAL PARSING ---
+        SIGNAL_DATA=$(awk '/signal .*##/ {
+            line = $0; split(line, p, "##"); d = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", d);
+            code = p[1]; split(code, a, "signal "); split(a[2], b, /[ (]/); n = b[1];
+            printf("| **%s** | %s |\n", n, d);
+        }' "$script")
+
+        # --- FULL METHOD PARSING ---
+        METHOD_DATA=$(awk '/func .*##/ {
+            line = $0; split(line, p, "##"); d = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", d);
+            code = p[1]; split(code, a, "func "); split(a[2], b, "("); n = b[1];
+            if (n == "" || n ~ /^_/) next;
+            ret = "void"; if (code ~ /->/) { split(code, c, "->"); split(c[2], d_ret, ":"); ret = d_ret[1]; gsub(/[ \t]+/,"",ret); }
+            printf("| **%s()** | `%s` | %s |\n", n, ret, d);
+        }' "$script")
+
+        # Compile Output Block for Class
+        if [ -n "$CLASS_DESC" ] || [ -n "$PROP_DATA" ] || [ -n "$METHOD_DATA" ] || [ -n "$SIGNAL_DATA" ]; then
+            echo -e "## Class: $C_NAME" >> "$TEMP_DOC"
+            echo -e "**Inherits:** $EXT_LINK\n" >> "$TEMP_DOC"
+            [ -n "$CLASS_DESC" ] && echo -e "$CLASS_DESC\n" >> "$TEMP_DOC"
+            [ -n "$PROP_DATA" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PROP_DATA\n" >> "$TEMP_DOC"
+            [ -n "$SIGNAL_DATA" ] && echo -e "### Signals\n| Signal | Description |\n| :--- | :--- |\n$SIGNAL_DATA\n" >> "$TEMP_DOC"
+            [ -n "$METHOD_DATA" ] && echo -e "### Methods\n| Method | Returns | Description |\n| :--- | :--- | :--- |\n$METHOD_DATA\n" >> "$TEMP_DOC"
+            echo -e "---\n" >> "$TEMP_DOC"
+        fi
     done
 
-    # --- 3. COMMIT & PUSH ---
-    mv "$TEMP_DOC" "$DOC_FILE"
-    cd "$addon_path"
-    git add DOCUMENTATION.md
-    git commit -m "docs: updated api with cross-repo dependency links"
-    git push origin main
+    # --- 3. SYNC WITH SUPER-GIT-PUSH ---
+    if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
+        mv "$TEMP_DOC" "$DOC_FILE"
+        cd "$PROJECT_ROOT/$addon_path"
+        git add README.md DOCUMENTATION.md
+        git commit -m "docs: automated api update with cross-repo links"
+        echo "📤 Pushing updates for [$addon_folder] via super-git-push..."
+        super-git-push
+    else
+        echo "ℹ️  No changes detected for $addon_folder."
+        rm "$TEMP_DOC"
+    fi
     cd "$PROJECT_ROOT"
 done
+echo "✅ All addons processed."
