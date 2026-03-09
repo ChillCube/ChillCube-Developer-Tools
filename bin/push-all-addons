@@ -15,151 +15,101 @@ fi
 
 PROJECT_ROOT=$(pwd)
 
-if [ ! -d "addons" ]; then
-    echo "❌ Error: No addons/ folder found in $(pwd)"
-    exit 1
-fi
-
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
-    
-    echo "--------------------------------------------------"
     echo "🚀 Processing Addon: $addon_folder"
 
-    # --- 1. METADATA ---
+    # --- 1. METADATA & README ---
     CFG_FILE="$addon_path/plugin.cfg"
-    if [ -f "$CFG_FILE" ]; then
-        A_NAME=$(grep "name" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
-        A_DESC=$(grep "description" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
-        A_AUTH=$(grep "author" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
-    else
-        A_NAME="$addon_folder"; A_DESC="Godot Addon"; A_AUTH="ChillCube"
-    fi
-
-    # --- 2. README ---
+    A_NAME=$(grep "name" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+    A_DESC=$(grep "description" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     curl -sSL "$TEMPLATE_URL" -o "$addon_path/README.md"
     sed -i "s@{{NAME}}@$A_NAME@g" "$addon_path/README.md"
     sed -i "s@{{DESC}}@$A_DESC@g" "$addon_path/README.md"
-    sed -i "s@{{AUTHOR}}@$A_AUTH@g" "$addon_path/README.md"
-    sed -i "s@{{YEAR}}@$(date +%Y)@g" "$addon_path/README.md"
 
-    # --- 3. DOCUMENTATION ---
+    # --- 2. DOCUMENTATION ---
     DOC_FILE="$addon_path/DOCUMENTATION.md"
     TEMP_DOC=$(mktemp)
-    
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo "Generated on: $(date +'%Y-%m-%d')" >> "$TEMP_DOC"
-    echo -e "\n$A_DESC\n" >> "$TEMP_DOC"
-    echo "---" >> "$TEMP_DOC"
+    echo -e "\n$A_DESC\n---\n" >> "$TEMP_DOC"
 
     mapfile -t SCRIPTS < <(find "$addon_path" -name "*.gd")
 
     for script in "${SCRIPTS[@]}"; do
-        # Extract class_name
         C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/[ \t]*$//')
         [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
 
-        # Extract inheritance (NEW)
-        EXTENDS=$(grep "^extends " "$script" | sed 's/extends //' | sed 's/[ \t]*$//')
-        [ -z "$EXTENDS" ] && EXTENDS="Object"
+        # Inheritance + Link to Godot Docs
+        RAW_EXT=$(grep "^extends " "$script" | sed 's/extends //' | sed 's/[ \t]*$//')
+        [ -z "$RAW_EXT" ] && RAW_EXT="Object"
+        EXT_LINK="[\`$RAW_EXT\`](https://docs.godotengine.org/en/stable/classes/class_${RAW_EXT,,}.html)"
 
         CLASS_DESC=$(awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script")
         
+        # Properties (Existing State Machine Logic)
         PROP_DATA=$(awk '
             BEGIN { recording = 0; buffer = ""; desc = ""; name = ""; type = ""; }
-
             /^[ \t]*(@export.*)?var/ && /##/ {
-                recording = 1;
-                full_line = $0;
-                split(full_line, parts, "##");
-                desc = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc);
-                
-                code = parts[1];
-                split(code, n_p, "var "); split(n_p[2], b, /[ :={]/); name = b[1];
-                
-                type = "Variant";
-                if (code ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
-                    match(code, /:[ \t]*[A-zA-Z0-9_\[\]]+/);
-                    type = substr(code, RSTART+1, RLENGTH-1);
-                    gsub(/[ \t]+/, "", type);
+                recording = 1; split($0, parts, "##"); desc = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc);
+                code = parts[1]; split(code, n_p, "var "); split(n_p[2], b, /[ :={]/); name = b[1];
+                type = "Variant"; if (code ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
+                    match(code, /:[ \t]*[A-zA-Z0-9_\[\]]+/); type = substr(code, RSTART+1, RLENGTH-1);
                 }
-                
-                buffer = code;
-                
-                if (code !~ /\{/ && code !~ /\[/) {
-                    finish_up();
-                }
+                buffer = code; if (code !~ /\{/ && code !~ /\[/) finish_up();
             }
-
             recording == 1 && $0 !~ /var/ {
-                nl = $0;
-                if (nl ~ /##/) { split(nl, tmp, "##"); nl = tmp[1]; }
+                nl = $0; if (nl ~ /##/) { split(nl, tmp, "##"); nl = tmp[1]; }
                 buffer = buffer " " nl;
             }
-
-            recording == 1 && ($0 ~ /\}/ || $0 ~ /\]/) {
-                finish_up();
-            }
-
+            recording == 1 && ($0 ~ /\}/ || $0 ~ /\]/) { finish_up(); }
             function finish_up() {
-                def = "-";
-                if (buffer ~ /=/) {
-                    eq_idx = index(buffer, "=");
-                    after_eq = substr(buffer, eq_idx + 1);
-                    
-                    b_idx = 0;
-                    if (after_eq ~ /\{/) b_idx = index(after_eq, "{");
-                    else if (after_eq ~ /\[/) b_idx = index(after_eq, "[");
-                    
-                    if (b_idx > 0) {
-                        def = substr(after_eq, b_idx);
-                    } else {
-                        def = after_eq;
-                        sub(/:[ \t]*$/, "", def);
-                    }
+                def = "-"; if (buffer ~ /=/) {
+                    eq_idx = index(buffer, "="); after_eq = substr(buffer, eq_idx + 1);
+                    b_idx = (after_eq ~ /\{/) ? index(after_eq, "{") : (after_eq ~ /\[/ ? index(after_eq, "[") : 0);
+                    def = (b_idx > 0) ? substr(after_eq, b_idx) : after_eq;
                 }
-                
-                gsub(/[ \t]+/, " ", def); 
-                sub(/;[ \t]*$/, "", def); 
-                gsub(/^[ \t]+|[ \t]+$/, "", def);
-
+                gsub(/[ \t]+/, " ", def); sub(/;[ \t]*$/, "", def); gsub(/^[ \t]+|[ \t]+$/, "", def);
                 if (name != "") printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc);
-                
                 recording = 0; buffer = ""; name = "";
             }
         ' "$script")
 
+        # Signals (New)
+        SIGNAL_DATA=$(awk '/signal .*##/ {
+            line = $0; split(line, p, "##"); d = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", d);
+            code = p[1]; split(code, a, "signal "); split(a[2], b, /[ (]/); n = b[1];
+            printf("| **%s** | %s |\n", n, d);
+        }' "$script")
+
+        # Methods (Existing Logic)
         METHOD_DATA=$(awk '/func .*##/ {
-            line = $0; split(line, p, "##"); d = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", d); code = p[1];
-            split(code, a, "func "); split(a[2], b, "("); n = b[1];
+            line = $0; split(line, p, "##"); d = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", d);
+            code = p[1]; split(code, a, "func "); split(a[2], b, "("); n = b[1];
             if (n == "" || n ~ /^_/) next;
             ret = "void"; if (code ~ /->/) { split(code, c, "->"); split(c[2], d_ret, ":"); ret = d_ret[1]; gsub(/[ \t]+/, "", ret); }
             printf("| **%s()** | `%s` | %s |\n", n, ret, d);
         }' "$script")
 
-        if [ -n "$CLASS_DESC" ] || [ -n "$PROP_DATA" ] || [ -n "$METHOD_DATA" ]; then
+        if [ -n "$CLASS_DESC" ] || [ -n "$PROP_DATA" ] || [ -n "$METHOD_DATA" ] || [ -n "$SIGNAL_DATA" ]; then
             echo -e "\n## Class: $C_NAME" >> "$TEMP_DOC"
-            echo -e "**Inherits:** \`$EXTENDS\`\n" >> "$TEMP_DOC"
+            echo -e "**Inherits:** $EXT_LINK\n" >> "$TEMP_DOC"
             [ -n "$CLASS_DESC" ] && echo -e "$CLASS_DESC\n" >> "$TEMP_DOC"
             [ -n "$PROP_DATA" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PROP_DATA\n" >> "$TEMP_DOC"
+            [ -n "$SIGNAL_DATA" ] && echo -e "### Signals\n| Signal | Description |\n| :--- | :--- |\n$SIGNAL_DATA\n" >> "$TEMP_DOC"
             [ -n "$METHOD_DATA" ] && echo -e "### Methods\n| Method | Returns | Description |\n| :--- | :--- | :--- |\n$METHOD_DATA\n" >> "$TEMP_DOC"
             echo "---" >> "$TEMP_DOC"
         fi
     done
 
-    # --- 4. GIT SYNC ---
+    # --- 3. GIT SYNC ---
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
         git add .
-        git commit -m "docs($addon_folder): automated api update"
-        echo "📤 Changes found. Pushing [$addon_folder]..."
+        git commit -m "docs($addon_folder): automated api update with signals"
         if command -v super-git-push &> /dev/null; then super-git-push; else git push origin main; fi
-    else
-        echo "ℹ️  No changes detected for $addon_folder."
-        rm "$TEMP_DOC"
     fi
     cd "$PROJECT_ROOT"
 done
-echo "✅ Finished."
