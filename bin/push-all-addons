@@ -101,25 +101,31 @@ for addon_path in addons/*; do
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
 
-    while read -r url; do
-        [ -z "$url" ] && continue
-    
-        # Find all classes in the project that belong to THIS repo
-        USED_CLASSES=""
-        for cname in "${!CLASS_TO_REPO[@]}"; do
-            if [[ "${CLASS_TO_REPO[$cname]}" == "$url" ]]; then
-                # Only add it if it's actually used in the current addon's code
-                if grep -qr "$cname" "$addon_path" --include="*.gd"; then
-                    USED_CLASSES+="\`$cname\`, "
-                fi
-            fi
-        done
-        # Clean trailing comma
-        USED_CLASSES=$(echo "$USED_CLASSES" | sed 's/, $//')
-        
-        DOC_LINK="${url}/blob/main/DOCUMENTATION.md"
-        echo "| Code | [$USED_CLASSES]($DOC_LINK) | [Repo]($url) |" >> "$TEMP_DOC"
-    done <<< "$AUTO_DEPS_URLS"
+    if [ -n "$AUTO_DEPS_URLS" ] || [ -n "$MANUAL_DEPS" ]; then
+        echo -e "### 📦 Dependencies\n" >> "$TEMP_DOC"
+        echo -e "| Source | Reference | Repository |" >> "$TEMP_DOC"
+        echo -e "| :--- | :--- | :--- |" >> "$TEMP_DOC"
+
+        # Automated Loop
+        while read -r url; do
+            [ -z "$url" ] && continue
+            DEP_FOLDER=$(basename "$url" | sed 's/\.git$//')
+            REF_NAME=$(echo "$DEP_FOLDER" | sed 's/Godot_//g')
+            DOC_LINK="${url}/blob/main/DOCUMENTATION.md"
+            echo "| Code | [\`$REF_NAME\`]($DOC_LINK) | [Repo]($url) |" >> "$TEMP_DOC"
+        done <<< "$AUTO_DEPS_URLS"
+
+        # Manual Loop
+        if [ -n "$MANUAL_DEPS" ]; then
+            while read -r m_url; do
+                [[ "$m_url" =~ ^http ]] || continue
+                M_DEP_NAME=$(basename "$m_url" | sed 's/\.git$//')
+                M_DOC_LINK="${m_url}/blob/main/DOCUMENTATION.md"
+                echo "| Manual | [\`$M_DEP_NAME\`]($M_DOC_LINK) | [Repo]($m_url) |" >> "$TEMP_DOC"
+            done <<< "$(echo "$MANUAL_DEPS" | grep -v "$MANUAL_MARKER")"
+        fi
+        echo -e "\n---\n" >> "$TEMP_DOC"
+    fi
 
         # Add Manual Dependencies
         if [ -n "$MANUAL_DEPS" ]; then
