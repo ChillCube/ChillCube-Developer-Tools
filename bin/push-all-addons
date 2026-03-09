@@ -68,22 +68,21 @@ for addon_path in addons/*; do
 
         # 3a. Properties Table
         PROP_DATA=$(awk '
-            # Search for @export var or var that includes a ## comment
-            /(@export[ \t]+)?var .*##/ {
+            /(@export.*)?var .*##/ {
                 line = $0; 
                 split(line, p, "##"); desc = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc); code = p[1];
                 
-                # Extract Name (Handling @export var or just var)
+                # Extract Name
                 name = ""; 
                 if (code ~ /var /) { 
                     split(code, a, "var "); split(a[2], b, /[ :={]/); name = b[1]; 
                 }
                 if (name == "") next;
 
-                # Extract Type (Handles : Type, : Array[Type], etc)
+                # Extract Type (Enhanced for Array[Node], Vector2, etc.)
                 type = "Variant";
                 if (code ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) { 
-                    split(code, a, ":"); split(a[2], b, /[= ]/); 
+                    split(code, a, ":"); split(a[2], b, /[=; ]/); 
                     type = b[1]; 
                     gsub(/[ \t]+/, "", type);
                 } else if (code ~ /:=/) {
@@ -91,7 +90,7 @@ for addon_path in addons/*; do
                     else if (code ~ /[0-9]+\.[0-9]+/) type = "float"; else if (code ~ /[0-9]+/) type = "int";
                 }
 
-                # Extract Default (Cleans up semicolons)
+                # Extract Default (Now strips semicolons ;)
                 def = "-";
                 if (code ~ /:=/) { split(code, a, ":="); def = a[2]; }
                 else if (code ~ /=/) { split(code, a, "="); def = a[2]; }
@@ -142,6 +141,7 @@ for addon_path in addons/*; do
     if [ ! -f "$DOC_FILE" ]; then
         COMMIT_NEEDED=true
     else
+        # Compare excluding the "Generated on" line
         if ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
             COMMIT_NEEDED=true
         fi
