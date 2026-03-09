@@ -66,10 +66,8 @@ for addon_path in addons/*; do
             /^[ \t]*(@export.*)?var/ && /##/ {
                 full_line = $0
                 split(full_line, parts, "##")
-                # The actual description column content
                 desc_col = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc_col)
                 
-                # The code leading up to the comment
                 code_part = parts[1]
                 gsub(/@export(_[a-z_]+)?(\(.*\))?/, "", code_part)
                 gsub(/^[ \t]+|[ \t]+$/, "", code_part)
@@ -88,20 +86,23 @@ for addon_path in addons/*; do
 
                 # 3. Extract Default Value
                 def = "-"
+                # Focus strictly on the assignment after the variable name
                 if (code_part ~ /=/ || code_part ~ /:=/) {
                     delim = (code_part ~ /:=/) ? ":=" : "="
-                    split(code_part, d_parts, delim)
-                    val_segment = d_parts[2]
+                    
+                    # Split only on the first occurrence of the delimiter to avoid breaking dicts
+                    idx = index(code_part, delim)
+                    val_segment = substr(code_part, idx + length(delim))
                     gsub(/^[ \t]+|[ \t]+$/, "", val_segment)
 
-                    # If multi-line (starts with { or [)
                     if (val_segment ~ /^\{/ || val_segment ~ /^\[/) {
                         bracket_end = (val_segment ~ /^\{/) ? "}" : "]"
                         combined = val_segment
-                        # Slurp lines until bracket ends
+                        
+                        # Slurp only if the bracket isnt already closed on this line
                         while (combined !~ bracket_end && (getline nl < FILENAME) > 0) {
-                            # Remove comments from the slurped lines immediately
-                            if (nl ~ /##/) { split(nl, nl_parts, "##"); nl = nl_parts[1]; }
+                            # Strip comments from inner lines
+                            if (nl ~ /##/) { split(nl, nl_p, "##"); nl = nl_p[1]; }
                             gsub(/^[ \t]+|[ \t]+$/, " ", nl)
                             combined = combined nl
                         }
@@ -112,10 +113,8 @@ for addon_path in addons/*; do
                     }
                 }
                 
-                # --- FINAL CLEANUP ---
-                # Remove any leftover inline comments that leaked into the string
-                if (def ~ /##/) { split(def, cleanup, "##"); def = cleanup[1]; }
-                
+                # Cleanup leftover noise
+                if (def ~ /##/) { split(def, cln, "##"); def = cln[1]; }
                 gsub(/;/, "", def)
                 gsub(/[ \t]+/, " ", def)
                 gsub(/^[ \t]+|[ \t]+$/, "", def)
@@ -124,6 +123,7 @@ for addon_path in addons/*; do
             }
         ' "$script")
 
+        # Methods section
         METHOD_DATA=$(awk '/func .*##/ {
             line = $0; split(line, p, "##"); desc = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc); code = p[1];
             split(code, a, "func "); split(a[2], b, "("); name = b[1];
@@ -153,4 +153,4 @@ for addon_path in addons/*; do
     fi
     cd "$PROJECT_ROOT"
 done
-echo "✅ Done."
+echo "✅ Finished."
