@@ -56,13 +56,12 @@ for addon_path in addons/*; do
     mapfile -t SCRIPTS < <(find "$addon_path" -name "*.gd")
 
     for script in "${SCRIPTS[@]}"; do
-        # Extract class_name or use filename
         C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/[ \t]*$//')
         [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
 
         CLASS_DESC=$(awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script")
         
-        # 3a. Properties Table (Multi-line & Setter Aware)
+        # 3a. Properties Table (Deep Parser)
         PROP_DATA=$(awk '
             /var/ && /##/ {
                 full_line = $0
@@ -73,16 +72,16 @@ for addon_path in addons/*; do
                 gsub(/@export(_[a-z_]+)?(\(.*\))?/, "", code)
                 gsub(/^[ \t]+|[ \t]+$/, "", code)
 
-                # Extract Name
+                # 1. Extract Name
                 name = ""; split(code, n_parts, "var "); split(n_parts[2], b, /[ :={]/); name = b[1]
                 if (name == "") next
 
-                # Extract Type
+                # 2. Extract Type (Improved Setter Awareness)
                 type = "Variant"
                 if (code ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
-                    t_str = code; sub(/.*:[ \t]*/, "", t_str)
-                    split(t_str, t_parts, /[ =;:]/)
-                    type = t_parts[1]
+                    match(code, /:[ \t]*[A-zA-Z0-9_\[\]]+/)
+                    type = substr(code, RSTART+1, RLENGTH-1)
+                    gsub(/[ \t]+/, "", type)
                 } else if (parts[1] ~ /:=/) {
                     if (parts[1] ~ /"/) type = "String"
                     else if (parts[1] ~ /true|false/) type = "bool"
@@ -90,27 +89,33 @@ for addon_path in addons/*; do
                     else if (parts[1] ~ /[0-9]+/) type = "int"
                 }
 
-                # Extract Default Value (Handle setters and multi-line objects)
+                # 3. Extract Default Value (Setter and Multi-line Aware)
                 def = "-"
-                code_for_def = parts[1]
-                if (code_for_def ~ /\{/) {
-                    def = "{...}"
-                } else if (code_for_def ~ /\[/) {
-                    def = "[...]"
-                } else if (code_for_def ~ /:=/) {
-                    split(code_for_def, d_parts, ":=")
+                raw_code = parts[1]
+                
+                if (raw_code ~ /=/) {
+                    split(raw_code, d_parts, "=")
                     def = d_parts[2]
-                } else if (code_for_def ~ /=/) {
-                    split(code_for_def, d_parts, "=")
-                    split(d_parts[2], clean_def, ":") 
-                    def = clean_def[1]
+                    # Handle the Godot 4 setter colon "var x : int = 100:"
+                    if (def ~ /:$/ || def ~ /:[ \t]*$/) {
+                        sub(/:[ \t]*$/, "", def)
+                    }
+                } else if (raw_code ~ /:=/) {
+                    split(raw_code, d_parts, ":=")
+                    def = d_parts[2]
                 }
+
+                # If it looks like a dictionary/array start, we clean it up
+                if (def ~ /\{/) { def = "Dictionary" }
+                else if (def ~ /\[/) { def = "Array" }
+                
                 gsub(/^[ \t;]+|[ \t;]+$/, "", def)
                 
                 printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc)
             }
         ' "$script")
 
+        # (Methods and Signals sections remain the same as previous stable version)
         METHOD_DATA=$(awk '/func .*##/ {
             line = $0; split(line, p, "##"); desc = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc); code = p[1];
             split(code, a, "func "); split(a[2], b, "("); name = b[1];
@@ -128,7 +133,6 @@ for addon_path in addons/*; do
         if [ -n "$CLASS_DESC" ] || [ -n "$PROP_DATA" ] || [ -n "$METHOD_DATA" ] || [ -n "$SIGNAL_DATA" ]; then
             echo -e "\n## Class: $C_NAME" >> "$TEMP_DOC"
             [ -n "$CLASS_DESC" ] && echo -e "$CLASS_DESC\n" >> "$TEMP_DOC"
-            
             if [ -n "$PROP_DATA" ]; then
                 echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |" >> "$TEMP_DOC"
                 echo "$PROP_DATA" >> "$TEMP_DOC"; echo "" >> "$TEMP_DOC"
@@ -150,20 +154,12 @@ for addon_path in addons/*; do
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
         git add README.md DOCUMENTATION.md
-        
-        # Commit with automated message; super-git-push handles the rest
-        git commit -m "docs($addon_folder): automated api reference update"
-        
-        echo "📤 Pushing [$addon_folder]..."
-        if command -v super-git-push &> /dev/null; then 
-            super-git-push 
-        else 
-            git push origin main
-        fi
+        git commit -m "docs($addon_folder): automated api update"
+        if command -v super-git-push &> /dev/null; then super-git-push; else git push origin main; fi
     else
         echo "ℹ️  No changes detected for $addon_folder."
         rm "$TEMP_DOC"
     fi
     cd "$PROJECT_ROOT"
 done
-echo "✅ All addons processed."
+echo "✅ Finished."
