@@ -20,7 +20,15 @@ for addon_path in addons/*; do
     addon_folder=$(basename "$addon_path")
     echo "🚀 Processing Addon: $addon_folder"
 
-    # --- 1. METADATA & README ---
+    # --- 1. PRE-SCAN: Get all internal class_names for cross-linking ---
+    mapfile -t ALL_SCRIPTS < <(find "$addon_path" -name "*.gd")
+    INTERNAL_CLASSES=""
+    for s in "${ALL_SCRIPTS[@]}"; do
+        CN=$(grep "class_name" "$s" | sed 's/class_name //' | sed 's/[ \t]*$//')
+        [ -n "$CN" ] && INTERNAL_CLASSES+="$CN "
+    done
+
+    # --- 2. METADATA & README ---
     CFG_FILE="$addon_path/plugin.cfg"
     A_NAME=$(grep "name" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     A_DESC=$(grep "description" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
@@ -28,27 +36,37 @@ for addon_path in addons/*; do
     sed -i "s@{{NAME}}@$A_NAME@g" "$addon_path/README.md"
     sed -i "s@{{DESC}}@$A_DESC@g" "$addon_path/README.md"
 
-    # --- 2. DOCUMENTATION ---
+    # --- 3. DOCUMENTATION ---
     DOC_FILE="$addon_path/DOCUMENTATION.md"
     TEMP_DOC=$(mktemp)
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo "Generated on: $(date +'%Y-%m-%d')" >> "$TEMP_DOC"
     echo -e "\n$A_DESC\n---\n" >> "$TEMP_DOC"
 
-    mapfile -t SCRIPTS < <(find "$addon_path" -name "*.gd")
-
-    for script in "${SCRIPTS[@]}"; do
+    for script in "${ALL_SCRIPTS[@]}"; do
         C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/[ \t]*$//')
         [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
 
-        # Inheritance + Link to Godot Docs
+        # Smart Inheritance Linking
         RAW_EXT=$(grep "^extends " "$script" | sed 's/extends //' | sed 's/[ \t]*$//')
         [ -z "$RAW_EXT" ] && RAW_EXT="Object"
-        EXT_LINK="[\`$RAW_EXT\`](https://docs.godotengine.org/en/stable/classes/class_${RAW_EXT,,}.html)"
+        
+        # Check if RAW_EXT is one of our internal classes
+        if [[ " $INTERNAL_CLASSES " =~ " $RAW_EXT " ]]; then
+            # Link to the section in this document (Markdown anchor)
+            EXT_LINK="[\`$RAW_EXT\`](#class-$RAW_EXT)"
+        elif [[ "$RAW_EXT" =~ ^[A-Z] ]] && [[ ! "$RAW_EXT" =~ [./] ]]; then
+            # Assume it is a Godot Engine class if it starts with Uppercase and has no path
+            # (Godot classes are usually PascalCase, dependencies might vary)
+            EXT_LINK="[\`$RAW_EXT\`](https://docs.godotengine.org/en/stable/classes/class_${RAW_EXT,,}.html)"
+        else
+            # Dependency or path-based extension
+            EXT_LINK="\`$RAW_EXT\`"
+        fi
 
         CLASS_DESC=$(awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script")
         
-        # Properties (Existing State Machine Logic)
+        # [Properties, Signals, and Methods logic remains same as previous state machine version]
         PROP_DATA=$(awk '
             BEGIN { recording = 0; buffer = ""; desc = ""; name = ""; type = ""; }
             /^[ \t]*(@export.*)?var/ && /##/ {
@@ -76,14 +94,12 @@ for addon_path in addons/*; do
             }
         ' "$script")
 
-        # Signals (New)
         SIGNAL_DATA=$(awk '/signal .*##/ {
             line = $0; split(line, p, "##"); d = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", d);
             code = p[1]; split(code, a, "signal "); split(a[2], b, /[ (]/); n = b[1];
             printf("| **%s** | %s |\n", n, d);
         }' "$script")
 
-        # Methods (Existing Logic)
         METHOD_DATA=$(awk '/func .*##/ {
             line = $0; split(line, p, "##"); d = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", d);
             code = p[1]; split(code, a, "func "); split(a[2], b, "("); n = b[1];
@@ -103,12 +119,12 @@ for addon_path in addons/*; do
         fi
     done
 
-    # --- 3. GIT SYNC ---
+    # --- 4. GIT SYNC ---
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
         git add .
-        git commit -m "docs($addon_folder): automated api update with signals"
+        git commit -m "docs($addon_folder): smart inheritance linking"
         if command -v super-git-push &> /dev/null; then super-git-push; else git push origin main; fi
     fi
     cd "$PROJECT_ROOT"
