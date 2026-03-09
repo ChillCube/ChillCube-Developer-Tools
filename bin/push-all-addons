@@ -74,37 +74,29 @@ for addon_path in addons/*; do
 
     # --- 4. RECURSIVE DEPENDENCY SCAN ---
     AUTO_DEPS_URLS=""
-    FOUND_ADDONS=""
-    
-    # Start by scanning the current addon
+    PROCESSED_ADDONS="$addon_folder"
     SCAN_QUEUE="$addon_folder"
-    PROCESSED_ADDONS=""
 
     while [[ -n "$SCAN_QUEUE" ]]; do
-        # Pop the first addon from the queue
-        CURRENT_SCAN=$(echo "$SCAN_QUEUE" | head -n 1)
+        CURRENT=$(echo "$SCAN_QUEUE" | head -n 1)
         SCAN_QUEUE=$(echo "$SCAN_QUEUE" | tail -n +2)
-        
-        # Skip if already processed to prevent infinite loops
-        [[ "$PROCESSED_ADDONS" == *"$CURRENT_SCAN"* ]] && continue
-        PROCESSED_ADDONS+="$CURRENT_SCAN "
 
-        # Find all class words in the files of this addon
-        # This matches: .new(), : ClassName, extends ClassName, etc.
+        # Look for ANY word that exists in our Global Map
         while read -r word; do
-            # If the word is a known class and belongs to a DIFFERENT addon
             TARGET_ADDON="${CLASS_TO_ADDON[$word]}"
+            # If the word is a class we know, and it's NOT from the current addon
             if [[ -n "$TARGET_ADDON" ]] && [[ "$TARGET_ADDON" != "$addon_folder" ]]; then
                 URL="${CLASS_TO_REPO[$word]}"
-                
-                # If we haven't logged this URL yet, add it
                 if [[ "$AUTO_DEPS_URLS" != *"$URL"* ]]; then
                     AUTO_DEPS_URLS+="$URL"$'\n'
-                    # Add this new addon to the queue to scan ITS dependencies
-                    SCAN_QUEUE+="$TARGET_ADDON"$'\n'
+                    # Add the new addon to the queue to find its own dependencies (Recursion)
+                    if [[ "$PROCESSED_ADDONS" != *"$TARGET_ADDON"* ]]; then
+                        SCAN_QUEUE+="$TARGET_ADDON"$'\n'
+                        PROCESSED_ADDONS+="$TARGET_ADDON "
+                    fi
                 fi
             fi
-        done < <(grep -rEo "\b[A-Za-z0-9_]+\b" "$PROJECT_ROOT/addons/$CURRENT_SCAN" --include="*.gd" | grep -v "^#" | sort -u)
+        done < <(grep -rEo "\b[A-Za-z0-9_]+\b" "addons/$CURRENT" --include="*.gd" | grep -v "^#" | sort -u)
     done
 
     # --- 5. README & DOCUMENTATION GENERATION ---
