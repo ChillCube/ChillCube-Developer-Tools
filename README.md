@@ -1,6 +1,7 @@
 # ChillCube-Developer-Tools
 This repository provides tools that will be needed to work with ChillCube's projects and libraries. 
-People who would like to contribute or use our libraries may also need to install these, even if they are not ChillCube Developers
+People who would like to contribute or use our libraries may also need to install these, even if they are not ChillCube Developers.
+Depending on your needs, it may be recommended to fork this library, as this library is first and foremost made for ChillCube's own development pipeline.
 
 ## Installation 
 ### Linux/MacOS
