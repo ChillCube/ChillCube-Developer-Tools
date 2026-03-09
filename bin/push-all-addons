@@ -21,7 +21,8 @@ for d in addons/*/; do
     folder_name=$(basename "$d")
     
     pushd "$d" > /dev/null
-    repo_url=$(git remote get-url origin 2>/dev/null)
+    # Strips .git from the end so web links don't break
+    repo_url=$(git remote get-url origin 2>/dev/null | sed 's/\.git$//')
     popd > /dev/null
     
     while read -r c_line; do
