@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Deep-Link Engine (v3.1 - Nix/Godot4 Stable) ---
+# --- Chillcube Universal Doc & Deep-Link Engine (v3.1 - Universal Stable) ---
 TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
 PROJECT_ROOT=$(pwd)
 
@@ -68,8 +68,7 @@ for addon_path in addons/*; do
                 LOCAL_DEPS["$DEP_ADDON"]="$REPO"
                 CLASS_TO_DEP_LINK["$check_class"]="$REPO/blob/main/DOCUMENTATION.md#class-${check_class,,}"
             elif [[ ! " $ALL_CUSTOM_CLASSES " =~ " $check_class " ]]; then
-                # Expanded Godot 4.x Ignore List
-                if [[ ! "$check_class" =~ ^(Node|Sprite|Vector|String|int|float|bool|Array|Dictionary|Resource|Object|Input|SceneTree|Engine|JSON|OS|Time|Color|Rect2|Callable|Signal|CharacterBody|Area|Collision|Label|Button|Control|Canvas|Texture|Viewport|Camera|Timer|Tween|Audio|Animation|FileAccess|DirAccess|Geometry|Marshalls|ClassDB|Variant|AnimatedSprite) ]]; then
+                if [[ ! "$check_class" =~ ^(Node|Sprite|Vector|String|int|float|bool|Array|Dictionary|Resource|Object|Input|SceneTree|Engine|JSON|OS|Time|Color|Rect2|Callable|Signal|CharacterBody|Area|Collision|Label|Button|Control|Canvas|Texture|Viewport|Camera|Timer|Tween|Audio|Animation|FileAccess|DirAccess|Geometry|Marshalls|ClassDB|Variant|AnimatedSprite|InputEvent) ]]; then
                     echo "⚠️  WARNING: Potential missing class '$check_class' in '$script'"
                 fi
             fi
@@ -92,16 +91,14 @@ for addon_path in addons/*; do
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
             
-            # --- NON-REGEX PROPERTY PARSER (The "Safe" Way) ---
+            # --- SAFE PROPERTY PARSER ---
             PD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} 
             /^[ \t]*(@export.*)?var/ && /##/ { 
                 r=1; split($0,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/,"",d); 
                 line=p[1]; sub(/^[ \t]*/,"",line);
-                # Extract Name
                 split(line, parts, "var ");
                 split(parts[2], name_part, /[ :={]/);
                 n=name_part[1];
-                # Extract Type manually
                 t="Variant";
                 ci=index(line, ":");
                 if(ci > 0) {
@@ -125,3 +122,43 @@ for addon_path in addons/*; do
             }' "$script")
             
             [ -n "$PD" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PD\n"
+            
+            # Signals & Methods
+            SD=$(awk '/signal .*##/ { line=$0; split(line,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/,"",d); code=p[1]; split(code,a,"signal "); split(a[2],b,/[ (]/); n=b[1]; printf("| **%s** | %s |\n",n,d) }' "$script")
+            [ -n "$SD" ] && echo -e "### Signals\n| Signal | Description |\n| :--- | :--- |\n$SD\n"
+            MD=$(awk '/func .*##/ { line=$0; split(line,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/,"",d); code=p[1]; split(code,a,"func "); split(a[2],b, "("); n=b[1]; if(n=="" || n~"^_") next; ret="void"; if(code~"->") { split(code, c, "->"); split(c[2], dr, ":"); ret=dr[1]; gsub(/[ \t]+/,"",ret) } printf("| **%s()** | `%s` | %s |\n", n, ret, d) }' "$script")
+            [ -n "$MD" ] && echo -e "### Methods\n| Method | Returns | Description |\n| :--- | :--- | :--- |\n$MD\n"
+            echo -e "---\n"
+        } >> "$BODY_CONTENT"
+    done
+
+    # --- 4. DEPENDENCIES TABLE ---
+    if [ ${#LOCAL_DEPS[@]} -gt 0 ]; then
+        echo -e "### 📦 Dependencies" >> "$TEMP_DOC"
+        echo "| Class | Addon | Repository |" >> "$TEMP_DOC"
+        echo "| :--- | :--- | :--- |" >> "$TEMP_DOC"
+        > "$DEP_FILE"
+        IFS=$'\n' sorted_classes=($(sort <<<"${!CLASS_TO_DEP_LINK[*]}"))
+        unset IFS
+        for cls in "${sorted_classes[@]}"; do
+            echo "| [\`$cls\`](${CLASS_TO_DEP_LINK[$cls]}) | ${CLASS_TO_ADDON[$cls]} | [Repo](${CLASS_TO_REPO[$cls]}) |" >> "$TEMP_DOC"
+            if ! grep -q "${CLASS_TO_REPO[$cls]}" "$DEP_FILE"; then echo "${CLASS_TO_REPO[$cls]}" >> "$DEP_FILE"; fi
+        done
+        echo -e "\n---\n" >> "$TEMP_DOC"
+    fi
+
+    cat "$BODY_CONTENT" >> "$TEMP_DOC"
+    rm "$BODY_CONTENT"
+
+    # --- 5. SYNC ---
+    if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
+        mv "$TEMP_DOC" "$DOC_FILE"
+        cd "$PROJECT_ROOT/$addon_path"
+        git add .
+        git commit -m "docs: universal stable dependency scan"
+        super-git-push
+    else
+        rm "$TEMP_DOC"
+    fi
+    cd "$PROJECT_ROOT"
+done
