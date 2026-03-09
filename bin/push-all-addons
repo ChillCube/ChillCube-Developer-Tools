@@ -64,19 +64,15 @@ for addon_path in addons/*; do
         PROP_DATA=$(awk '
             BEGIN { recording = 0; buffer = ""; desc = ""; name = ""; type = ""; }
 
-            # Detect start of a documented variable
             /^[ \t]*(@export.*)?var/ && /##/ {
-                # If we were already recording another one, flush it (shouldnt happen in valid GDScript)
                 recording = 1;
                 full_line = $0;
                 split(full_line, parts, "##");
                 desc = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc);
                 
                 code = parts[1];
-                # Extract Name
                 split(code, n_p, "var "); split(n_p[2], b, /[ :={]/); name = b[1];
                 
-                # Extract Type
                 type = "Variant";
                 if (code ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
                     match(code, /:[ \t]*[A-zA-Z0-9_\[\]]+/);
@@ -86,26 +82,22 @@ for addon_path in addons/*; do
                 
                 buffer = code;
                 
-                # If its not a multi-line dict/array, we can finish immediately
                 if (code !~ /\{/ && code !~ /\[/) {
                     finish_up();
                 }
             }
 
-            # If we are in recording mode, keep adding lines
             recording == 1 && $0 !~ /var/ {
                 nl = $0;
                 if (nl ~ /##/) { split(nl, tmp, "##"); nl = tmp[1]; }
                 buffer = buffer " " nl;
             }
 
-            # Detect end of assignment
             recording == 1 && ($0 ~ /\}/ || $0 ~ /\]/) {
                 finish_up();
             }
 
             function finish_up() {
-                # SURGERY: Find the first { or [ after the =
                 def = "-";
                 if (buffer ~ /=/) {
                     eq_idx = index(buffer, "=");
@@ -123,8 +115,14 @@ for addon_path in addons/*; do
                     }
                 }
                 
-                # Final Table Formatting
-                gsub(/[ \t]+/, " ", def); gsub(/^[ \t]+|[ \t]+$/, "", def);
+                # --- CLEANUP BLOCK ---
+                # Collapse whitespace
+                gsub(/[ \t]+/, " ", def); 
+                # Remove trailing semicolon if it exists
+                sub(/;[ \t]*$/, "", def); 
+                # Trim exterior whitespace
+                gsub(/^[ \t]+|[ \t]+$/, "", def);
+
                 if (name != "") printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc);
                 
                 recording = 0; buffer = ""; name = "";
@@ -149,7 +147,6 @@ for addon_path in addons/*; do
     done
 
     # --- 4. GIT SYNC ---
-    # Delete the old doc first to guarantee a new file creation
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
