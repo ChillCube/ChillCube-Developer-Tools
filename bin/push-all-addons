@@ -9,6 +9,11 @@ UPDATED_COUNT=0
 AUTO_MARKER="# --- Automated Dependencies (Managed by Script) ---"
 
 MANUAL_MARKER="# --- Manual Dependencies (Do Not Delete) ---"
+MANUAL_DEPS=""
+if [ -f "$DEP_FILE" ]; then
+    # Capture everything after the Manual Marker, or the whole file if no marker exists
+    MANUAL_DEPS=$(cat "$DEP_FILE")
+fi
 
 ORG_REPO="https://github.com/ChillCube/.github.git"
 
