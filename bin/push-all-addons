@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Registry Engine ---
+# --- Chillcube Universal Doc & Registry Engine (v5.5) ---
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
 MANUAL_MARKER="# --- Manual Dependencies (Do Not Delete) ---"
@@ -38,10 +38,6 @@ for addon_path in addons/*; do
     DEP_FILE="$addon_path/DEPENDENCIES.txt"
     TEMP_DOC=$(mktemp)
     
-    declare -A AUTO_DEP_REPOS
-    declare -A CLASS_TO_DEP_LINK
-    MANUAL_DEPS_CONTENT=""
-
     CFG_FILE="$addon_path/plugin.cfg"
     [ ! -f "$CFG_FILE" ] && continue
     A_NAME=$(grep "name" "$CFG_FILE" 2>/dev/null | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
@@ -91,17 +87,62 @@ for addon_path in addons/*; do
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
             
-            # Properties
-            PD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 { r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); line=p[1]; sub(/^[ \t]*/,"",line); split(line, parts, "var "); split(parts[2], name_part, " "); split(name_part[1], name_final, ":"); n=name_final[1]; t="Variant"; ci=index(line, ":"); if(ci > 0) { remainder=substr(line, ci+1); sub(/^[ \t]*/,"",remainder); split(remainder, type_part, " "); split(type_part[1], type_final, "="); t=type_final[1]; } b=line; f() } function f(){ dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } sub(/^[ \t]*/,"",dv); sub(/[ \t]*$/,"",dv); if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n",n,t,dv,d); r=0; b=""; n="" }' "$script")
+            # Properties Logic
+            PD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 { 
+                r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
+                line=p[1]; sub(/^[ \t]*/,"",line); 
+                split(line, parts, "var "); split(parts[2], name_part, " "); 
+                split(name_part[1], name_final, ":"); n=name_final[1]; 
+                t="Variant"; ci=index(line, ":"); 
+                if(ci > 0) { 
+                    remainder=substr(line, ci+1); sub(/^[ \t]*/,"",remainder); 
+                    split(remainder, type_part, " "); split(type_part[1], type_final, "="); t=type_final[1]; 
+                } 
+                b=line; f() 
+            } 
+            function f(){ 
+                dv="-"; 
+                if(index(b,"=") > 0){ 
+                    split(b, val_parts, "="); dv=val_parts[2]; 
+                } 
+                sub(/^[ \t]*/,"",dv); 
+                sub(/[ \t]*[:;][ \t]*$/, "", dv); # Strip trailing : or ;
+                sub(/[ \t]*$/, "", dv); 
+                if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n", n, t, dv, d); 
+                r=0; b=""; n="" 
+            }' "$script")
             [ -n "$PD" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PD\n"
 
-            # Signals (Captures arguments)
-            SD=$(awk 'index($0, "signal") > 0 && index($0, "##") > 0 { split($0,p,"##"); d=p[2]; code=p[1]; sub(/^[ \t]*signal /, "", code); sub(/[ \t]*$/, "", code); printf("| `%s` | %s |\n", code, d) }' "$script")
-            [ -n "$SD" ] && echo -e "### Signals\n| Signal | Description |\n| :--- | :--- |\n$SD\n"
+            # Signals Logic
+            SD=$(awk 'index($0, "signal") > 0 && index($0, "##") > 0 { 
+                split($0,p,"##"); d=p[2]; code=p[1]; 
+                sub(/^[ \t]*signal /, "", code); sub(/[ \t]*$/, "", code);
+                name=code; args="-";
+                if(index(code, "(") > 0) {
+                    split(code, arr, "("); name=arr[1]; args=arr[2]; sub(/\).*/, "", args);
+                }
+                printf("| **%s** | `%s` | %s |\n", name, args, d) 
+            }' "$script")
+            [ -n "$SD" ] && echo -e "### Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |\n$SD\n"
 
-            # Methods (Captures arguments + return type)
-            MD=$(awk 'index($0, "func") > 0 && index($0, "##") > 0 { split($0,p,"##"); d=p[2]; code=p[1]; sub(/^[ \t]*func /, "", code); sub(/[ \t]*$/, "", code); n=code; split(n, parts, "("); if(index(parts[1], "_") == 1) next; ret="void"; if(index(code, "->") > 0) { split(code, c, "->"); ret=c[2]; sub(/:.*/, "", ret); gsub(/[ \t]+/, "", ret); sub(/\(.*/, "", code); code=code "(" parts[2] } else { sub(/:.*/, "", code) } printf("| **%s** | `%s` | %s |\n", code, ret, d) }' "$script")
-            [ -n "$MD" ] && echo -e "### Methods\n| Method | Returns | Description |\n| :--- | :--- | :--- |\n$MD\n"
+            # Methods Logic
+            MD=$(awk 'index($0, "func") > 0 && index($0, "##") > 0 { 
+                split($0,p,"##"); d=p[2]; code=p[1]; 
+                sub(/^[ \t]*func /, "", code); sub(/[ \t]*$/, "", code);
+                split(code, parts, "("); name=parts[1];
+                if(index(name, "_") == 1) next;
+                
+                args=parts[2]; sub(/\).*/, "", args); if(args=="") args="-";
+                
+                ret="void"; 
+                if(index(code, "->") > 0) { 
+                    split(code, c, "->"); ret=c[2]; 
+                    sub(/[ \t]*[:;][ \t]*$/, "", ret); # Clean return type
+                    gsub(/[ \t]+/, "", ret); 
+                }
+                printf("| **%s()** | `%s` | `%s` | %s |\n", name, args, ret, d) 
+            }' "$script")
+            [ -n "$MD" ] && echo -e "### Methods\n| Method | Arguments | Returns | Description |\n| :--- | :--- | :--- | :--- |\n$MD\n"
             echo -e "---\n"
         } >> "$BODY_CONTENT"
     done
