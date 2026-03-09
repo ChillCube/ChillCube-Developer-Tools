@@ -27,7 +27,7 @@ for addon_path in addons/*; do
     echo "--------------------------------------------------"
     echo "🚀 Processing Addon: $addon_folder"
 
-    # --- 1. METADATA ---
+    # --- 1. SCRAPE METADATA ---
     CFG_FILE="$addon_path/plugin.cfg"
     if [ -f "$CFG_FILE" ]; then
         A_NAME=$(grep "name" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
@@ -37,14 +37,14 @@ for addon_path in addons/*; do
         A_NAME="$addon_folder"; A_DESC="Godot Addon"; A_AUTH="ChillCube"
     fi
 
-    # --- 2. README ---
+    # --- 2. REGENERATE README ---
     curl -sSL "$TEMPLATE_URL" -o "$addon_path/README.md"
     sed -i "s@{{NAME}}@$A_NAME@g" "$addon_path/README.md"
     sed -i "s@{{DESC}}@$A_DESC@g" "$addon_path/README.md"
     sed -i "s@{{AUTHOR}}@$A_AUTH@g" "$addon_path/README.md"
     sed -i "s@{{YEAR}}@$(date +%Y)@g" "$addon_path/README.md"
 
-    # --- 3. DOCUMENTATION ---
+    # --- 3. GENERATE API REFERENCE ---
     DOC_FILE="$addon_path/DOCUMENTATION.md"
     TEMP_DOC=$(mktemp)
     
@@ -61,58 +61,64 @@ for addon_path in addons/*; do
 
         CLASS_DESC=$(awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script")
         
+        # 3a. Properties Table
         PROP_DATA=$(awk '
-            # Matches lines with "var" and "##"
             /^[ \t]*(@export.*)?var/ && /##/ {
                 full_line = $0
                 split(full_line, parts, "##")
+                # The actual description column content
                 desc_col = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc_col)
                 
-                code_before_comment = parts[1]
-                # Isolate the variable declaration by removing @export stuff
-                clean_code = code_before_comment
-                gsub(/@export(_[a-z_]+)?(\(.*\))?/, "", clean_code)
-                gsub(/^[ \t]+|[ \t]+$/, "", clean_code)
+                # The code leading up to the comment
+                code_part = parts[1]
+                gsub(/@export(_[a-z_]+)?(\(.*\))?/, "", code_part)
+                gsub(/^[ \t]+|[ \t]+$/, "", code_part)
 
-                # 1. Name
-                name = ""; split(clean_code, n_p, "var "); split(n_p[2], b, /[ :={]/); name = b[1]
+                # 1. Extract Name
+                name = ""; split(code_part, n_parts, "var "); split(n_parts[2], b, /[ :={]/); name = b[1]
                 if (name == "") next
 
-                # 2. Type
+                # 2. Extract Type
                 type = "Variant"
-                if (clean_code ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
-                    match(clean_code, /:[ \t]*[A-zA-Z0-9_\[\]]+/)
-                    type = substr(clean_code, RSTART+1, RLENGTH-1)
+                if (code_part ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
+                    match(code_part, /:[ \t]*[A-zA-Z0-9_\[\]]+/)
+                    type = substr(code_part, RSTART+1, RLENGTH-1)
                     gsub(/[ \t]+/, "", type)
                 }
 
-                # 3. Default Value (The "Stats" Fix)
+                # 3. Extract Default Value
                 def = "-"
-                if (clean_code ~ /=/ || clean_code ~ /:=/) {
-                    delim = (clean_code ~ /:=/) ? ":=" : "="
-                    idx = index(clean_code, delim)
-                    val_part = substr(clean_code, idx + length(delim))
-                    gsub(/^[ \t]+|[ \t]+$/, "", val_part)
+                if (code_part ~ /=/ || code_part ~ /:=/) {
+                    delim = (code_part ~ /:=/) ? ":=" : "="
+                    split(code_part, d_parts, delim)
+                    val_segment = d_parts[2]
+                    gsub(/^[ \t]+|[ \t]+$/, "", val_segment)
 
-                    # Only start slurping if THIS specific variable assignment opens a bracket
-                    if (val_part ~ /^\{/ || val_part ~ /^\[/) {
-                        closer = (val_part ~ /^\{/) ? "}" : "]"
-                        combined = val_part
-                        while (combined !~ closer && (getline nl < FILENAME) > 0) {
-                            if (nl ~ /##/) { split(nl, tmp, "##"); nl = tmp[1] }
+                    # If multi-line (starts with { or [)
+                    if (val_segment ~ /^\{/ || val_segment ~ /^\[/) {
+                        bracket_end = (val_segment ~ /^\{/) ? "}" : "]"
+                        combined = val_segment
+                        # Slurp lines until bracket ends
+                        while (combined !~ bracket_end && (getline nl < FILENAME) > 0) {
+                            # Remove comments from the slurped lines immediately
+                            if (nl ~ /##/) { split(nl, nl_parts, "##"); nl = nl_parts[1]; }
                             gsub(/^[ \t]+|[ \t]+$/, " ", nl)
                             combined = combined nl
                         }
                         def = combined
                     } else {
-                        def = val_part
-                        sub(/:[ \t]*$/, "", def)
+                        def = val_segment
+                        sub(/:[ \t]*$/, "", def) 
                     }
                 }
                 
-                # Cleanup
-                if (def ~ /##/) { split(def, cl, "##"); def = cl[1] }
-                gsub(/;/, "", def); gsub(/[ \t]+/, " ", def); gsub(/^[ \t]+|[ \t]+$/, "", def)
+                # --- FINAL CLEANUP ---
+                # Remove any leftover inline comments that leaked into the string
+                if (def ~ /##/) { split(def, cleanup, "##"); def = cleanup[1]; }
+                
+                gsub(/;/, "", def)
+                gsub(/[ \t]+/, " ", def)
+                gsub(/^[ \t]+|[ \t]+$/, "", def)
                 
                 printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc_col)
             }
@@ -135,18 +141,16 @@ for addon_path in addons/*; do
         fi
     done
 
-    # --- 4. GIT SYNC (Force check on Documentation update) ---
+    # --- 4. GIT SYNC ---
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
         git add README.md DOCUMENTATION.md
-        git commit -m "docs($addon_folder): updated api reference"
-        echo "📤 Pushing changes for [$addon_folder]..."
+        git commit -m "docs($addon_folder): automated api update"
         if command -v super-git-push &> /dev/null; then super-git-push; else git push origin main; fi
     else
-        echo "ℹ️  No changes detected for $addon_folder."
         rm "$TEMP_DOC"
     fi
     cd "$PROJECT_ROOT"
 done
-echo "✅ Finished."
+echo "✅ Done."
