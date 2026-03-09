@@ -12,18 +12,22 @@ TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-To
 declare -A CLASS_TO_REPO
 declare -A CLASS_TO_ADDON
 
-# --- 1. GLOBAL PRE-SCAN ---
-for addon_path in addons/*; do
-    [ -d "$addon_path/.git" ] || continue
-    addon_folder=$(basename "$addon_path")
-    REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//' | sed 's/git@github\.com:/https:\/\/github\.com\//' | sed 's/ssh:\/\/git@github\.com\//https:\/\/github\.com\//')
+# Scan ALL addons once to map class names to their parent folders and Git URLs
+for d in addons/*/; do
+    [ -d "$d" ] || continue
+    folder_name=$(basename "$d")
     
-    while read -r cname; do
-        if [ -n "$cname" ]; then
-            CLASS_TO_REPO["$cname"]="$REPO_URL"
-            CLASS_TO_ADDON["$cname"]="$addon_folder"
-        fi
-    done < <(grep -r "class_name" "$addon_path" --include="*.gd" | sed 's/.*class_name //; s/[ \t]*$//; s/ .*//')
+    # Get the Git Remote URL for this folder
+    pushd "$d" > /dev/null
+    repo_url=$(git remote get-url origin 2>/dev/null)
+    popd > /dev/null
+    
+    # Find every class_name in this specific addon
+    while read -r c_line; do
+        c_name=$(echo "$c_line" | awk '{print $2}')
+        CLASS_TO_REPO[$c_name]="$repo_url"
+        CLASS_TO_ADDON[$c_name]="$folder_name"
+    done < <(grep -r "class_name " "$d" --include="*.gd")
 done
 
 # --- 2. GENERATION LOOP ---
