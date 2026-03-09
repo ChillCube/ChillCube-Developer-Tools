@@ -63,11 +63,13 @@ for addon_path in addons/*; do
         
         # 3a. Properties Table
         PROP_DATA=$(awk '
-            /var/ && /##/ {
+            /^[ \t]*(@export.*)?var/ && /##/ {
                 full_line = $0
                 split(full_line, parts, "##")
-                desc = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc)
+                # The actual description column content
+                desc_col = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc_col)
                 
+                # The code leading up to the comment
                 code_part = parts[1]
                 gsub(/@export(_[a-z_]+)?(\(.*\))?/, "", code_part)
                 gsub(/^[ \t]+|[ \t]+$/, "", code_part)
@@ -89,37 +91,36 @@ for addon_path in addons/*; do
                 if (code_part ~ /=/ || code_part ~ /:=/) {
                     delim = (code_part ~ /:=/) ? ":=" : "="
                     split(code_part, d_parts, delim)
-                    val_start = d_parts[2]
-                    gsub(/^[ \t]+|[ \t]+$/, "", val_start)
+                    val_segment = d_parts[2]
+                    gsub(/^[ \t]+|[ \t]+$/, "", val_segment)
 
-                    # Multi-line Dictionary/Array check
-                    if (val_start ~ /^\{/ || val_start ~ /^\[/) {
-                        bracket_end = (val_start ~ /^\{/) ? "}" : "]"
-                        combined = val_start
+                    # If multi-line (starts with { or [)
+                    if (val_segment ~ /^\{/ || val_segment ~ /^\[/) {
+                        bracket_end = (val_segment ~ /^\{/) ? "}" : "]"
+                        combined = val_segment
+                        # Slurp lines until bracket ends
                         while (combined !~ bracket_end && (getline nl < FILENAME) > 0) {
+                            # Remove comments from the slurped lines immediately
+                            if (nl ~ /##/) { split(nl, nl_parts, "##"); nl = nl_parts[1]; }
                             gsub(/^[ \t]+|[ \t]+$/, " ", nl)
                             combined = combined nl
                         }
                         def = combined
                     } else {
-                        def = val_start
+                        def = val_segment
                         sub(/:[ \t]*$/, "", def) 
                     }
                 }
                 
-                # --- THE FIX: Remove the description if it leaked into "def" ---
-                # Some files might have the ## description on the same line as the opening bracket
-                if (def ~ /##/) {
-                    split(def, def_clean, "##")
-                    def = def_clean[1]
-                }
-
-                # Cleanup for Markdown Table
+                # --- FINAL CLEANUP ---
+                # Remove any leftover inline comments that leaked into the string
+                if (def ~ /##/) { split(def, cleanup, "##"); def = cleanup[1]; }
+                
                 gsub(/;/, "", def)
                 gsub(/[ \t]+/, " ", def)
                 gsub(/^[ \t]+|[ \t]+$/, "", def)
                 
-                printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc)
+                printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc_col)
             }
         ' "$script")
 
