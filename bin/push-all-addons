@@ -62,56 +62,70 @@ for addon_path in addons/*; do
         CLASS_DESC=$(awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script")
         
         PROP_DATA=$(awk '
-            # Matches lines with "var" and "##"
             /^[ \t]*(@export.*)?var/ && /##/ {
                 full_line = $0
                 split(full_line, parts, "##")
                 desc_col = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc_col)
                 
-                code_before_comment = parts[1]
-                # Isolate the variable declaration by removing @export stuff
-                clean_code = code_before_comment
-                gsub(/@export(_[a-z_]+)?(\(.*\))?/, "", clean_code)
-                gsub(/^[ \t]+|[ \t]+$/, "", clean_code)
+                # 1. Clean the variable declaration line
+                clean_line = parts[1]
+                gsub(/@export(_[a-z_]+)?(\(.*\))?/, "", clean_line)
+                gsub(/^[ \t]+|[ \t]+$/, "", clean_line)
 
-                # 1. Name
-                name = ""; split(clean_code, n_p, "var "); split(n_p[2], b, /[ :={]/); name = b[1]
+                # 2. Extract Name
+                name = ""; split(clean_line, n_p, "var "); split(n_p[2], b, /[ :={]/); name = b[1]
                 if (name == "") next
 
-                # 2. Type
+                # 3. Extract Type
                 type = "Variant"
-                if (clean_code ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
-                    match(clean_code, /:[ \t]*[A-zA-Z0-9_\[\]]+/)
-                    type = substr(clean_code, RSTART+1, RLENGTH-1)
+                if (clean_line ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
+                    match(clean_line, /:[ \t]*[A-zA-Z0-9_\[\]]+/)
+                    type = substr(clean_line, RSTART+1, RLENGTH-1)
                     gsub(/[ \t]+/, "", type)
                 }
 
-                # 3. Default Value (The "Stats" Fix)
+                # 4. Extract Default Value
                 def = "-"
-                if (clean_code ~ /=/ || clean_code ~ /:=/) {
-                    delim = (clean_code ~ /:=/) ? ":=" : "="
-                    idx = index(clean_code, delim)
-                    val_part = substr(clean_code, idx + length(delim))
-                    gsub(/^[ \t]+|[ \t]+$/, "", val_part)
-
-                    # Only start slurping if THIS specific variable assignment opens a bracket
-                    if (val_part ~ /^\{/ || val_part ~ /^\[/) {
-                        closer = (val_part ~ /^\{/) ? "}" : "]"
-                        combined = val_part
-                        while (combined !~ closer && (getline nl < FILENAME) > 0) {
+                if (clean_line ~ /=/) {
+                    # Slurp the assignment block
+                    idx = index(clean_line, "=")
+                    raw_val = substr(clean_line, idx + 1)
+                    
+                    # If it contains a bracket, we might need more lines
+                    if (raw_val ~ /\{/ || raw_val ~ /\[/) {
+                        bracket_open = (raw_val ~ /\{/) ? "{" : "["
+                        bracket_close = (bracket_open == "{") ? "}" : "]"
+                        
+                        combined = raw_val
+                        # Keep reading until we find the closing bracket
+                        while (combined !~ "\\" bracket_close && (getline nl < FILENAME) > 0) {
                             if (nl ~ /##/) { split(nl, tmp, "##"); nl = tmp[1] }
-                            gsub(/^[ \t]+|[ \t]+$/, " ", nl)
-                            combined = combined nl
+                            combined = combined " " nl
                         }
-                        def = combined
+                        
+                        # SURGICAL FIX: Isolate only from the first bracket to the last bracket
+                        start_pos = index(combined, bracket_open)
+                        end_pos = 0
+                        # Find the last occurrence of the closing bracket
+                        for (i = length(combined); i > 0; i--) {
+                            if (substr(combined, i, 1) == bracket_close) {
+                                end_pos = i
+                                break
+                            }
+                        }
+                        
+                        if (start_pos > 0 && end_pos > start_pos) {
+                            def = substr(combined, start_pos, end_pos - start_pos + 1)
+                        } else {
+                            def = combined
+                        }
                     } else {
-                        def = val_part
+                        def = raw_val
                         sub(/:[ \t]*$/, "", def)
                     }
                 }
                 
-                # Cleanup
-                if (def ~ /##/) { split(def, cl, "##"); def = cl[1] }
+                # Final Formatting for Markdown
                 gsub(/;/, "", def); gsub(/[ \t]+/, " ", def); gsub(/^[ \t]+|[ \t]+$/, "", def)
                 
                 printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc_col)
@@ -135,13 +149,13 @@ for addon_path in addons/*; do
         fi
     done
 
-    # --- 4. GIT SYNC (Force check on Documentation update) ---
+    # --- 4. GIT SYNC ---
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
-        git add README.md DOCUMENTATION.md
-        git commit -m "docs($addon_folder): updated api reference"
-        echo "📤 Pushing changes for [$addon_folder]..."
+        git add .
+        git commit -m "docs($addon_folder): automated api update"
+        echo "📤 Pushing updates for [$addon_folder]..."
         if command -v super-git-push &> /dev/null; then super-git-push; else git push origin main; fi
     else
         echo "ℹ️  No changes detected for $addon_folder."
@@ -149,4 +163,4 @@ for addon_path in addons/*; do
     fi
     cd "$PROJECT_ROOT"
 done
-echo "✅ Finished."
+echo "✅ Done."
