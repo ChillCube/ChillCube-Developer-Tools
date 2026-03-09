@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc Engine (v3.2 - Silent & Stable) ---
-TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
+# --- Chillcube Universal Doc Engine (v3.5 - Smart Partition Sync) ---
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
+MANUAL_MARKER="# --- Manual Dependencies (Do Not Delete) ---"
 
 declare -A CLASS_TO_REPO
 declare -A CLASS_TO_ADDON
@@ -39,10 +39,17 @@ for addon_path in addons/*; do
     DEP_FILE="$addon_path/DEPENDENCIES.txt"
     TEMP_DOC=$(mktemp)
     
-    declare -A LOCAL_DEPS
+    declare -A AUTO_DEP_REPOS
     declare -A CLASS_TO_DEP_LINK
+    MANUAL_DEPS_CONTENT=""
 
-    # Metadata
+    # --- 3. EXTRACT MANUAL SECTION ---
+    if [ -f "$DEP_FILE" ]; then
+        # Capture everything AFTER the marker
+        MANUAL_DEPS_CONTENT=$(awk -v m="$MANUAL_MARKER" 'found {print} $0 == m {found=1}' "$DEP_FILE")
+    fi
+
+    # Documentation Header
     CFG_FILE="$addon_path/plugin.cfg"
     A_NAME=$(grep "name" "$CFG_FILE" 2>/dev/null | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     [ -z "$A_NAME" ] && A_NAME="$addon_folder"
@@ -65,10 +72,9 @@ for addon_path in addons/*; do
             
             if [ -n "$DEP_ADDON" ] && [ "$DEP_ADDON" != "$addon_folder" ]; then
                 REPO="${CLASS_TO_REPO[$check_class]}"
-                LOCAL_DEPS["$DEP_ADDON"]="$REPO"
+                AUTO_DEP_REPOS["$REPO"]="Code Reference"
                 CLASS_TO_DEP_LINK["$check_class"]="$REPO/blob/main/DOCUMENTATION.md#class-${check_class,,}"
             fi
-            # Note: Warning logic removed/silenced to keep console clean.
         done
 
         # --- CLASS DOC GEN ---
@@ -88,39 +94,9 @@ for addon_path in addons/*; do
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
             
-            # --- SAFE NO-REGEX PROPERTY PARSER ---
-            PD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} 
-            index($0, "var") > 0 && index($0, "##") > 0 { 
-                r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
-                line=p[1]; sub(/^[ \t]*/,"",line);
-                split(line, parts, "var ");
-                split(parts[2], name_part, " ");
-                split(name_part[1], name_final, ":");
-                n=name_final[1];
-                t="Variant";
-                ci=index(line, ":");
-                if(ci > 0) {
-                    remainder=substr(line, ci+1);
-                    sub(/^[ \t]*/,"",remainder);
-                    split(remainder, type_part, " ");
-                    split(type_part[1], type_final, "=");
-                    t=type_final[1];
-                }
-                b=line; f() 
-            } 
-            function f(){ 
-                dv="-"; if(index(b,"=") > 0){ 
-                    split(b, val_parts, "=");
-                    dv=val_parts[2];
-                } 
-                sub(/^[ \t]*/,"",dv); sub(/[ \t]*$/,"",dv);
-                if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n",n,t,dv,d); 
-                r=0; b=""; n="" 
-            }' "$script")
-            
+            PD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 { r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); line=p[1]; sub(/^[ \t]*/,"",line); split(line, parts, "var "); split(parts[2], name_part, " "); split(name_part[1], name_final, ":"); n=name_final[1]; t="Variant"; ci=index(line, ":"); if(ci > 0) { remainder=substr(line, ci+1); sub(/^[ \t]*/,"",remainder); split(remainder, type_part, " "); split(type_part[1], type_final, "="); t=type_final[1]; } b=line; f() } function f(){ dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } sub(/^[ \t]*/,"",dv); sub(/[ \t]*$/,"",dv); if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n",n,t,dv,d); r=0; b=""; n="" }' "$script")
             [ -n "$PD" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PD\n"
             
-            # Signals & Methods
             SD=$(awk 'index($0, "signal") > 0 && index($0, "##") > 0 { split($0,p,"##"); d=p[2]; code=p[1]; split(code,a,"signal "); split(a[2],b," "); n=b[1]; printf("| **%s** | %s |\n",n,d) }' "$script")
             [ -n "$SD" ] && echo -e "### Signals\n| Signal | Description |\n| :--- | :--- |\n$SD\n"
             MD=$(awk 'index($0, "func") > 0 && index($0, "##") > 0 { split($0,p,"##"); d=p[2]; code=p[1]; split(code,a,"func "); split(a[2],b, "("); n=b[1]; if(n=="" || index(n,"_")==1) next; ret="void"; if(index(code, "->") > 0) { split(code, c, "->"); split(c[2], dr, ":"); ret=dr[1]; gsub(/[ \t]+/,"",ret) } printf("| **%s()** | `%s` | %s |\n", n, ret, d) }' "$script")
@@ -129,18 +105,36 @@ for addon_path in addons/*; do
         } >> "$BODY_CONTENT"
     done
 
-    # --- 4. DEPENDENCIES TABLE ---
-    if [ ${#LOCAL_DEPS[@]} -gt 0 ]; then
+    # --- 4. REBUILD DEPENDENCIES.TXT & DOC TABLE ---
+    if [ ${#AUTO_DEP_REPOS[@]} -gt 0 ] || [ -n "$MANUAL_DEPS_CONTENT" ]; then
         echo -e "### 📦 Dependencies" >> "$TEMP_DOC"
-        echo "| Class | Addon | Repository |" >> "$TEMP_DOC"
+        echo "| Source | Reference | Repository |" >> "$TEMP_DOC"
         echo "| :--- | :--- | :--- |" >> "$TEMP_DOC"
-        > "$DEP_FILE"
+        
+        # Start fresh with Auto section in DEPENDENCIES.txt
+        echo "# --- Automated Dependencies (Managed by Script) ---" > "$DEP_FILE"
+        printf "%s\n" "${!AUTO_DEP_REPOS[@]}" | sort -u >> "$DEP_FILE"
+        echo -e "\n$MANUAL_MARKER" >> "$DEP_FILE"
+        
+        # Put Manual content back
+        if [ -n "$MANUAL_DEPS_CONTENT" ]; then
+            echo "$MANUAL_DEPS_CONTENT" >> "$DEP_FILE"
+        fi
+
+        # Add Auto Classes to Documentation Table
         IFS=$'\n' sorted_classes=($(sort <<<"${!CLASS_TO_DEP_LINK[*]}"))
         unset IFS
         for cls in "${sorted_classes[@]}"; do
-            echo "| [\`$cls\`](${CLASS_TO_DEP_LINK[$cls]}) | ${CLASS_TO_ADDON[$cls]} | [Repo](${CLASS_TO_REPO[$cls]}) |" >> "$TEMP_DOC"
-            if ! grep -q "${CLASS_TO_REPO[$cls]}" "$DEP_FILE"; then echo "${CLASS_TO_REPO[$cls]}" >> "$DEP_FILE"; fi
+            echo "| Code | [\`$cls\`](${CLASS_TO_DEP_LINK[$cls]}) | [Repo](${CLASS_TO_REPO[$cls]}) |" >> "$TEMP_DOC"
         done
+
+        # Add Manual URLs to Documentation Table
+        if [ -n "$MANUAL_DEPS_CONTENT" ]; then
+            while read -r line; do
+                [[ -z "$line" || "$line" =~ ^# ]] && continue
+                echo "| Manual | $(basename "$line") | [Repo]($line) |" >> "$TEMP_DOC"
+            done <<< "$MANUAL_DEPS_CONTENT"
+        fi
         echo -e "\n---\n" >> "$TEMP_DOC"
     fi
 
@@ -152,7 +146,7 @@ for addon_path in addons/*; do
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
         git add .
-        git commit -m "docs: auto-update api and dependencies"
+        git commit -m "docs: smart dependency partition sync"
         super-git-push
         ((UPDATED_COUNT++))
     else
