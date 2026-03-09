@@ -53,7 +53,6 @@ for addon_path in addons/*; do
     echo -e "\n$A_DESC\n" >> "$TEMP_DOC"
     echo "---" >> "$TEMP_DOC"
 
-    # Find ALL .gd files in the addon
     mapfile -t SCRIPTS < <(find "$addon_path" -name "*.gd")
 
     for script in "${SCRIPTS[@]}"; do
@@ -61,27 +60,56 @@ for addon_path in addons/*; do
         C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/[ \t]*$//')
         [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
 
-        # Pre-parse sections to see if script has documented items
         CLASS_DESC=$(awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script")
         
-        PROP_DATA=$(awk '/var/ && /##/ {
-            full_line = $0; split(full_line, parts, "##"); desc = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc)
-            code = parts[1]; gsub(/@export(_[a-z_]+)?(\(.*\))?/, "", code); gsub(/^[ \t]+|[ \t]+$/, "", code)
-            name = ""; split(code, a, "var "); split(a[2], b, /[ :={]/); name = b[1]
-            if (name == "") next
-            type = "Variant"
-            if (code ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
-                sub(/.*:[ \t]*/, "", code); split(code, t_parts, /[ =;]/); type = t_parts[1]
-            } else if (parts[1] ~ /:=/) {
-                if (parts[1] ~ /"/) type = "String"; else if (parts[1] ~ /true|false/) type = "bool";
-                else if (parts[1] ~ /[0-9]+\.[0-9]+/) type = "float"; else if (parts[1] ~ /[0-9]+/) type = "int"
+        # 3a. Properties Table (Multi-line & Setter Aware)
+        PROP_DATA=$(awk '
+            /var/ && /##/ {
+                full_line = $0
+                split(full_line, parts, "##")
+                desc = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc)
+                
+                code = parts[1]
+                gsub(/@export(_[a-z_]+)?(\(.*\))?/, "", code)
+                gsub(/^[ \t]+|[ \t]+$/, "", code)
+
+                # Extract Name
+                name = ""; split(code, n_parts, "var "); split(n_parts[2], b, /[ :={]/); name = b[1]
+                if (name == "") next
+
+                # Extract Type
+                type = "Variant"
+                if (code ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
+                    t_str = code; sub(/.*:[ \t]*/, "", t_str)
+                    split(t_str, t_parts, /[ =;:]/)
+                    type = t_parts[1]
+                } else if (parts[1] ~ /:=/) {
+                    if (parts[1] ~ /"/) type = "String"
+                    else if (parts[1] ~ /true|false/) type = "bool"
+                    else if (parts[1] ~ /[0-9]+\.[0-9]+/) type = "float"
+                    else if (parts[1] ~ /[0-9]+/) type = "int"
+                }
+
+                # Extract Default Value (Handle setters and multi-line objects)
+                def = "-"
+                code_for_def = parts[1]
+                if (code_for_def ~ /\{/) {
+                    def = "{...}"
+                } else if (code_for_def ~ /\[/) {
+                    def = "[...]"
+                } else if (code_for_def ~ /:=/) {
+                    split(code_for_def, d_parts, ":=")
+                    def = d_parts[2]
+                } else if (code_for_def ~ /=/) {
+                    split(code_for_def, d_parts, "=")
+                    split(d_parts[2], clean_def, ":") 
+                    def = clean_def[1]
+                }
+                gsub(/^[ \t;]+|[ \t;]+$/, "", def)
+                
+                printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc)
             }
-            def = "-"; code_for_def = parts[1]
-            if (code_for_def ~ /:=/) { split(code_for_def, d_parts, ":="); def = d_parts[2]; }
-            else if (code_for_def ~ /=/) { split(code_for_def, d_parts, "="); def = d_parts[2]; }
-            gsub(/^[ \t;]+|[ \t;]+$/, "", def)
-            printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc)
-        }' "$script")
+        ' "$script")
 
         METHOD_DATA=$(awk '/func .*##/ {
             line = $0; split(line, p, "##"); desc = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc); code = p[1];
@@ -97,7 +125,6 @@ for addon_path in addons/*; do
             printf("| **%s** | %s |\n", name, desc);
         }' "$script")
 
-        # Only add the script to the DOCS if it has documented content
         if [ -n "$CLASS_DESC" ] || [ -n "$PROP_DATA" ] || [ -n "$METHOD_DATA" ] || [ -n "$SIGNAL_DATA" ]; then
             echo -e "\n## Class: $C_NAME" >> "$TEMP_DOC"
             [ -n "$CLASS_DESC" ] && echo -e "$CLASS_DESC\n" >> "$TEMP_DOC"
@@ -118,18 +145,25 @@ for addon_path in addons/*; do
         fi
     done
 
-    # --- 4. COMMIT AND PUSH ---
+    # --- 4. GIT SYNC ---
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
         git add README.md DOCUMENTATION.md
-        echo -e "\n💬 Documentation updated for [$addon_folder]."
-        read -p "Commit message (default: docs update): " msg
-        git commit -m "docs($addon_folder): ${msg:-docs update}"
-        if command -v super-git-push &> /dev/null; then super-git-push; else git push origin main; fi
+        
+        # Commit with automated message; super-git-push handles the rest
+        git commit -m "docs($addon_folder): automated api reference update"
+        
+        echo "📤 Pushing [$addon_folder]..."
+        if command -v super-git-push &> /dev/null; then 
+            super-git-push 
+        else 
+            git push origin main
+        fi
     else
         echo "ℹ️  No changes detected for $addon_folder."
         rm "$TEMP_DOC"
     fi
     cd "$PROJECT_ROOT"
 done
+echo "✅ All addons processed."
