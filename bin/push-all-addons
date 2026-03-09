@@ -1,12 +1,33 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Registry Engine (v6.4) ---
+# --- Chillcube Universal Doc & Registry Engine (v6.6) ---
+# Restores: Registry Sync, Global Mapping, Auto-Git Sync
+# Adds: Rainbow Args, Export Groups, Stateful Parsing
+
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
+ORG_REPO="https://github.com/ChillCube/.github.git"
+REGISTRY_FILE="ADDONS.md"
+
+declare -A CLASS_TO_REPO
+declare -A CLASS_TO_ADDON
 
 echo "🔍 Indexing Project-Wide Class Map..."
 
-# --- 1. GENERATION LOOP ---
+# --- 1. GLOBAL PRE-SCAN (Restored) ---
+for addon_path in addons/*; do
+    [ -d "$addon_path/.git" ] || continue
+    addon_folder=$(basename "$addon_path")
+    REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//' | sed 's/git@github\.com:/https:\/\/github\.com\//' | sed 's/ssh:\/\/git@github\.com\//https:\/\/github\.com\//')
+    while read -r cname; do
+        if [ -n "$cname" ]; then
+            CLASS_TO_REPO["$cname"]="$REPO_URL"
+            CLASS_TO_ADDON["$cname"]="$addon_folder"
+        fi
+    done < <(grep -r "class_name" "$addon_path" --include="*.gd" | sed 's/.*class_name //; s/[ \t]*$//; s/ .*//')
+done
+
+# --- 2. GENERATION LOOP ---
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
@@ -18,10 +39,36 @@ for addon_path in addons/*; do
     
     CFG_FILE="$addon_path/plugin.cfg"
     [ ! -f "$CFG_FILE" ] && continue
-    A_NAME=$(grep "name" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
-    A_DESC=$(grep "description" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+    A_NAME=$(grep "name" "$CFG_FILE" 2>/dev/null | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+    [ -z "$A_NAME" ] && A_NAME="$addon_folder"
+    A_DESC=$(grep "description" "$CFG_FILE" 2>/dev/null | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     [ -z "$A_DESC" ] && A_DESC="Godot Addon"
     
+    CURRENT_REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//')
+
+    # --- 3. REGISTRY SYNC (Restored) ---
+    TEMP_REGISTRY_DIR=$(mktemp -d)
+    if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR" > /dev/null 2>&1; then
+        cd "$TEMP_REGISTRY_DIR"
+        [ ! -f "$REGISTRY_FILE" ] && { echo "# 🧊 ChillCube Addon Registry" > "$REGISTRY_FILE"; echo -e "\n## Uncategorized" >> "$REGISTRY_FILE"; }
+        if ! grep -q "$CURRENT_REPO_URL" "$REGISTRY_FILE"; then
+            mapfile -t CATEGORIES < <(grep "^## " "$REGISTRY_FILE" | sed 's/## //')
+            for i in "${!CATEGORIES[@]}"; do printf "  [%d] %s\n" "$((i+1))" "${CATEGORIES[$i]}"; done
+            echo "  [0] Create New Category"
+            read -p "📁 Category #: " CAT_INPUT
+            if [[ "$CAT_INPUT" =~ ^[0-9]+$ ]] && [ "$CAT_INPUT" -gt 0 ] && [ "$CAT_INPUT" -le "${#CATEGORIES[@]}" ]; then
+                SELECTED_CAT="${CATEGORIES[$((CAT_INPUT-1))]}"
+            else
+                [ "$CAT_INPUT" == "0" ] && read -p "Name: " SELECTED_CAT || SELECTED_CAT="$CAT_INPUT"
+            fi
+            ENTRY="* [$A_NAME]($CURRENT_REPO_URL) - $A_DESC"
+            if ! grep -q "## $SELECTED_CAT" "$REGISTRY_FILE"; then echo -e "\n## $SELECTED_CAT\n$ENTRY" >> "$REGISTRY_FILE"; else sed -i "/## $SELECTED_CAT/a $ENTRY" "$REGISTRY_FILE"; fi
+            git add "$REGISTRY_FILE" && git commit -m "registry: add $A_NAME" && git push origin main > /dev/null 2>&1
+        fi
+        cd "$PROJECT_ROOT" && rm -rf "$TEMP_REGISTRY_DIR"
+    fi
+
+    # --- 4. DOCUMENTATION GEN (Enhanced Stateful Parser) ---
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
     BODY_CONTENT=$(mktemp)
@@ -31,11 +78,9 @@ for addon_path in addons/*; do
         C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/ .*//'); [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
         {
             echo -e "## Class: $C_NAME\n"
-            # Extract Class Description
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
             
-            # --- THE STATEFUL PARSER ---
             awk -v bt_code="\140" '
             function colorize(raw) {
                 if (raw == "" || raw == "-") return "-";
@@ -50,117 +95,84 @@ for addon_path in addons/*; do
                 return res;
             }
 
-            BEGIN { 
-                inspect_out = ""; class_out = ""; sig_out = ""; met_out = "";
-                last_doc = "";
-            }
+            BEGIN { inspect_out = ""; class_out = ""; sig_out = ""; met_out = ""; last_doc = ""; }
 
-            # Capture doc comments
+            # Capture comments
             /^[ \t]*##/ { 
-                # If it is a class doc (at start of file), we ignore it here
-                if (NR > 5) {
-                    sub(/^[ \t]*##[ \t]*/, ""); 
-                    last_doc = $0; 
-                    next; 
-                }
+                sub(/^[ \t]*##[ \t]*/, ""); 
+                if (last_doc == "") last_doc = $0; else last_doc = last_doc " " $0;
+                next; 
             }
 
-            # 1. Export Groups
-            /^@export_(group|category)\(/ {
+            # Export Groups
+            /@export_(group|category)\(/ {
                 split($0, a, "\"");
                 inspect_out = inspect_out "| **--- " toupper(a[2]) " ---** | | | |\n";
                 last_doc = ""; next;
             }
 
-            # 2. Variables
+            # Variables
             /var / {
                 if (last_doc == "") next;
                 line = $0;
-                split(line, parts, "var "); split(parts[2], name_part, " ");
-                split(name_part[1], name_final, ":"); n = name_final[1];
+                split(line, parts, "var "); split(parts[2], name_part, /[ :={]/); n = name_part[1];
                 t = "Variant";
-                if (index(line, ":") > 0) { 
-                    split(substr(line, index(line, ":")+1), tp, " "); 
-                    split(tp[1], tf, "="); t = tf[1]; 
-                }
+                if (index(line, ":") > 0) { split(substr(line, index(line, ":")+1), tp, /[ \t=]/); t = tp[1]; }
                 dv = "-";
                 if (index(line, "=") > 0) {
                     split(line, vp, "="); dv = vp[2];
-                    sub(/^[ \t]*/, "", dv); sub(/[ \t]*[:;][ \t]*$/, "", dv); sub(/[ \t]*$/, "", dv);
+                    sub(/^[ \t]*/, "", dv); sub(/[ \t]*[:;][ \t]*$/, "", dv);
                 }
                 row = "| **" n "** | " bt_code t bt_code " | " bt_code dv bt_code " | " last_doc " |\n";
-                if (index(line, "@export") > 0) inspect_out = inspect_out row;
-                else class_out = class_out row;
+                if (index(line, "@export") > 0) inspect_out = inspect_out row; else class_out = class_out row;
                 last_doc = "";
             }
 
-            # 3. Signals
+            # Signals
             /signal / {
                 if (last_doc == "") next;
-                code = $0; sub(/^[ \t]*signal /, "", code); sub(/[ \t]*$/, "", code);
-                name = code; args = "-";
+                code = $0; sub(/.*signal /, "", code);
+                name = code; raw_args = "";
                 if(index(code, "(") > 0) {
                     split(code, arr, "("); name = arr[1]; raw_args = arr[2]; sub(/\).*/, "", raw_args);
-                    args = colorize(raw_args);
                 }
-                sig_out = sig_out "| **" name "** | " args " | " last_doc " |\n";
+                sig_out = sig_out "| **" name "** | " colorize(raw_args) " | " last_doc " |\n";
                 last_doc = "";
             }
 
-            # 4. Methods
+            # Methods
             /func / {
-                if (last_doc == "") { next; }
-                code = $0; sub(/^[ \t]*func /, "", code); sub(/[ \t]*$/, "", code);
-                split(code, parts, "("); name = parts[1];
-                if(index(name, "_") == 1) { last_doc = ""; next; }
-                
+                if (last_doc == "" || index($0, "func _") > 0) { last_doc = ""; next; }
+                code = $0; sub(/.*func /, "", code); split(code, parts, "("); name = parts[1];
                 raw_args = parts[2]; sub(/\).*/, "", raw_args);
-                args = (raw_args == "") ? "-" : colorize(raw_args);
-                
                 ret = "void"; 
-                if(index(code, "->") > 0) { 
-                    split(code, c, "->"); ret = c[2]; 
-                    sub(/[ \t]*[:;][ \t]*$/, "", ret); gsub(/[ \t]+/, "", ret); 
-                }
-                met_out = met_out "| **" name "()** | " args " | " bt_code ret bt_code " | " last_doc " |\n";
+                if(index(code, "->") > 0) { split(code, c, "->"); ret = c[2]; sub(/[ \t]*[:;][ \t]*$/, "", ret); gsub(/[ \t]+/, "", ret); }
+                met_out = met_out "| **" name "()** | " colorize(raw_args) " | " bt_code ret bt_code " | " last_doc " |\n";
                 last_doc = "";
             }
-
-            # Reset doc if we hit a blank line or other code
-            /^[ \t]*$/ { last_doc = ""; }
 
             END {
-                if (inspect_out != "") {
-                    print "### ⚙️ Inspector Variables\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |";
-                    printf "%s\n", inspect_out;
-                }
-                if (class_out != "") {
-                    print "### 💾 Class Variables\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |";
-                    printf "%s\n", class_out;
-                }
-                if (sig_out != "") {
-                    print "### 🔔 Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |";
-                    printf "%s\n", sig_out;
-                }
-                if (met_out != "") {
-                    print "### 🛠️ Methods\n| Method | Arguments | Returns | Description |\n| :--- | :--- | :--- | :--- |";
-                    printf "%s\n", met_out;
-                }
+                if (inspect_out != "") { print "### ⚙️ Inspector Variables\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |"; printf "%s\n", inspect_out; }
+                if (class_out != "") { print "### 💾 Class Variables\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |"; printf "%s\n", class_out; }
+                if (sig_out != "") { print "### 🔔 Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |"; printf "%s\n", sig_out; }
+                if (met_out != "") { print "### 🛠️ Methods\n| Method | Arguments | Returns | Description |\n| :--- | :--- | :--- | :--- |"; printf "%s\n", met_out; }
             }' "$script"
             echo -e "---\n"
         } >> "$BODY_CONTENT"
     done
 
     cat "$BODY_CONTENT" >> "$TEMP_DOC"; rm -f "$BODY_CONTENT"
-    
+
+    # --- 5. FINAL SYNC & PUSH (Restored) ---
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
-        git add . && git commit -m "docs: fixed unified stateful parser" && super-git-push
+        git add . && git commit -m "docs: auto-update api (v6.6 restored)" && super-git-push
         ((UPDATED_COUNT++))
     else
         rm -f "$TEMP_DOC"
     fi
     cd "$PROJECT_ROOT"
 done
+echo "--------------------------------------------------"
 echo "✅ Finished! $UPDATED_COUNT addons updated."
