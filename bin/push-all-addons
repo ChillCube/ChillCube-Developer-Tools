@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Registry Engine (v5.0) ---
+# --- Chillcube Universal Doc & Registry Engine (v4.5) ---
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
 MANUAL_MARKER="# --- Manual Dependencies (Do Not Delete) ---"
 ORG_REPO="https://github.com/ChillCube/.github.git"
 REGISTRY_FILE="ADDONS.md"
+# URL for the initial template if ADDONS.md doesn't exist
 REGISTRY_TEMPLATE="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/ADDONS_TEMPLATE.md"
 
 declare -A CLASS_TO_REPO
@@ -18,7 +19,11 @@ echo "🔍 Indexing Project-Wide Class Map..."
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
-    REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//' | sed 's/git@github\.com:/https:\/\/github\.com\//' | sed 's/ssh:\/\/git@github\.com\//https:\/\/github\.com\//')
+    
+    REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | \
+               sed 's/\.git$//' | sed 's/git@github\.com:/https:\/\/github\.com\//' | \
+               sed 's/ssh:\/\/git@github\.com\//https:\/\/github\.com\//')
+    
     while read -r cname; do
         if [ -n "$cname" ]; then
             CLASS_TO_REPO["$cname"]="$REPO_URL"
@@ -43,7 +48,11 @@ for addon_path in addons/*; do
     declare -A CLASS_TO_DEP_LINK
     MANUAL_DEPS_CONTENT=""
 
-    # Metadata extraction
+    # --- 3. EXTRACT METADATA ---
+    if [ -f "$DEP_FILE" ]; then
+        MANUAL_DEPS_CONTENT=$(awk -v m="$MANUAL_MARKER" 'found {print} $0 == m {found=1}' "$DEP_FILE")
+    fi
+
     CFG_FILE="$addon_path/plugin.cfg"
     A_NAME=$(grep "name" "$CFG_FILE" 2>/dev/null | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     [ -z "$A_NAME" ] && A_NAME="$addon_folder"
@@ -51,59 +60,41 @@ for addon_path in addons/*; do
     [ -z "$A_DESC" ] && A_DESC="Godot Addon"
     
     CURRENT_REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//')
-    NEW_ENTRY="* [$A_NAME]($CURRENT_REPO_URL) - $A_DESC"
 
-    # --- 3. GLOBAL REGISTRY SYNC (Smart Update Logic) ---
-    TEMP_REGISTRY_DIR=$(mktemp -d)
-    if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR" > /dev/null 2>&1; then
-        cd "$TEMP_REGISTRY_DIR"
-        [ ! -f "$REGISTRY_FILE" ] && curl -s "$REGISTRY_TEMPLATE" > "$REGISTRY_FILE"
-
-        # Check if URL exists in file
-        EXISTING_LINE=$(grep -F "($CURRENT_REPO_URL)" "$REGISTRY_FILE")
-
-        if [ -z "$EXISTING_LINE" ]; then
-            # NEW ADDON LOGIC
-            echo "🆕 $A_NAME is not in the Global Registry."
-            mapfile -t CATEGORIES < <(grep "^## " "$REGISTRY_FILE" | sed 's/## //')
-            echo "Available Categories:"
-            for i in "${!CATEGORIES[@]}"; do printf "  [%d] %s\n" "$((i+1))" "${CATEGORIES[$i]}"; done
-            echo "  [0] Create New Category"
-            read -p "📁 Select category number or type new name: " CAT_INPUT
-            
-            if [[ "$CAT_INPUT" =~ ^[0-9]+$ ]] && [ "$CAT_INPUT" -gt 0 ] && [ "$CAT_INPUT" -le "${#CATEGORIES[@]}" ]; then
-                SELECTED_CAT="${CATEGORIES[$((CAT_INPUT-1))]}"
-            else
-                [ "$CAT_INPUT" == "0" ] && read -p "Enter new category name: " SELECTED_CAT || SELECTED_CAT="$CAT_INPUT"
+    # (API Documentation Generation Logic)
+    echo "# $A_NAME API Reference" > "$TEMP_DOC"
+    echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
+    BODY_CONTENT=$(mktemp)
+    mapfile -t SCRIPTS < <(find "$addon_path" -name "*.gd")
+    for script in "${SCRIPTS[@]}"; do
+        POTENTIAL=$(grep -oE '(extends|:|is|[A-Za-z0-9_]+\.new)\s+[A-Z][a-zA-Z0-9_]+' "$script" | awk '{print $NF}' | sort -u)
+        for check_class in $POTENTIAL; do
+            [ -z "$check_class" ] && continue
+            DEP_ADDON="${CLASS_TO_ADDON[$check_class]}"
+            if [ -n "$DEP_ADDON" ] && [ "$DEP_ADDON" != "$addon_folder" ]; then
+                REPO="${CLASS_TO_REPO[$check_class]}"
+                AUTO_DEP_REPOS["$REPO"]="Code Reference"
+                CLASS_TO_DEP_LINK["$check_class"]="$REPO/blob/main/DOCUMENTATION.md#class-${check_class,,}"
             fi
-
-            if ! grep -q "## $SELECTED_CAT" "$REGISTRY_FILE"; then
-                echo -e "\n## $SELECTED_CAT\n$NEW_ENTRY" >> "$REGISTRY_FILE"
-            else
-                sed -i "/## $SELECTED_CAT/a $NEW_ENTRY" "$REGISTRY_FILE"
-            fi
-            REGISTRY_UPDATED=1
-        elif [ "$EXISTING_LINE" != "$NEW_ENTRY" ]; then
-            # UPDATE EXISTING DESCRIPTION/NAME LOGIC
-            echo "📝 Updating registry entry for $A_NAME (Description/Name changed)..."
-            # Escaping for sed
-            ESCAPED_OLD=$(printf '%s\n' "$EXISTING_LINE" | sed 's/[^^]/[&]/g; s/\^/\\^/g')
-            ESCAPED_NEW=$(printf '%s\n' "$NEW_ENTRY" | sed 's/[&/\]/\\&/g')
-            sed -i "s/$ESCAPED_OLD/$ESCAPED_NEW/" "$REGISTRY_FILE"
-            REGISTRY_UPDATED=1
-        else
-            REGISTRY_UPDATED=0
-        fi
-
-        if [ "$REGISTRY_UPDATED" -eq 1 ]; then
-            git add "$REGISTRY_FILE"
-            git commit -m "registry: update $A_NAME details"
-            git push origin main > /dev/null 2>&1
-            echo "✅ Global Registry Synchronized."
-        fi
-        cd "$PROJECT_ROOT"
-        rm -rf "$TEMP_REGISTRY_DIR"
-    fi
+        done
+        C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/ .*//'); [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
+        RAW_EXT=$(grep "^extends " "$script" | sed 's/extends //' | sed 's/ .*//'); [ -z "$RAW_EXT" ] && RAW_EXT="Object"
+        if [[ -n "${CLASS_TO_REPO[$RAW_EXT]}" ]]; then
+            [[ "${CLASS_TO_ADDON[$RAW_EXT]}" == "$addon_folder" ]] && L="[\`$RAW_EXT\`](#class-${RAW_EXT,,})" || L="[\`$RAW_EXT\`](${CLASS_TO_REPO[$RAW_EXT]}/blob/main/DOCUMENTATION.md#class-${RAW_EXT,,})"
+        elif [[ "$RAW_EXT" =~ ^[A-Z] ]]; then L="[\`$RAW_EXT\`](https://docs.godotengine.org/en/stable/classes/class_${RAW_EXT,,}.html)"; else L="\`$RAW_EXT\`"; fi
+        {
+            echo -e "## Class: $C_NAME\n**Inherits:** $L\n"
+            awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
+            echo ""
+            PD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 { r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); line=p[1]; sub(/^[ \t]*/,"",line); split(line, parts, "var "); split(parts[2], name_part, " "); split(name_part[1], name_final, ":"); n=name_final[1]; t="Variant"; ci=index(line, ":"); if(ci > 0) { remainder=substr(line, ci+1); sub(/^[ \t]*/,"",remainder); split(remainder, type_part, " "); split(type_part[1], type_final, "="); t=type_final[1]; } b=line; f() } function f(){ dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } sub(/^[ \t]*/,"",dv); sub(/[ \t]*$/,"",dv); if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n",n,t,dv,d); r=0; b=""; n="" }' "$script")
+            [ -n "$PD" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PD\n"
+            SD=$(awk 'index($0, "signal") > 0 && index($0, "##") > 0 { split($0,p,"##"); d=p[2]; code=p[1]; split(code,a,"signal "); split(a[2],b,/[ (]/); n=b[1]; printf("| **%s** | %s |\n",n,d) }' "$script")
+            [ -n "$SD" ] && echo -e "### Signals\n| Signal | Description |\n| :--- | :--- |\n$SD\n"
+            MD=$(awk 'index($0, "func") > 0 && index($0, "##") > 0 { split($0,p,"##"); d=p[2]; code=p[1]; split(code,a,"func "); split(a[2],b, "("); n=b[1]; if(n=="" || index(n,"_")==1) next; ret="void"; if(index(code, "->") > 0) { split(code, c, "->"); split(c[2], dr, ":"); ret=dr[1]; gsub(/[ \t]+/,"",ret) } printf("| **%s()** | `%s` | %s |\n", n, ret, d) }' "$script")
+            [ -n "$MD" ] && echo -e "### Methods\n| Method | Returns | Description |\n| :--- | :--- | :--- |\n$MD\n"
+            echo -e "---\n"
+        } >> "$BODY_CONTENT"
+    done
 
     # --- 4. REBUILD DEPENDENCIES.TXT & DOC TABLE ---
     if [ ${#AUTO_DEP_REPOS[@]} -gt 0 ] || [ -n "$MANUAL_DEPS_CONTENT" ]; then
