@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Registry Engine (v5.7) ---
+# --- Chillcube Universal Doc & Registry Engine (v5.9) ---
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
 MANUAL_MARKER="# --- Manual Dependencies (Do Not Delete) ---"
@@ -44,8 +44,27 @@ for addon_path in addons/*; do
     
     CURRENT_REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//')
 
-    # --- 3. REGISTRY SYNC (Skipped for brevity) ---
-    # (Same registry logic as previous versions)
+    # --- 3. REGISTRY SYNC ---
+    TEMP_REGISTRY_DIR=$(mktemp -d)
+    if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR" > /dev/null 2>&1; then
+        cd "$TEMP_REGISTRY_DIR"
+        [ ! -f "$REGISTRY_FILE" ] && { echo "# 🧊 ChillCube Addon Registry" > "$REGISTRY_FILE"; echo -e "\n## Uncategorized" >> "$REGISTRY_FILE"; }
+        if ! grep -q "$CURRENT_REPO_URL" "$REGISTRY_FILE"; then
+            mapfile -t CATEGORIES < <(grep "^## " "$REGISTRY_FILE" | sed 's/## //')
+            for i in "${!CATEGORIES[@]}"; do printf "  [%d] %s\n" "$((i+1))" "${CATEGORIES[$i]}"; done
+            echo "  [0] Create New Category"
+            read -p "📁 Category #: " CAT_INPUT
+            if [[ "$CAT_INPUT" =~ ^[0-9]+$ ]] && [ "$CAT_INPUT" -gt 0 ] && [ "$CAT_INPUT" -le "${#CATEGORIES[@]}" ]; then
+                SELECTED_CAT="${CATEGORIES[$((CAT_INPUT-1))]}"
+            else
+                [ "$CAT_INPUT" == "0" ] && read -p "Name: " SELECTED_CAT || SELECTED_CAT="$CAT_INPUT"
+            fi
+            ENTRY="* [$A_NAME]($CURRENT_REPO_URL) - $A_DESC"
+            if ! grep -q "## $SELECTED_CAT" "$REGISTRY_FILE"; then echo -e "\n## $SELECTED_CAT\n$ENTRY" >> "$REGISTRY_FILE"; else sed -i "/## $SELECTED_CAT/a $ENTRY" "$REGISTRY_FILE"; fi
+            git add "$REGISTRY_FILE" && git commit -m "registry: add $A_NAME" && git push origin main > /dev/null 2>&1
+        fi
+        cd "$PROJECT_ROOT" && rm -rf "$TEMP_REGISTRY_DIR"
+    fi
 
     # --- 4. DOCUMENTATION GEN ---
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
@@ -60,8 +79,9 @@ for addon_path in addons/*; do
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
             
-            # Properties (Cleaned default values)
-            PD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 { 
+            # --- SPLIT PROPERTIES LOGIC ---
+            # Exported Properties
+            EXPD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 && index($0, "@export") > 0 { 
                 r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
                 line=p[1]; sub(/^[ \t]*/,"",line); 
                 split(line, parts, "var "); split(parts[2], name_part, " "); 
@@ -79,41 +99,55 @@ for addon_path in addons/*; do
                 if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n", n, t, dv, d); 
                 r=0; b=""; n="" 
             }' "$script")
-            [ -n "$PD" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PD\n"
+            [ -n "$EXPD" ] && echo -e "### ⚙️ Inspector Variables (Exported)\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$EXPD\n"
 
-            # Signals (Fixed Vertical Render)
+            # Standard Properties
+            STPD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 && index($0, "@export") == 0 { 
+                r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
+                line=p[1]; sub(/^[ \t]*/,"",line); 
+                split(line, parts, "var "); split(parts[2], name_part, " "); 
+                split(name_part[1], name_final, ":"); n=name_final[1]; 
+                t="Variant"; ci=index(line, ":"); 
+                if(ci > 0) { 
+                    remainder=substr(line, ci+1); sub(/^[ \t]*/,"",remainder); 
+                    split(remainder, type_part, " "); split(type_part[1], type_final, "="); t=type_final[1]; 
+                } 
+                b=line; f() 
+            } 
+            function f(){ 
+                dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } 
+                sub(/^[ \t]*/,"",dv); sub(/[ \t]*[:;][ \t]*$/, "", dv); sub(/[ \t]*$/, "", dv); 
+                if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n", n, t, dv, d); 
+                r=0; b=""; n="" 
+            }' "$script")
+            [ -n "$STPD" ] && echo -e "### 💾 Class Variables (Standard)\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$STPD\n"
+
+            # Signals
             SD=$(awk 'index($0, "signal") > 0 && index($0, "##") > 0 { 
                 split($0,p,"##"); d=p[2]; code=p[1]; 
                 sub(/^[ \t]*signal /, "", code); sub(/[ \t]*$/, "", code);
                 name=code; args="-";
                 if(index(code, "(") > 0) {
                     split(code, arr, "("); name=arr[1]; raw_args=arr[2]; sub(/\).*/, "", raw_args);
-                    # Replace commas with closed-and-reopened backticks and BR tag
-                    gsub(/,[ \t]*/, "`<br>`", raw_args);
-                    args="`" raw_args "`"
+                    gsub(/,[ \t]*/, "\`<br>\`", raw_args); args="\`" raw_args "\`"
                 }
                 printf("| **%s** | %s | %s |\n", name, args, d) 
             }' "$script")
-            [ -n "$SD" ] && echo -e "### Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |\n$SD\n"
+            [ -n "$SD" ] && echo -e "### 🔔 Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |\n$SD\n"
 
-            # Methods (Fixed Vertical Render)
+            # Methods
             MD=$(awk 'index($0, "func") > 0 && index($0, "##") > 0 { 
                 split($0,p,"##"); d=p[2]; code=p[1]; 
                 sub(/^[ \t]*func /, "", code); sub(/[ \t]*$/, "", code);
                 split(code, parts, "("); name=parts[1];
                 if(index(name, "_") == 1) next;
-                
                 raw_args=parts[2]; sub(/\).*/, "", raw_args); 
-                if(raw_args=="") args="-"; else {
-                    gsub(/,[ \t]*/, "`<br>`", raw_args);
-                    args="`" raw_args "`"
-                }
-                
+                if(raw_args=="") args="-"; else { gsub(/,[ \t]*/, "\`<br>\`", raw_args); args="\`" raw_args "\`" }
                 ret="void"; 
                 if(index(code, "->") > 0) { split(code, c, "->"); ret=c[2]; sub(/[ \t]*[:;][ \t]*$/, "", ret); gsub(/[ \t]+/, "", ret); }
-                printf("| **%s()** | %s | `%s` | %s |\n", name, args, ret, d) 
+                printf("| **%s()** | %s | \`%s\` | %s |\n", name, args, ret, d) 
             }' "$script")
-            [ -n "$MD" ] && echo -e "### Methods\n| Method | Arguments | Returns | Description |\n| :--- | :--- | :--- | :--- |\n$MD\n"
+            [ -n "$MD" ] && echo -e "### 🛠️ Methods\n| Method | Arguments | Returns | Description |\n| :--- | :--- | :--- | :--- |\n$MD\n"
             echo -e "---\n"
         } >> "$BODY_CONTENT"
     done
@@ -124,7 +158,7 @@ for addon_path in addons/*; do
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
-        git add . && git commit -m "docs: auto-update api" && super-git-push
+        git add . && git commit -m "docs: auto-update api (split properties)" && super-git-push
         ((UPDATED_COUNT++))
     else
         rm -f "$TEMP_DOC"
