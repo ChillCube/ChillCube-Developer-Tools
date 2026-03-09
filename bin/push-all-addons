@@ -1,26 +1,23 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Registry Engine (v5.9.7) ---
+# --- Chillcube Universal Doc & Registry Engine (v6.1) ---
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
+AUTO_MARKER="# --- Automated Dependencies (Managed by Script) ---"
+MANUAL_MARKER="# --- Manual Dependencies (Do Not Delete) ---"
 ORG_REPO="https://github.com/ChillCube/.github.git"
 REGISTRY_FILE="ADDONS.md"
 TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
 
-# --- INDEXING BRAIN ---
 declare -A CLASS_TO_REPO
 declare -A CLASS_TO_ADDON
 
-echo "🔍 Indexing Project-Wide Class Map for Dependency Tracking..."
-
+# --- 1. GLOBAL PRE-SCAN ---
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
-    
-    # Get clean GitHub URL for this addon
     REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//' | sed 's/git@github\.com:/https:\/\/github\.com\//' | sed 's/ssh:\/\/git@github\.com\//https:\/\/github\.com\//')
     
-    # Map every class_name found in this addon to its repo
     while read -r cname; do
         if [ -n "$cname" ]; then
             CLASS_TO_REPO["$cname"]="$REPO_URL"
@@ -33,57 +30,25 @@ done
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
-    echo "--------------------------------------------------"
-    echo "🚀 Processing: $addon_folder"
-
+    
     README_FILE="$addon_path/README.md"
     DOC_FILE="$addon_path/DOCUMENTATION.md"
+    DEP_FILE="$addon_path/DEPENDENCIES.txt"
     TEMP_DOC=$(mktemp)
     TEMP_README=$(mktemp)
     
     CFG_FILE="$addon_path/plugin.cfg"
     [ ! -f "$CFG_FILE" ] && continue
     
-    # Metadata Extraction
-    A_NAME=$(grep "name" "$CFG_FILE" 2>/dev/null | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+    A_NAME=$(grep "name" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     [ -z "$A_NAME" ] && A_NAME="$addon_folder"
-    A_DESC=$(grep "description" "$CFG_FILE" 2>/dev/null | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+    A_DESC=$(grep "description" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     [ -z "$A_DESC" ] && A_DESC="Godot Addon"
-    A_AUTHOR=$(grep "author" "$CFG_FILE" 2>/dev/null | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+    A_AUTHOR=$(grep "author" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     YEAR=$(date +%Y)
-    
     CURRENT_REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//')
 
-    # --- DEPENDENCY DETECTION ---
-    FOUND_DEPS=""
-    DEP_FILE="$addon_path/DEPENDENCIES.txt"
-
-    # Scan all scripts in THIS addon to see if they use classes from OTHER addons
-    while read -r line; do
-        for cname in "${!CLASS_TO_REPO[@]}"; do
-            # If the class is mentioned but belongs to a different folder/addon
-            if [[ "$line" == *"$cname"* ]] && [[ "${CLASS_TO_ADDON[$cname]}" != "$addon_folder" ]]; then
-                DEP_LINE="* [$cname](${CLASS_TO_REPO[$cname]}) (via ${CLASS_TO_ADDON[$cname]})"
-                # Avoid duplicate lines
-                if [[ "$FOUND_DEPS" != *"$DEP_LINE"* ]]; then
-                    FOUND_DEPS+="$DEP_LINE"$'\n'
-                fi
-            fi
-        done
-    done < <(grep -r "" "$addon_path" --include="*.gd")
-
-    # Write to DEPENDENCIES.txt
-    if [ -n "$FOUND_DEPS" ]; then
-        echo -e "The following ChillCube addons are required:\n\n$FOUND_DEPS" > "$DEP_FILE"
-        # Optional: Inject into README if your template has a placeholder or specific header
-        if [ -f "$TEMP_README" ]; then
-             sed -i "/## 📥 Installation/i ## 🔗 Dependencies\n\n$FOUND_DEPS\n" "$TEMP_README"
-        fi
-    else
-        echo "No external ChillCube dependencies found." > "$DEP_FILE"
-    fi
-
-    # --- 3. REGISTRY SYNC (Interactive Categorization) ---
+    # --- 3. REGISTRY SYNC ---
     TEMP_REGISTRY_DIR=$(mktemp -d)
     if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR" > /dev/null 2>&1; then
         cd "$TEMP_REGISTRY_DIR"
@@ -91,7 +56,7 @@ for addon_path in addons/*; do
         if ! grep -q "$CURRENT_REPO_URL" "$REGISTRY_FILE"; then
             mapfile -t CATEGORIES < <(grep "^## " "$REGISTRY_FILE" | sed 's/## //')
             for i in "${!CATEGORIES[@]}"; do printf "  [%d] %s\n" "$((i+1))" "${CATEGORIES[$i]}"; done
-            read -p "📁 Category #: " CAT_INPUT
+            read -p "📁 Category # for $A_NAME: " CAT_INPUT
             if [[ "$CAT_INPUT" =~ ^[0-9]+$ ]] && [ "$CAT_INPUT" -gt 0 ] && [ "$CAT_INPUT" -le "${#CATEGORIES[@]}" ]; then
                 SELECTED_CAT="${CATEGORIES[$((CAT_INPUT-1))]}"
             else
@@ -104,30 +69,60 @@ for addon_path in addons/*; do
         cd "$PROJECT_ROOT" && rm -rf "$TEMP_REGISTRY_DIR"
     fi
 
-    # --- 4. README TEMPLATE INJECTION ---
+    # --- 4. DUAL-MODE DEPENDENCY RESOLUTION ---
+    MANUAL_DEPS=""
+    if [ -f "$DEP_FILE" ] && grep -q "$MANUAL_MARKER" "$DEP_FILE"; then
+        MANUAL_DEPS=$(sed -n "/$MANUAL_MARKER/,\$p" "$DEP_FILE")
+    fi
+
+    AUTO_DEPS_FILE=""
+    AUTO_DEPS_MD=""
+    while read -r line; do
+        for cname in "${!CLASS_TO_REPO[@]}"; do
+            if [[ "$line" == *"$cname"* ]] && [[ "${CLASS_TO_ADDON[$cname]}" != "$addon_folder" ]]; then
+                URL="${CLASS_TO_REPO[$cname]}"
+                [[ "$AUTO_DEPS_FILE" != *"$URL"* ]] && AUTO_DEPS_FILE+="$URL"$'\n'
+                DEP_LINK="* [$cname]($URL) (via ${CLASS_TO_ADDON[$cname]})"
+                [[ "$AUTO_DEPS_MD" != *"$DEP_LINK"* ]] && AUTO_DEPS_MD+="$DEP_LINK"$'\n'
+            fi
+        done
+    done < <(grep -r "" "$addon_path" --include="*.gd")
+
+    {
+        echo "$AUTO_MARKER"
+        echo -e "$AUTO_DEPS_FILE"
+        [ -n "$MANUAL_DEPS" ] && echo "$MANUAL_DEPS" || echo -e "\n$MANUAL_MARKER\n# Add non-Godot dependencies below"
+    } > "$DEP_FILE"
+
+    # --- 5. README & DOCUMENTATION GENERATION ---
     curl -sSL "$TEMPLATE_URL" -o "$TEMP_README"
     sed -i "s|{{NAME}}|$A_NAME|g" "$TEMP_README"
     sed -i "s|{{DESC}}|$A_DESC|g" "$TEMP_README"
     sed -i "s|{{AUTHOR}}|$A_AUTHOR|g" "$TEMP_README"
     sed -i "s|{{YEAR}}|$YEAR|g" "$TEMP_README"
-    # Fix the terminal command to use the actual URL (no spaces)
     sed -i "s|clone-gd-addon.*|clone-gd-addon $CURRENT_REPO_URL.git|g" "$TEMP_README"
 
-    # --- 5. DOCUMENTATION GEN (Full Engine) ---
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
     
-    BODY_CONTENT=$(mktemp)
-    mapfile -t SCRIPTS < <(find "$addon_path" -name "*.gd")
+    if [ -n "$AUTO_DEPS_MD" ] || [ -n "$MANUAL_DEPS" ]; then
+        echo -e "## 🔗 Dependencies\n" >> "$TEMP_DOC"
+        [ -n "$AUTO_DEPS_MD" ] && echo -e "### Automated\n$AUTO_DEPS_MD" >> "$TEMP_DOC"
+        if [ -n "$MANUAL_DEPS" ]; then
+            M_CONTENT=$(echo "$MANUAL_DEPS" | grep -v "$MANUAL_MARKER")
+            [ -n "$M_CONTENT" ] && echo -e "\n### Manual\n$M_CONTENT" >> "$TEMP_DOC"
+        fi
+        echo -e "---\n" >> "$TEMP_DOC"
+    fi
 
-    for script in "${SCRIPTS[@]}"; do
+    BODY_CONTENT=$(mktemp)
+    while IFS= read -r -d '' script; do
         C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/ .*//'); [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
         {
             echo -e "## Class: $C_NAME\n"
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
-            
-            # --- EXPORTED PROPERTIES ---
+
             EXPD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 && index($0, "@export") > 0 { 
                 r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
                 line=p[1]; sub(/^[ \t]*/,"",line); 
@@ -145,7 +140,6 @@ for addon_path in addons/*; do
             }' "$script")
             [ -n "$EXPD" ] && echo -e "### ⚙️ Inspector Variables (Exported)\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$EXPD\n"
 
-            # --- STANDARD PROPERTIES ---
             STPD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 && index($0, "@export") == 0 { 
                 r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
                 line=p[1]; sub(/^[ \t]*/,"",line); 
@@ -163,7 +157,6 @@ for addon_path in addons/*; do
             }' "$script")
             [ -n "$STPD" ] && echo -e "### 💾 Class Variables (Standard)\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$STPD\n"
 
-            # --- SIGNALS ---
             SD=$(awk 'index($0, "signal") > 0 && index($0, "##") > 0 { 
                 split($0,p,"##"); d=p[2]; code=p[1]; 
                 sub(/^[ \t]*signal /, "", code); sub(/[ \t]*$/, "", code);
@@ -176,7 +169,6 @@ for addon_path in addons/*; do
             }' "$script")
             [ -n "$SD" ] && echo -e "### 🔔 Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |\n$SD\n"
 
-            # --- METHODS ---
             MD=$(awk 'index($0, "func") > 0 && index($0, "##") > 0 { 
                 split($0,p,"##"); d=p[2]; code=p[1]; 
                 sub(/^[ \t]*func /, "", code); sub(/[ \t]*$/, "", code);
@@ -191,22 +183,23 @@ for addon_path in addons/*; do
             [ -n "$MD" ] && echo -e "### 🛠️ Methods\n| Method | Arguments | Returns | Description |\n| :--- | :--- | :--- | :--- |\n$MD\n"
             echo -e "---\n"
         } >> "$BODY_CONTENT"
-    done
-    cat "$BODY_CONTENT" >> "$TEMP_DOC"; rm -f "$BODY_CONTENT"
+    done < <(find "$addon_path" -name "*.gd" -print0)
+    cat "$BODY_CONTENT" >> "$TEMP_DOC" && rm -f "$BODY_CONTENT"
 
     # --- 6. FINAL SYNC & SUPER-PUSH ---
     cp "$TEMP_README" "$README_FILE"
-    cp "$TEMP_DOC" "$DOC_FILE"
+    if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
+        mv "$TEMP_DOC" "$DOC_FILE"
+    fi
 
     cd "$PROJECT_ROOT/$addon_path"
     if [[ -n $(git status -s) ]]; then
-        git add README.md DOCUMENTATION.md
-        git commit -m "docs: auto-sync (template + api)"
+        git add .
+        git commit -m "docs: auto-sync v6.1 (managed dependencies)"
         super-git-push
         ((UPDATED_COUNT++))
     fi
     cd "$PROJECT_ROOT"
-    
     rm -f "$TEMP_README" "$TEMP_DOC"
 done
-echo "✅ Finished! $UPDATED_COUNT repositories synced via super-git-push."
+echo "✅ Finished! $UPDATED_COUNT updated."
