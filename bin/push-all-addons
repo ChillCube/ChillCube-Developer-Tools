@@ -27,20 +27,6 @@ for addon_path in addons/*; do
     echo "--------------------------------------------------"
     echo "🚀 Processing Addon: $addon_folder"
 
-    # --- 0. DEPENDENCY RESOLUTION ---
-    DEP_FILE="$addon_path/DEPENDENCIES.txt"
-    if [ -f "$DEP_FILE" ]; then
-        while read -r dep_url || [ -n "$dep_url" ]; do
-            [[ -z "$dep_url" || "$dep_url" =~ ^# ]] && continue
-            dep_name=$(basename "$dep_url" .git)
-            dep_target="addons/$dep_name"
-            if [ ! -d "$dep_target" ]; then
-                echo "  📥 Cloning dependency: $dep_name..."
-                git clone --depth 1 "$dep_url" "$dep_target"
-            fi
-        done < "$DEP_FILE"
-    fi
-
     # --- 1. SCRAPE METADATA ---
     CFG_FILE="$addon_path/plugin.cfg"
     if [ -f "$CFG_FILE" ]; then
@@ -61,22 +47,31 @@ for addon_path in addons/*; do
 
     # --- 3. GENERATE API REFERENCE ---
     DOC_FILE="$addon_path/DOCUMENTATION.md"
-    echo "# $A_NAME API Reference" > "$DOC_FILE"
-    echo "Generated on: $(date)" >> "$DOC_FILE"
-    echo -e "\n$A_DESC\n\n---\n" >> "$DOC_FILE"
-
+    TEMP_DOC=$(mktemp)
+    
     TARGET_SCRIPT="$addon_path/$A_MAIN_SCRIPT"
     [ ! -f "$TARGET_SCRIPT" ] && TARGET_SCRIPT=$(find "$addon_path" -maxdepth 2 -name "*.gd" | head -n 1)
 
     if [ -f "$TARGET_SCRIPT" ]; then
+        echo "# $A_NAME API Reference" > "$TEMP_DOC"
+        echo "Generated on: $(date +'%Y-%m-%d')" >> "$TEMP_DOC"
+        echo "" >> "$TEMP_DOC"
+
+        # --- CLASS DESCRIPTION (The first ## lines in the script) ---
+        CLASS_DESC=$(awk '/^##/ { print substr($0, 4); next } { exit }' "$TARGET_SCRIPT")
+        if [ -n "$CLASS_DESC" ]; then
+            echo "$CLASS_DESC" >> "$TEMP_DOC"
+        else
+            echo "$A_DESC" >> "$TEMP_DOC"
+        fi
+        echo -e "\n---\n" >> "$TEMP_DOC"
+
         # 3a. Properties Table
         PROP_DATA=$(awk '
             /(@export|var) .*##/ {
                 line = $0; split(line, p, "##"); desc = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc); code = p[1];
-                # Extract Name
                 split(code, a, "var "); split(a[2], b, /[ :={]/); name = b[1];
                 if (name == "") next;
-                # Extract Type
                 type = "Variant";
                 if (code ~ /:[ \t]*[A-zA-Z0-9_]+/) { 
                     split(code, a, ":"); split(a[2], b, /[= ]/); type = b[1]; gsub(/[ \t]+/, "", type);
@@ -84,7 +79,6 @@ for addon_path in addons/*; do
                     if (code ~ /"/) type = "String"; else if (code ~ /true|false/) type = "bool";
                     else if (code ~ /[0-9]+\.[0-9]+/) type = "float"; else if (code ~ /[0-9]+/) type = "int";
                 }
-                # Extract Default
                 def = "-";
                 if (code ~ /:=/) { split(code, a, ":="); def = a[2]; }
                 else if (code ~ /=/) { split(code, a, "="); def = a[2]; }
@@ -94,10 +88,8 @@ for addon_path in addons/*; do
         ' "$TARGET_SCRIPT")
 
         if [ -n "$PROP_DATA" ]; then
-            echo "## Properties" >> "$DOC_FILE"
-            echo "| Property | Type | Default | Description |" >> "$DOC_FILE"
-            echo "| :--- | :--- | :--- | :--- |" >> "$DOC_FILE"
-            echo "$PROP_DATA" >> "$DOC_FILE"; echo "" >> "$DOC_FILE"
+            echo -e "## Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |" >> "$TEMP_DOC"
+            echo "$PROP_DATA" >> "$TEMP_DOC"; echo "" >> "$TEMP_DOC"
         fi
 
         # 3b. Methods Table
@@ -112,10 +104,8 @@ for addon_path in addons/*; do
         ' "$TARGET_SCRIPT")
 
         if [ -n "$METHOD_DATA" ]; then
-            echo "## Methods" >> "$DOC_FILE"
-            echo "| Method | Returns | Description |" >> "$DOC_FILE"
-            echo "| :--- | :--- | :--- |" >> "$DOC_FILE"
-            echo "$METHOD_DATA" >> "$DOC_FILE"; echo "" >> "$DOC_FILE"
+            echo -e "## Methods\n| Method | Returns | Description |\n| :--- | :--- | :--- |" >> "$TEMP_DOC"
+            echo "$METHOD_DATA" >> "$TEMP_DOC"; echo "" >> "$TEMP_DOC"
         fi
 
         # 3c. Signals Table
@@ -128,24 +118,35 @@ for addon_path in addons/*; do
         ' "$TARGET_SCRIPT")
 
         if [ -n "$SIGNAL_DATA" ]; then
-            echo "## Signals" >> "$DOC_FILE"
-            echo "| Signal | Description |" >> "$DOC_FILE"
-            echo "| :--- | :--- |" >> "$DOC_FILE"
-            echo "$SIGNAL_DATA" >> "$DOC_FILE"; echo "" >> "$DOC_FILE"
+            echo -e "## Signals\n| Signal | Description |\n| :--- | :--- |" >> "$TEMP_DOC"
+            echo "$SIGNAL_DATA" >> "$TEMP_DOC"; echo "" >> "$TEMP_DOC"
         fi
     fi
 
-    # --- 4. GIT SYNC ---
-    cd "$PROJECT_ROOT/$addon_path"
-    git add README.md DOCUMENTATION.md
-    if ! git diff --cached --quiet; then
-        echo -e "\n💬 Documentation changes for [$addon_folder]."
+    # --- 4. SMART COMMIT CHECK ---
+    # Compare while ignoring the line starting with "Generated on:"
+    COMMIT_NEEDED=false
+    if [ ! -f "$DOC_FILE" ]; then
+        COMMIT_NEEDED=true
+    else
+        # Compare files but skip line 2 (the timestamp)
+        if ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
+            COMMIT_NEEDED=true
+        fi
+    fi
+
+    if [ "$COMMIT_NEEDED" = true ]; then
+        mv "$TEMP_DOC" "$DOC_FILE"
+        cd "$PROJECT_ROOT/$addon_path"
+        git add README.md DOCUMENTATION.md
+        echo -e "\n💬 Documentation updated for [$addon_folder]."
         read -p "Commit message (default: docs update): " msg
         git commit -m "docs($addon_folder): ${msg:-docs update}"
         if command -v super-git-push &> /dev/null; then super-git-push; else git push origin main; fi
     else
-        echo "ℹ️  No changes for $addon_folder."
+        echo "ℹ️  No changes for $addon_folder (Timestamp ignored)."
+        rm "$TEMP_DOC"
     fi
     cd "$PROJECT_ROOT"
 done
-echo "✅ All addons processed."
+echo "✅ Finished."
