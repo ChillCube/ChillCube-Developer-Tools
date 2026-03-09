@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Registry Engine (v5.9.1) ---
+# --- Chillcube Universal Doc & Registry Engine (v5.9.2) ---
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
 ORG_REPO="https://github.com/ChillCube/.github.git"
@@ -15,12 +15,10 @@ echo "🔍 Indexing Project-Wide Class Map..."
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     
-    # --- NEW: Filename Sanitization ---
-    # Finds all .gd files with spaces and renames them to use underscores
+    # Filename Sanitization (Internal .gd files)
     find "$addon_path" -name "* *.gd" -type f | while read -r src; do
         dst=$(echo "$src" | tr ' ' '_')
         mv "$src" "$dst"
-        echo "  Rename: '$src' -> '$dst'"
     done
 
     addon_folder=$(basename "$addon_path")
@@ -46,14 +44,18 @@ for addon_path in addons/*; do
     
     CFG_FILE="$addon_path/plugin.cfg"
     [ ! -f "$CFG_FILE" ] && continue
+    
+    # Get Original Name and Create Safe Name (Spaces -> Underscores)
     A_NAME=$(grep "name" "$CFG_FILE" 2>/dev/null | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     [ -z "$A_NAME" ] && A_NAME="$addon_folder"
+    A_SAFE_NAME=$(echo "$A_NAME" | tr ' ' '_')
+    
     A_DESC=$(grep "description" "$CFG_FILE" 2>/dev/null | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     [ -z "$A_DESC" ] && A_DESC="Godot Addon"
     
     CURRENT_REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//')
 
-    # --- 3. REGISTRY SYNC ---
+    # --- 3. REGISTRY SYNC (Using Safe Name) ---
     TEMP_REGISTRY_DIR=$(mktemp -d)
     if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR" > /dev/null 2>&1; then
         cd "$TEMP_REGISTRY_DIR"
@@ -68,19 +70,25 @@ for addon_path in addons/*; do
             else
                 [ "$CAT_INPUT" == "0" ] && read -p "Name: " SELECTED_CAT || SELECTED_CAT="$CAT_INPUT"
             fi
-            ENTRY="* [$A_NAME]($CURRENT_REPO_URL) - $A_DESC"
+            # Registry entry uses Safe Name for consistency
+            ENTRY="* [$A_SAFE_NAME]($CURRENT_REPO_URL) - $A_DESC"
             if ! grep -q "## $SELECTED_CAT" "$REGISTRY_FILE"; then echo -e "\n## $SELECTED_CAT\n$ENTRY" >> "$REGISTRY_FILE"; else sed -i "/## $SELECTED_CAT/a $ENTRY" "$REGISTRY_FILE"; fi
-            git add "$REGISTRY_FILE" && git commit -m "registry: add $A_NAME" && git push origin main > /dev/null 2>&1
+            git add "$REGISTRY_FILE" && git commit -m "registry: add $A_SAFE_NAME" && git push origin main > /dev/null 2>&1
         fi
         cd "$PROJECT_ROOT" && rm -rf "$TEMP_REGISTRY_DIR"
     fi
 
     # --- 4. DOCUMENTATION GEN ---
+    # Header uses original name for display, but safe names for terminal snippets
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
-    BODY_CONTENT=$(mktemp)
     
-    # Use find with -print0 to handle any remaining weird characters safely
+    # Terminal Instruction Snippet (Safe for copy-pasting)
+    echo "### 🐧 Linux / MacOS" >> "$TEMP_DOC"
+    echo "To add this to your project, copy paste this command into terminal at the root of your project:" >> "$TEMP_DOC"
+    echo -e "\`\`\`bash\nclone-gd-addon $CURRENT_REPO_URL.git\n\`\`\`\n" >> "$TEMP_DOC"
+
+    BODY_CONTENT=$(mktemp)
     while IFS= read -r -d '' script; do
         C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/ .*//'); [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
         {
@@ -104,7 +112,7 @@ for addon_path in addons/*; do
             function f(){ 
                 dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } 
                 sub(/^[ \t]*/,"",dv); sub(/[ \t]*[:;][ \t]*$/, "", dv); sub(/[ \t]*$/, "", dv); 
-                if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n", n, t, dv, d); 
+                if(n!="") printf("| **%s** | \140%s\140 | \140%s\140 | %s |\n", n, t, dv, d); 
                 r=0; b=""; n="" 
             }' "$script")
             [ -n "$EXPD" ] && echo -e "### ⚙️ Inspector Variables (Exported)\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$EXPD\n"
@@ -125,7 +133,7 @@ for addon_path in addons/*; do
             function f(){ 
                 dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } 
                 sub(/^[ \t]*/,"",dv); sub(/[ \t]*[:;][ \t]*$/, "", dv); sub(/[ \t]*$/, "", dv); 
-                if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n", n, t, dv, d); 
+                if(n!="") printf("| **%s** | \140%s\140 | \140%s\140 | %s |\n", n, t, dv, d); 
                 r=0; b=""; n="" 
             }' "$script")
             [ -n "$STPD" ] && echo -e "### 💾 Class Variables (Standard)\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$STPD\n"
@@ -166,7 +174,7 @@ for addon_path in addons/*; do
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
-        git add . && git commit -m "docs: auto-update api (renamed spaces to underscores)" && super-git-push
+        git add . && git commit -m "docs: terminal safe names for $A_SAFE_NAME" && super-git-push
         ((UPDATED_COUNT++))
     else
         rm -f "$TEMP_DOC"
