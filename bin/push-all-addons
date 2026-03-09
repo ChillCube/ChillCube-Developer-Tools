@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc, Dependency & Validation Engine ---
+# --- Chillcube Universal Doc, Deep-Dependency & Validation Engine ---
 TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
 PROJECT_ROOT=$(pwd)
 
 declare -A CLASS_TO_REPO
 declare -A CLASS_TO_ADDON
+ALL_CUSTOM_CLASSES=""
 
 echo "🔍 Indexing Project-Wide Class Map..."
 
@@ -22,6 +23,7 @@ for addon_path in addons/*; do
         if [ -n "$cname" ]; then
             CLASS_TO_REPO["$cname"]="$REPO_URL"
             CLASS_TO_ADDON["$cname"]="$addon_folder"
+            ALL_CUSTOM_CLASSES+="$cname "
         fi
     done < <(grep -r "class_name" "$addon_path" --include="*.gd" | sed 's/.*class_name //; s/[ \t]*$//; s/ .*//')
 done
@@ -44,48 +46,34 @@ for addon_path in addons/*; do
     if [ -f "$CFG_FILE" ]; then
         A_NAME=$(grep "name" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
         A_DESC=$(grep "description" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
-        A_AUTH=$(grep "author" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     else
-        A_NAME="$addon_folder"; A_DESC="Godot Addon"; A_AUTH="ChillCube"
+        A_NAME="$addon_folder"; A_DESC="Godot Addon"
     fi
     
-    # Update README
-    curl -sSL "$TEMPLATE_URL" -o "$addon_path/README.md"
-    sed -i "s@{{NAME}}@$A_NAME@g" "$addon_path/README.md"
-    sed -i "s@{{DESC}}@$A_DESC@g" "$addon_path/README.md"
-    sed -i "s@{{AUTHOR}}@$A_AUTH@g" "$addon_path/README.md"
-    sed -i "s@{{YEAR}}@$(date +%Y)@g" "$addon_path/README.md"
-
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
-    echo "Generated on: $(date +'%Y-%m-%d')" >> "$TEMP_DOC"
-    echo -e "\n$A_DESC\n" >> "$TEMP_DOC"
+    echo -e "Generated on: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
 
-    # --- 3. SCRIPT PROCESSING & WARNING LOGIC ---
+    # --- 3. SCRIPT PROCESSING & DEEP DEPENDENCY SCAN ---
     BODY_CONTENT=$(mktemp)
     mapfile -t SCRIPTS < <(find "$addon_path" -name "*.gd")
 
     for script in "${SCRIPTS[@]}"; do
-        # Discovery
-        EXT_VAL=$(grep "^extends " "$script" | awk '{print $2}' | sed 's/[ \t]*$//; s/["'\'']//g')
-        mapfile -t HINTS < <(grep -oP '(?<=: )[A-Z][A-Za-z0-9_]+' "$script")
+        # DEEP SCAN: Find every word starting with Uppercase that matches a known class
+        # This catches: extends, type-hints, static calls, and even 'is MyClass' checks
+        POTENTIAL_CLASSES=$(grep -oE '\b[A-Z][a-zA-Z0-9_]+\b' "$script" | sort -u)
         
-        for check_class in "$EXT_VAL" "${HINTS[@]}"; do
-            [ -z "$check_class" ] && continue
-            
+        for check_class in $POTENTIAL_CLASSES; do
             DEP_ADDON="${CLASS_TO_ADDON[$check_class]}"
             
-            if [ -n "$DEP_ADDON" ]; then
-                if [ "$DEP_ADDON" != "$addon_folder" ]; then
-                    LOCAL_DEPS["$DEP_ADDON"]="${CLASS_TO_REPO[$check_class]}"
-                fi
-            else
-                # WARNING LOGIC: If it's not a known Godot class and not in our map
-                # (Simple check: Godot classes are usually PascalCase and always exist in docs)
-                if [[ "$check_class" =~ ^[A-Z] ]]; then
-                    # Ignore common built-in types that might not be in the map
-                    if [[ ! "$check_class" =~ ^(Node|Sprite|Vector|String|int|float|bool|Array|Dictionary|Resource|Input|SceneTree|Object) ]]; then
-                        echo "⚠️  WARNING: Class '$check_class' used in '$script' not found in any addon folder!"
-                    fi
+            if [ -n "$DEP_ADDON" ] && [ "$DEP_ADDON" != "$addon_folder" ]; then
+                LOCAL_DEPS["$DEP_ADDON"]="${CLASS_TO_REPO[$check_class]}"
+            fi
+            
+            # Warning logic for unknown classes (ignoring common built-ins)
+            if [[ ! " $ALL_CUSTOM_CLASSES " =~ " $check_class " ]]; then
+                if [[ ! "$check_class" =~ ^(Node|Sprite|Vector|String|int|float|bool|Array|Dictionary|Resource|Object|Input|SceneTree|Engine|JSON|OS|Time|Color|Rect2|Callable|Signal) ]]; then
+                     # Only warn if it's not a standard Godot built-in
+                     echo "⚠️  WARNING: Unknown class '$check_class' found in '$script'"
                 fi
             fi
         done
@@ -108,15 +96,13 @@ for addon_path in addons/*; do
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
             
-            # Properties
+            # AWK Properties (Fixed for multi-line/dictionary/array support)
             PD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} /^[ \t]*(@export.*)?var/ && /##/ { r=1; split($0,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/,"",d); c=p[1]; split(c,np,"var "); split(np[2],b2,/[ :={]/); n=b2[1]; t="Variant"; if(c~/:[ \t]*[a-zA-Z0-9_]+/){match(c,/:[ \t]*[a-zA-Z0-9_]+/); t=substr(c,RSTART+1,RLENGTH-1); gsub(/[ \t]+/,"",t)} b=c; if(c!~"{" && c!~"[") f() } r==1 && $0!~"var" { nl=$0; if(nl~"##"){split(nl,tmp,"##"); nl=tmp[1]} b=b " " nl } r==1 && ($0~"}" || $0~"]") { f() } function f(){ dv="-"; if(b~"="){ ei=index(b,"="); ae=substr(b,ei+1); bi=(ae~"{")?index(ae,"{"):(ae~"["?index(ae,"["):0); dv=(bi>0)?substr(ae,bi):ae } gsub(/[ \t]+/," ",dv); sub(/;[ \t]*$/, "", dv); gsub(/^[ \t]+|[ \t]+$/, "", dv); if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n",n,t,dv,d); r=0; b=""; n="" }' "$script")
             [ -n "$PD" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PD\n"
             
-            # Signals
+            # Signals & Methods...
             SD=$(awk '/signal .*##/ { line=$0; split(line,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/,"",d); code=p[1]; split(code,a,"signal "); split(a[2],b,/[ (]/); n=b[1]; printf("| **%s** | %s |\n",n,d) }' "$script")
             [ -n "$SD" ] && echo -e "### Signals\n| Signal | Description |\n| :--- | :--- |\n$SD\n"
-            
-            # Methods
             MD=$(awk '/func .*##/ { line=$0; split(line,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/,"",d); code=p[1]; split(code,a,"func "); split(a[2],b, "("); n=b[1]; if(n=="" || n~"^_") next; ret="void"; if(code~"->") { split(code, c, "->"); split(c[2], dr, ":"); ret=dr[1]; gsub(/[ \t]+/,"",ret) } printf("| **%s()** | `%s` | %s |\n", n, ret, d) }' "$script")
             [ -n "$MD" ] && echo -e "### Methods\n| Method | Returns | Description |\n| :--- | :--- | :--- |\n$MD\n"
             echo -e "---\n"
@@ -132,7 +118,7 @@ for addon_path in addons/*; do
         IFS=$'\n' sorted_deps=($(sort <<<"${!LOCAL_DEPS[*]}"))
         unset IFS
         for dep in "${sorted_deps[@]}"; do
-            echo "| $dep | [GitHub](${LOCAL_DEPS[$dep]}) |" >> "$TEMP_DOC"
+            echo "| $dep | [Link](${LOCAL_DEPS[$dep]}) |" >> "$TEMP_DOC"
             echo "${LOCAL_DEPS[$dep]}" >> "$DEP_FILE"
         done
         echo -e "\n---\n" >> "$TEMP_DOC"
@@ -145,8 +131,8 @@ for addon_path in addons/*; do
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
-        git add README.md DOCUMENTATION.md DEPENDENCIES.txt
-        git commit -m "docs: auto-dependency resolution and warning checks"
+        git add .
+        git commit -m "docs: deep dependency scan and documentation update"
         super-git-push
     else
         rm "$TEMP_DOC"
