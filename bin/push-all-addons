@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Dependency Engine ---
+# --- Chillcube Universal Doc, Dependency & Validation Engine ---
 TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
 PROJECT_ROOT=$(pwd)
 
@@ -37,41 +37,63 @@ for addon_path in addons/*; do
     DEP_FILE="$addon_path/DEPENDENCIES.txt"
     TEMP_DOC=$(mktemp)
     
-    # Track dependencies for THIS addon
     declare -A LOCAL_DEPS
 
-    # Start Documentation Header
+    # Plugin Metadata
     CFG_FILE="$addon_path/plugin.cfg"
-    A_NAME=$(grep "name" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
-    A_DESC=$(grep "description" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+    if [ -f "$CFG_FILE" ]; then
+        A_NAME=$(grep "name" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+        A_DESC=$(grep "description" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+        A_AUTH=$(grep "author" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+    else
+        A_NAME="$addon_folder"; A_DESC="Godot Addon"; A_AUTH="ChillCube"
+    fi
     
-    echo "# $A_NAME API Reference" > "$TEMP_DOC"
-    echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
+    # Update README
+    curl -sSL "$TEMPLATE_URL" -o "$addon_path/README.md"
+    sed -i "s@{{NAME}}@$A_NAME@g" "$addon_path/README.md"
+    sed -i "s@{{DESC}}@$A_DESC@g" "$addon_path/README.md"
+    sed -i "s@{{AUTHOR}}@$A_AUTH@g" "$addon_path/README.md"
+    sed -i "s@{{YEAR}}@$(date +%Y)@g" "$addon_path/README.md"
 
-    # --- 3. SCRIPT PROCESSING & DEP DISCOVERY ---
+    echo "# $A_NAME API Reference" > "$TEMP_DOC"
+    echo "Generated on: $(date +'%Y-%m-%d')" >> "$TEMP_DOC"
+    echo -e "\n$A_DESC\n" >> "$TEMP_DOC"
+
+    # --- 3. SCRIPT PROCESSING & WARNING LOGIC ---
     BODY_CONTENT=$(mktemp)
     mapfile -t SCRIPTS < <(find "$addon_path" -name "*.gd")
 
     for script in "${SCRIPTS[@]}"; do
-        # Find every custom class referenced in this script (extends or type hints)
-        # 1. Extends
+        # Discovery
         EXT_VAL=$(grep "^extends " "$script" | awk '{print $2}' | sed 's/[ \t]*$//; s/["'\'']//g')
-        # 2. Type hints like ": MyClass"
         mapfile -t HINTS < <(grep -oP '(?<=: )[A-Z][A-Za-z0-9_]+' "$script")
         
         for check_class in "$EXT_VAL" "${HINTS[@]}"; do
+            [ -z "$check_class" ] && continue
+            
             DEP_ADDON="${CLASS_TO_ADDON[$check_class]}"
-            # If class belongs to a DIFFERENT addon, mark as dependency
-            if [ -n "$DEP_ADDON" ] && [ "$DEP_ADDON" != "$addon_folder" ]; then
-                LOCAL_DEPS["$DEP_ADDON"]="${CLASS_TO_REPO[$check_class]}"
+            
+            if [ -n "$DEP_ADDON" ]; then
+                if [ "$DEP_ADDON" != "$addon_folder" ]; then
+                    LOCAL_DEPS["$DEP_ADDON"]="${CLASS_TO_REPO[$check_class]}"
+                fi
+            else
+                # WARNING LOGIC: If it's not a known Godot class and not in our map
+                # (Simple check: Godot classes are usually PascalCase and always exist in docs)
+                if [[ "$check_class" =~ ^[A-Z] ]]; then
+                    # Ignore common built-in types that might not be in the map
+                    if [[ ! "$check_class" =~ ^(Node|Sprite|Vector|String|int|float|bool|Array|Dictionary|Resource|Input|SceneTree|Object) ]]; then
+                        echo "⚠️  WARNING: Class '$check_class' used in '$script' not found in any addon folder!"
+                    fi
+                fi
             fi
         done
 
-        # --- CLASS DOC GENERATION (Properties, Signals, Methods) ---
+        # --- CLASS DOC GENERATION ---
         C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/ .*//')
         [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
         
-        # Resolve Inheritance Link
         RAW_EXT=$(grep "^extends " "$script" | sed 's/extends //' | sed 's/ .*//')
         [ -z "$RAW_EXT" ] && RAW_EXT="Object"
         if [[ -n "${CLASS_TO_REPO[$RAW_EXT]}" ]]; then
@@ -85,14 +107,17 @@ for addon_path in addons/*; do
             echo -e "**Inherits:** $L\n"
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
+            
             # Properties
-            PD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} /^[ \t]*(@export.*)?var/ && /##/ { r=1; split($0,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/,"",d); c=p[1]; split(c,np,"var "); split(np[2],b2,/[ :={]/); n=b2[1]; t="Variant"; if(c~/:[ \t]*[A-Z0-9_]+/){match(c,/:[ \t]*[A-Z0-9_]+/); t=substr(c,RSTART+1,RLENGTH-1)} b=c; if(c!~"{" && c!~"[") f() } r==1 && $0!~"var" { nl=$0; if(nl~"##"){split(nl,tmp,"##"); nl=tmp[1]} b=b " " nl } r==1 && ($0~"}" || $0~"]") { f() } function f(){ dv="-"; if(b~"="){ ei=index(b,"="); ae=substr(b,ei+1); bi=(ae~"{")?index(ae,"{"):(ae~"["?index(ae,"["):0); dv=(bi>0)?substr(ae,bi):ae } gsub(/[ \t]+/," ",dv); sub(/;[ \t]*$/, "", dv); gsub(/^[ \t]+|[ \t]+$/, "", dv); if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n",n,t,dv,d); r=0; b=""; n="" }' "$script")
+            PD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} /^[ \t]*(@export.*)?var/ && /##/ { r=1; split($0,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/,"",d); c=p[1]; split(c,np,"var "); split(np[2],b2,/[ :={]/); n=b2[1]; t="Variant"; if(c~/:[ \t]*[a-zA-Z0-9_]+/){match(c,/:[ \t]*[a-zA-Z0-9_]+/); t=substr(c,RSTART+1,RLENGTH-1); gsub(/[ \t]+/,"",t)} b=c; if(c!~"{" && c!~"[") f() } r==1 && $0!~"var" { nl=$0; if(nl~"##"){split(nl,tmp,"##"); nl=tmp[1]} b=b " " nl } r==1 && ($0~"}" || $0~"]") { f() } function f(){ dv="-"; if(b~"="){ ei=index(b,"="); ae=substr(b,ei+1); bi=(ae~"{")?index(ae,"{"):(ae~"["?index(ae,"["):0); dv=(bi>0)?substr(ae,bi):ae } gsub(/[ \t]+/," ",dv); sub(/;[ \t]*$/, "", dv); gsub(/^[ \t]+|[ \t]+$/, "", dv); if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n",n,t,dv,d); r=0; b=""; n="" }' "$script")
             [ -n "$PD" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PD\n"
+            
             # Signals
             SD=$(awk '/signal .*##/ { line=$0; split(line,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/,"",d); code=p[1]; split(code,a,"signal "); split(a[2],b,/[ (]/); n=b[1]; printf("| **%s** | %s |\n",n,d) }' "$script")
             [ -n "$SD" ] && echo -e "### Signals\n| Signal | Description |\n| :--- | :--- |\n$SD\n"
+            
             # Methods
-            MD=$(awk '/func .*##/ { line=$0; split(line,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/, "", d); code=p[1]; split(code,a,"func "); split(a[2],b, "("); n=b[1]; if(n=="" || n~"^_") next; ret="void"; if(code~"->") { split(code, c, "->"); split(c[2], dr, ":"); ret=dr[1]; gsub(/[ \t]+/,"",ret) } printf("| **%s()** | `%s` | %s |\n", n, ret, d) }' "$script")
+            MD=$(awk '/func .*##/ { line=$0; split(line,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/,"",d); code=p[1]; split(code,a,"func "); split(a[2],b, "("); n=b[1]; if(n=="" || n~"^_") next; ret="void"; if(code~"->") { split(code, c, "->"); split(c[2], dr, ":"); ret=dr[1]; gsub(/[ \t]+/,"",ret) } printf("| **%s()** | `%s` | %s |\n", n, ret, d) }' "$script")
             [ -n "$MD" ] && echo -e "### Methods\n| Method | Returns | Description |\n| :--- | :--- | :--- |\n$MD\n"
             echo -e "---\n"
         } >> "$BODY_CONTENT"
@@ -104,7 +129,9 @@ for addon_path in addons/*; do
         echo "| Addon | Repository |" >> "$TEMP_DOC"
         echo "| :--- | :--- |" >> "$TEMP_DOC"
         > "$DEP_FILE"
-        for dep in "${!LOCAL_DEPS[@]}"; do
+        IFS=$'\n' sorted_deps=($(sort <<<"${!LOCAL_DEPS[*]}"))
+        unset IFS
+        for dep in "${sorted_deps[@]}"; do
             echo "| $dep | [GitHub](${LOCAL_DEPS[$dep]}) |" >> "$TEMP_DOC"
             echo "${LOCAL_DEPS[$dep]}" >> "$DEP_FILE"
         done
@@ -118,8 +145,8 @@ for addon_path in addons/*; do
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
-        git add DOCUMENTATION.md DEPENDENCIES.txt
-        git commit -m "docs: auto-dependency resolution and api update"
+        git add README.md DOCUMENTATION.md DEPENDENCIES.txt
+        git commit -m "docs: auto-dependency resolution and warning checks"
         super-git-push
     else
         rm "$TEMP_DOC"
