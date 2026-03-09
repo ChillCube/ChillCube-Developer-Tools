@@ -1,35 +1,21 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc Generator & Super-Pusher ---
-# Core Tooling for Godot Addon Management
+# --- Chillcube Universal Doc & Dependency Engine ---
 TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
-VENV_PATH="/tmp/chillcube_docs_env"
-
-# Ensure environment is ready
-if ! command -v godocs &> /dev/null; then
-    if [ ! -d "$VENV_PATH" ]; then
-        python3 -m venv "$VENV_PATH" &> /dev/null
-        "$VENV_PATH/bin/pip" install godocs godocs-jinja --quiet 2>/dev/null
-    fi
-    export PATH="$VENV_PATH/bin:$PATH"
-fi
-
 PROJECT_ROOT=$(pwd)
-declare -A CLASS_TO_REPO  # Map: ClassName -> GitHub Web URL
-declare -A CLASS_TO_ADDON # Map: ClassName -> Local Addon Folder Name
 
-echo "🔍 Indexing Project & Dependencies..."
+declare -A CLASS_TO_REPO
+declare -A CLASS_TO_ADDON
+
+echo "🔍 Indexing Project-Wide Class Map..."
 
 # --- 1. GLOBAL PRE-SCAN ---
-# Map every class in the project to its repository for cross-repo linking
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
     
-    # Standardize Repo URL to HTTPS for web-clickable links
     REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | \
-               sed 's/\.git$//' | \
-               sed 's/git@github\.com:/https:\/\/github\.com\//' | \
+               sed 's/\.git$//' | sed 's/git@github\.com:/https:\/\/github\.com\//' | \
                sed 's/ssh:\/\/git@github\.com\//https:\/\/github\.com\//')
     
     while read -r cname; do
@@ -40,131 +26,103 @@ for addon_path in addons/*; do
     done < <(grep -r "class_name" "$addon_path" --include="*.gd" | sed 's/.*class_name //; s/[ \t]*$//; s/ .*//')
 done
 
-# --- 2. GENERATION & PUSH LOOP ---
+# --- 2. GENERATION LOOP ---
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
-    
     echo "--------------------------------------------------"
     echo "🚀 Processing: $addon_folder"
 
     DOC_FILE="$addon_path/DOCUMENTATION.md"
+    DEP_FILE="$addon_path/DEPENDENCIES.txt"
     TEMP_DOC=$(mktemp)
     
-    # Metadata Extraction
+    # Track dependencies for THIS addon
+    declare -A LOCAL_DEPS
+
+    # Start Documentation Header
     CFG_FILE="$addon_path/plugin.cfg"
-    if [ -f "$CFG_FILE" ]; then
-        A_NAME=$(grep "name" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
-        A_DESC=$(grep "description" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
-        A_AUTH=$(grep "author" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
-    else
-        A_NAME="$addon_folder"; A_DESC="Godot Addon"; A_AUTH="ChillCube"
-    fi
-
-    # Update README from Template
-    curl -sSL "$TEMPLATE_URL" -o "$addon_path/README.md"
-    sed -i "s@{{NAME}}@$A_NAME@g" "$addon_path/README.md"
-    sed -i "s@{{DESC}}@$A_DESC@g" "$addon_path/README.md"
-    sed -i "s@{{AUTHOR}}@$A_AUTH@g" "$addon_path/README.md"
-    sed -i "s@{{YEAR}}@$(date +%Y)@g" "$addon_path/README.md"
-
-    # Start Documentation File
+    A_NAME=$(grep "name" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+    A_DESC=$(grep "description" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+    
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
-    echo "Generated on: $(date +'%Y-%m-%d')" >> "$TEMP_DOC"
-    echo -e "\n$A_DESC\n\n---\n" >> "$TEMP_DOC"
+    echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
 
+    # --- 3. SCRIPT PROCESSING & DEP DISCOVERY ---
+    BODY_CONTENT=$(mktemp)
     mapfile -t SCRIPTS < <(find "$addon_path" -name "*.gd")
 
     for script in "${SCRIPTS[@]}"; do
-        C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/[ \t]*$//' | sed 's/ .*//')
-        [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
-
-        # Smart Inheritance Resolver
-        RAW_EXT=$(grep "^extends " "$script" | sed 's/extends //' | sed 's/[ \t]*$//' | sed 's/ .*//')
-        [ -z "$RAW_EXT" ] && RAW_EXT="Object"
-
-        if [[ -n "${CLASS_TO_REPO[$RAW_EXT]}" ]]; then
-            if [[ "${CLASS_TO_ADDON[$RAW_EXT]}" == "$addon_folder" ]]; then
-                EXT_LINK="[\`$RAW_EXT\`](#class-$RAW_EXT)"
-            else
-                EXT_LINK="[\`$RAW_EXT\`](${CLASS_TO_REPO[$RAW_EXT]}/blob/main/DOCUMENTATION.md#class-$RAW_EXT)"
-            fi
-        elif [[ "$RAW_EXT" =~ ^[A-Z] ]] && [[ ! "$RAW_EXT" =~ [./\"] ]]; then
-            EXT_LINK="[\`$RAW_EXT\`](https://docs.godotengine.org/en/stable/classes/class_${RAW_EXT,,}.html)"
-        else
-            EXT_LINK="\`$RAW_EXT\`"
-        fi
-
-        CLASS_DESC=$(awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script")
+        # Find every custom class referenced in this script (extends or type hints)
+        # 1. Extends
+        EXT_VAL=$(grep "^extends " "$script" | awk '{print $2}' | sed 's/[ \t]*$//; s/["'\'']//g')
+        # 2. Type hints like ": MyClass"
+        mapfile -t HINTS < <(grep -oP '(?<=: )[A-Z][A-Za-z0-9_]+' "$script")
         
-        # --- FULL PROPERTY PARSING (State Machine) ---
-        PROP_DATA=$(awk '
-            BEGIN { recording = 0; buffer = ""; desc = ""; name = ""; type = ""; }
-            /^[ \t]*(@export.*)?var/ && /##/ {
-                recording = 1; split($0, parts, "##"); desc = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc);
-                code = parts[1]; split(code, n_p, "var "); split(n_p[2], b, /[ :={]/); name = b[1];
-                type = "Variant"; if (code ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
-                    match(code, /:[ \t]*[A-zA-Z0-9_\[\]]+/); type = substr(code, RSTART+1, RLENGTH-1);
-                }
-                buffer = code; if (code !~ /\{/ && code !~ /\[/) finish_up();
-            }
-            recording == 1 && $0 !~ /var/ {
-                nl = $0; if (nl ~ /##/) { split(nl, tmp, "##"); nl = tmp[1]; }
-                buffer = buffer " " nl;
-            }
-            recording == 1 && ($0 ~ /\}/ || $0 ~ /\]/) { finish_up(); }
-            function finish_up() {
-                def = "-"; if (buffer ~ /=/) {
-                    eq_idx = index(buffer, "="); after_eq = substr(buffer, eq_idx + 1);
-                    b_idx = (after_eq ~ /\{/) ? index(after_eq, "{") : (after_eq ~ /\[/ ? index(after_eq, "[") : 0);
-                    def = (b_idx > 0) ? substr(after_eq, b_idx) : after_eq;
-                }
-                gsub(/[ \t]+/, " ", def); sub(/;[ \t]*$/, "", def); gsub(/^[ \t]+|[ \t]+$/, "", def);
-                if (name != "") printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc);
-                recording = 0; buffer = ""; name = "";
-            }
-        ' "$script")
+        for check_class in "$EXT_VAL" "${HINTS[@]}"; do
+            DEP_ADDON="${CLASS_TO_ADDON[$check_class]}"
+            # If class belongs to a DIFFERENT addon, mark as dependency
+            if [ -n "$DEP_ADDON" ] && [ "$DEP_ADDON" != "$addon_folder" ]; then
+                LOCAL_DEPS["$DEP_ADDON"]="${CLASS_TO_REPO[$check_class]}"
+            fi
+        done
 
-        # --- FULL SIGNAL PARSING ---
-        SIGNAL_DATA=$(awk '/signal .*##/ {
-            line = $0; split(line, p, "##"); d = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", d);
-            code = p[1]; split(code, a, "signal "); split(a[2], b, /[ (]/); n = b[1];
-            printf("| **%s** | %s |\n", n, d);
-        }' "$script")
+        # --- CLASS DOC GENERATION (Properties, Signals, Methods) ---
+        C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/ .*//')
+        [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
+        
+        # Resolve Inheritance Link
+        RAW_EXT=$(grep "^extends " "$script" | sed 's/extends //' | sed 's/ .*//')
+        [ -z "$RAW_EXT" ] && RAW_EXT="Object"
+        if [[ -n "${CLASS_TO_REPO[$RAW_EXT]}" ]]; then
+            [[ "${CLASS_TO_ADDON[$RAW_EXT]}" == "$addon_folder" ]] && \
+                L="[\`$RAW_EXT\`](#class-$RAW_EXT)" || \
+                L="[\`$RAW_EXT\`](${CLASS_TO_REPO[$RAW_EXT]}/blob/main/DOCUMENTATION.md#class-$RAW_EXT)"
+        elif [[ "$RAW_EXT" =~ ^[A-Z] ]]; then L="[\`$RAW_EXT\`](https://docs.godotengine.org/en/stable/classes/class_${RAW_EXT,,}.html)"; else L="\`$RAW_EXT\`"; fi
 
-        # --- FULL METHOD PARSING ---
-        METHOD_DATA=$(awk '/func .*##/ {
-            line = $0; split(line, p, "##"); d = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", d);
-            code = p[1]; split(code, a, "func "); split(a[2], b, "("); n = b[1];
-            if (n == "" || n ~ /^_/) next;
-            ret = "void"; if (code ~ /->/) { split(code, c, "->"); split(c[2], d_ret, ":"); ret = d_ret[1]; gsub(/[ \t]+/,"",ret); }
-            printf("| **%s()** | `%s` | %s |\n", n, ret, d);
-        }' "$script")
-
-        # Compile Output Block for Class
-        if [ -n "$CLASS_DESC" ] || [ -n "$PROP_DATA" ] || [ -n "$METHOD_DATA" ] || [ -n "$SIGNAL_DATA" ]; then
-            echo -e "## Class: $C_NAME" >> "$TEMP_DOC"
-            echo -e "**Inherits:** $EXT_LINK\n" >> "$TEMP_DOC"
-            [ -n "$CLASS_DESC" ] && echo -e "$CLASS_DESC\n" >> "$TEMP_DOC"
-            [ -n "$PROP_DATA" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PROP_DATA\n" >> "$TEMP_DOC"
-            [ -n "$SIGNAL_DATA" ] && echo -e "### Signals\n| Signal | Description |\n| :--- | :--- |\n$SIGNAL_DATA\n" >> "$TEMP_DOC"
-            [ -n "$METHOD_DATA" ] && echo -e "### Methods\n| Method | Returns | Description |\n| :--- | :--- | :--- |\n$METHOD_DATA\n" >> "$TEMP_DOC"
-            echo -e "---\n" >> "$TEMP_DOC"
-        fi
+        {
+            echo -e "## Class: $C_NAME"
+            echo -e "**Inherits:** $L\n"
+            awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
+            echo ""
+            # Properties
+            PD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} /^[ \t]*(@export.*)?var/ && /##/ { r=1; split($0,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/,"",d); c=p[1]; split(c,np,"var "); split(np[2],b2,/[ :={]/); n=b2[1]; t="Variant"; if(c~/:[ \t]*[A-Z0-9_]+/){match(c,/:[ \t]*[A-Z0-9_]+/); t=substr(c,RSTART+1,RLENGTH-1)} b=c; if(c!~"{" && c!~"[") f() } r==1 && $0!~"var" { nl=$0; if(nl~"##"){split(nl,tmp,"##"); nl=tmp[1]} b=b " " nl } r==1 && ($0~"}" || $0~"]") { f() } function f(){ dv="-"; if(b~"="){ ei=index(b,"="); ae=substr(b,ei+1); bi=(ae~"{")?index(ae,"{"):(ae~"["?index(ae,"["):0); dv=(bi>0)?substr(ae,bi):ae } gsub(/[ \t]+/," ",dv); sub(/;[ \t]*$/, "", dv); gsub(/^[ \t]+|[ \t]+$/, "", dv); if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n",n,t,dv,d); r=0; b=""; n="" }' "$script")
+            [ -n "$PD" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PD\n"
+            # Signals
+            SD=$(awk '/signal .*##/ { line=$0; split(line,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/,"",d); code=p[1]; split(code,a,"signal "); split(a[2],b,/[ (]/); n=b[1]; printf("| **%s** | %s |\n",n,d) }' "$script")
+            [ -n "$SD" ] && echo -e "### Signals\n| Signal | Description |\n| :--- | :--- |\n$SD\n"
+            # Methods
+            MD=$(awk '/func .*##/ { line=$0; split(line,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/, "", d); code=p[1]; split(code,a,"func "); split(a[2],b, "("); n=b[1]; if(n=="" || n~"^_") next; ret="void"; if(code~"->") { split(code, c, "->"); split(c[2], dr, ":"); ret=dr[1]; gsub(/[ \t]+/,"",ret) } printf("| **%s()** | `%s` | %s |\n", n, ret, d) }' "$script")
+            [ -n "$MD" ] && echo -e "### Methods\n| Method | Returns | Description |\n| :--- | :--- | :--- |\n$MD\n"
+            echo -e "---\n"
+        } >> "$BODY_CONTENT"
     done
 
-    # --- 3. SYNC WITH SUPER-GIT-PUSH ---
+    # --- 4. ASSEMBLE DEPENDENCIES ---
+    if [ ${#LOCAL_DEPS[@]} -gt 0 ]; then
+        echo -e "### 📦 Dependencies" >> "$TEMP_DOC"
+        echo "| Addon | Repository |" >> "$TEMP_DOC"
+        echo "| :--- | :--- |" >> "$TEMP_DOC"
+        > "$DEP_FILE"
+        for dep in "${!LOCAL_DEPS[@]}"; do
+            echo "| $dep | [GitHub](${LOCAL_DEPS[$dep]}) |" >> "$TEMP_DOC"
+            echo "${LOCAL_DEPS[$dep]}" >> "$DEP_FILE"
+        done
+        echo -e "\n---\n" >> "$TEMP_DOC"
+    fi
+
+    cat "$BODY_CONTENT" >> "$TEMP_DOC"
+    rm "$BODY_CONTENT"
+
+    # --- 5. SYNC ---
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
-        git add README.md DOCUMENTATION.md
-        git commit -m "docs: automated api update with cross-repo links"
-        echo "📤 Pushing updates for [$addon_folder] via super-git-push..."
+        git add DOCUMENTATION.md DEPENDENCIES.txt
+        git commit -m "docs: auto-dependency resolution and api update"
         super-git-push
     else
-        echo "ℹ️  No changes detected for $addon_folder."
         rm "$TEMP_DOC"
     fi
     cd "$PROJECT_ROOT"
 done
-echo "✅ All addons processed."
