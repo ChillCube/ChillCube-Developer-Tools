@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Registry Engine (v5.5) ---
+# --- Chillcube Universal Doc & Registry Engine (v5.6) ---
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
 MANUAL_MARKER="# --- Manual Dependencies (Do Not Delete) ---"
@@ -51,10 +51,7 @@ for addon_path in addons/*; do
     TEMP_REGISTRY_DIR=$(mktemp -d)
     if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR" > /dev/null 2>&1; then
         cd "$TEMP_REGISTRY_DIR"
-        if [ ! -f "$REGISTRY_FILE" ]; then
-            echo "# 🧊 ChillCube Addon Registry" > "$REGISTRY_FILE"
-            echo -e "\n## Uncategorized" >> "$REGISTRY_FILE"
-        fi
+        [ ! -f "$REGISTRY_FILE" ] && { echo "# 🧊 ChillCube Addon Registry" > "$REGISTRY_FILE"; echo -e "\n## Uncategorized" >> "$REGISTRY_FILE"; }
 
         if ! grep -q "$CURRENT_REPO_URL" "$REGISTRY_FILE"; then
             echo "🆕 $A_NAME is new to the registry."
@@ -87,7 +84,7 @@ for addon_path in addons/*; do
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
             
-            # Properties Logic
+            # Properties
             PD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 { 
                 r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
                 line=p[1]; sub(/^[ \t]*/,"",line); 
@@ -101,46 +98,39 @@ for addon_path in addons/*; do
                 b=line; f() 
             } 
             function f(){ 
-                dv="-"; 
-                if(index(b,"=") > 0){ 
-                    split(b, val_parts, "="); dv=val_parts[2]; 
-                } 
-                sub(/^[ \t]*/,"",dv); 
-                sub(/[ \t]*[:;][ \t]*$/, "", dv); # Strip trailing : or ;
-                sub(/[ \t]*$/, "", dv); 
+                dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } 
+                sub(/^[ \t]*/,"",dv); sub(/[ \t]*[:;][ \t]*$/, "", dv); sub(/[ \t]*$/, "", dv); 
                 if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n", n, t, dv, d); 
                 r=0; b=""; n="" 
             }' "$script")
             [ -n "$PD" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PD\n"
 
-            # Signals Logic
+            # Signals Logic (Vertical Arguments)
             SD=$(awk 'index($0, "signal") > 0 && index($0, "##") > 0 { 
                 split($0,p,"##"); d=p[2]; code=p[1]; 
                 sub(/^[ \t]*signal /, "", code); sub(/[ \t]*$/, "", code);
                 name=code; args="-";
                 if(index(code, "(") > 0) {
                     split(code, arr, "("); name=arr[1]; args=arr[2]; sub(/\).*/, "", args);
+                    gsub(/,[ \t]*/, "<br>", args); # Stack vertically
                 }
-                printf("| **%s** | `%s` | %s |\n", name, args, d) 
+                printf("| **%s** | <small>`%s`</small> | %s |\n", name, args, d) 
             }' "$script")
             [ -n "$SD" ] && echo -e "### Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |\n$SD\n"
 
-            # Methods Logic
+            # Methods Logic (Vertical Arguments)
             MD=$(awk 'index($0, "func") > 0 && index($0, "##") > 0 { 
                 split($0,p,"##"); d=p[2]; code=p[1]; 
                 sub(/^[ \t]*func /, "", code); sub(/[ \t]*$/, "", code);
                 split(code, parts, "("); name=parts[1];
                 if(index(name, "_") == 1) next;
                 
-                args=parts[2]; sub(/\).*/, "", args); if(args=="") args="-";
+                args=parts[2]; sub(/\).*/, "", args); 
+                if(args=="") args="-"; else gsub(/,[ \t]*/, "<br>", args); 
                 
                 ret="void"; 
-                if(index(code, "->") > 0) { 
-                    split(code, c, "->"); ret=c[2]; 
-                    sub(/[ \t]*[:;][ \t]*$/, "", ret); # Clean return type
-                    gsub(/[ \t]+/, "", ret); 
-                }
-                printf("| **%s()** | `%s` | `%s` | %s |\n", name, args, ret, d) 
+                if(index(code, "->") > 0) { split(code, c, "->"); ret=c[2]; sub(/[ \t]*[:;][ \t]*$/, "", ret); gsub(/[ \t]+/, "", ret); }
+                printf("| **%s()** | <small>`%s`</small> | `%s` | %s |\n", name, args, ret, d) 
             }' "$script")
             [ -n "$MD" ] && echo -e "### Methods\n| Method | Arguments | Returns | Description |\n| :--- | :--- | :--- | :--- |\n$MD\n"
             echo -e "---\n"
