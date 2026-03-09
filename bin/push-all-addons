@@ -27,12 +27,15 @@ for d in addons/*/; do
     popd > /dev/null
     
     while read -r c_line; do
-        c_name=$(echo "$c_line" | awk '{print $2}')
-        CLASS_TO_REPO[$c_name]="$repo_url"
-        CLASS_TO_ADDON[$c_name]="$folder_name"
-    # This scans for both general Class usage AND 'extends' keywords
-    done < <(grep -rEo "\b[A-Z][A-Za-z0-9_]+\b" "addons/$CURRENT" --include="*.gd" | grep -v "^#" | sort -u)
-done
+        # Extract the 2nd word, then strip any trailing colons or spaces
+        c_name=$(echo "$c_line" | awk '{print $2}' | sed 's/[: \t]*$//')
+        
+        # Only assign if the name isn't empty to avoid "bad array subscript"
+        if [[ -n "$c_name" ]]; then
+            CLASS_TO_REPO["$c_name"]="$repo_url"
+            CLASS_TO_ADDON["$c_name"]="$folder_name"
+        fi
+    done < <(grep -r "class_name " "$d" --include="*.gd")
 
 # --- 2. GENERATION LOOP ---
 for addon_path in addons/*; do
