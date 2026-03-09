@@ -1,31 +1,12 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Registry Engine (v5.9) ---
+# --- Chillcube Universal Doc & Registry Engine (v6.1) ---
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
-MANUAL_MARKER="# --- Manual Dependencies (Do Not Delete) ---"
-ORG_REPO="https://github.com/ChillCube/.github.git"
-REGISTRY_FILE="ADDONS.md"
-
-declare -A CLASS_TO_REPO
-declare -A CLASS_TO_ADDON
 
 echo "🔍 Indexing Project-Wide Class Map..."
 
-# --- 1. GLOBAL PRE-SCAN ---
-for addon_path in addons/*; do
-    [ -d "$addon_path/.git" ] || continue
-    addon_folder=$(basename "$addon_path")
-    REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//' | sed 's/git@github\.com:/https:\/\/github\.com\//' | sed 's/ssh:\/\/git@github\.com\//https:\/\/github\.com\//')
-    while read -r cname; do
-        if [ -n "$cname" ]; then
-            CLASS_TO_REPO["$cname"]="$REPO_URL"
-            CLASS_TO_ADDON["$cname"]="$addon_folder"
-        fi
-    done < <(grep -r "class_name" "$addon_path" --include="*.gd" | sed 's/.*class_name //; s/[ \t]*$//; s/ .*//')
-done
-
-# --- 2. GENERATION LOOP ---
+# --- 1. GENERATION LOOP ---
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
@@ -38,35 +19,9 @@ for addon_path in addons/*; do
     CFG_FILE="$addon_path/plugin.cfg"
     [ ! -f "$CFG_FILE" ] && continue
     A_NAME=$(grep "name" "$CFG_FILE" 2>/dev/null | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
-    [ -z "$A_NAME" ] && A_NAME="$addon_folder"
     A_DESC=$(grep "description" "$CFG_FILE" 2>/dev/null | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     [ -z "$A_DESC" ] && A_DESC="Godot Addon"
     
-    CURRENT_REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//')
-
-    # --- 3. REGISTRY SYNC ---
-    TEMP_REGISTRY_DIR=$(mktemp -d)
-    if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR" > /dev/null 2>&1; then
-        cd "$TEMP_REGISTRY_DIR"
-        [ ! -f "$REGISTRY_FILE" ] && { echo "# 🧊 ChillCube Addon Registry" > "$REGISTRY_FILE"; echo -e "\n## Uncategorized" >> "$REGISTRY_FILE"; }
-        if ! grep -q "$CURRENT_REPO_URL" "$REGISTRY_FILE"; then
-            mapfile -t CATEGORIES < <(grep "^## " "$REGISTRY_FILE" | sed 's/## //')
-            for i in "${!CATEGORIES[@]}"; do printf "  [%d] %s\n" "$((i+1))" "${CATEGORIES[$i]}"; done
-            echo "  [0] Create New Category"
-            read -p "📁 Category #: " CAT_INPUT
-            if [[ "$CAT_INPUT" =~ ^[0-9]+$ ]] && [ "$CAT_INPUT" -gt 0 ] && [ "$CAT_INPUT" -le "${#CATEGORIES[@]}" ]; then
-                SELECTED_CAT="${CATEGORIES[$((CAT_INPUT-1))]}"
-            else
-                [ "$CAT_INPUT" == "0" ] && read -p "Name: " SELECTED_CAT || SELECTED_CAT="$CAT_INPUT"
-            fi
-            ENTRY="* [$A_NAME]($CURRENT_REPO_URL) - $A_DESC"
-            if ! grep -q "## $SELECTED_CAT" "$REGISTRY_FILE"; then echo -e "\n## $SELECTED_CAT\n$ENTRY" >> "$REGISTRY_FILE"; else sed -i "/## $SELECTED_CAT/a $ENTRY" "$REGISTRY_FILE"; fi
-            git add "$REGISTRY_FILE" && git commit -m "registry: add $A_NAME" && git push origin main > /dev/null 2>&1
-        fi
-        cd "$PROJECT_ROOT" && rm -rf "$TEMP_REGISTRY_DIR"
-    fi
-
-    # --- 4. DOCUMENTATION GEN ---
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
     BODY_CONTENT=$(mktemp)
@@ -79,91 +34,97 @@ for addon_path in addons/*; do
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
             
-            # --- SPLIT PROPERTIES LOGIC ---
-            # Exported Properties
-            EXPD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 && index($0, "@export") > 0 { 
-                r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
-                line=p[1]; sub(/^[ \t]*/,"",line); 
-                split(line, parts, "var "); split(parts[2], name_part, " "); 
-                split(name_part[1], name_final, ":"); n=name_final[1]; 
-                t="Variant"; ci=index(line, ":"); 
-                if(ci > 0) { 
-                    remainder=substr(line, ci+1); sub(/^[ \t]*/,"",remainder); 
-                    split(remainder, type_part, " "); split(type_part[1], type_final, "="); t=type_final[1]; 
-                } 
-                b=line; f() 
-            } 
-            function f(){ 
-                dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } 
-                sub(/^[ \t]*/,"",dv); sub(/[ \t]*[:;][ \t]*$/, "", dv); sub(/[ \t]*$/, "", dv); 
-                if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n", n, t, dv, d); 
-                r=0; b=""; n="" 
-            }' "$script")
-            [ -n "$EXPD" ] && echo -e "### ⚙️ Inspector Variables (Exported)\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$EXPD\n"
+            # --- GROUPED EXPORT PROPERTIES ---
+            echo "### ⚙️ Inspector Variables"
+            awk -v bt="`" '
+            BEGIN { printf "| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n"; }
+            /^@export_(group|category)\(/ {
+                split($0, a, "\"");
+                printf "| **--- %s ---** | | | |\n", toupper(a[2]);
+                next;
+            }
+            /^@export[ \t\n]/ || /^@export_.*var/ {
+                line = $0; split(line, p, "##"); d = (p[2] != "") ? p[2] : "-";
+                sub(/^[ \t]*/, "", d); split(line, parts, "var ");
+                split(parts[2], name_part, " "); split(name_part[1], name_final, ":");
+                n = name_final[1]; t = "Variant";
+                if (index(line, ":") > 0) { 
+                    split(substr(line, index(line, ":")+1), tp, " "); 
+                    split(tp[1], tf, "="); t = tf[1]; 
+                }
+                dv = "-";
+                if (index(line, "=") > 0) {
+                    split(line, vp, "="); dv = vp[2];
+                    sub(/^[ \t]*/, "", dv); sub(/[ \t]*[:;][ \t]*$/, "", dv);
+                }
+                if (n != "") printf "| %s | %s%s%s | %s%s%s | %s |\n", n, bt, t, bt, bt, dv, bt, d;
+            }' "$script"
+            echo ""
 
-            # Standard Properties
-            STPD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 && index($0, "@export") == 0 { 
-                r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
-                line=p[1]; sub(/^[ \t]*/,"",line); 
-                split(line, parts, "var "); split(parts[2], name_part, " "); 
-                split(name_part[1], name_final, ":"); n=name_final[1]; 
-                t="Variant"; ci=index(line, ":"); 
-                if(ci > 0) { 
-                    remainder=substr(line, ci+1); sub(/^[ \t]*/,"",remainder); 
-                    split(remainder, type_part, " "); split(type_part[1], type_final, "="); t=type_final[1]; 
-                } 
-                b=line; f() 
-            } 
-            function f(){ 
-                dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } 
-                sub(/^[ \t]*/,"",dv); sub(/[ \t]*[:;][ \t]*$/, "", dv); sub(/[ \t]*$/, "", dv); 
-                if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n", n, t, dv, d); 
-                r=0; b=""; n="" 
-            }' "$script")
-            [ -n "$STPD" ] && echo -e "### 💾 Class Variables (Standard)\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$STPD\n"
-
-            # Signals
-            SD=$(awk 'index($0, "signal") > 0 && index($0, "##") > 0 { 
-                split($0,p,"##"); d=p[2]; code=p[1]; 
+            # --- SIGNALS & METHODS (With Color Rotation) ---
+            # Using a custom AWK function to handle the "rainbow" effect
+            awk -v bt="`" '
+            function colorize(raw) {
+                if (raw == "" || raw == "-") return "-";
+                split(raw, arr, ",[ \t]*");
+                colors[0]="#00f2ff"; colors[1]="#ff9d00"; colors[2]="#ff00ff"; colors[3]="#00ff88";
+                result = "";
+                for (i=1; i<=length(arr); i++) {
+                    c = colors[(i-1) % 4];
+                    result = result "<code><font color=\"" c "\">" arr[i] "</font></code>";
+                    if (i < length(arr)) result = result "<br>";
+                }
+                return result;
+            }
+            # Signal Logic
+            index($0, "signal") > 0 && index($0, "##") > 0 {
+                split($0,p,"##"); d=p[2]; code=p[1];
                 sub(/^[ \t]*signal /, "", code); sub(/[ \t]*$/, "", code);
-                name=code; args="-";
+                name=code; raw_args="";
                 if(index(code, "(") > 0) {
                     split(code, arr, "("); name=arr[1]; raw_args=arr[2]; sub(/\).*/, "", raw_args);
-                    gsub(/,[ \t]*/, "\`<br>\`", raw_args); args="\`" raw_args "\`"
                 }
-                printf("| **%s** | %s | %s |\n", name, args, d) 
-            }' "$script")
-            [ -n "$SD" ] && echo -e "### 🔔 Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |\n$SD\n"
-
-            # Methods
-            MD=$(awk 'index($0, "func") > 0 && index($0, "##") > 0 { 
-                split($0,p,"##"); d=p[2]; code=p[1]; 
+                printf("SIGNAL|%s|%s|%s\n", name, colorize(raw_args), d);
+            }
+            # Method Logic
+            index($0, "func") > 0 && index($0, "##") > 0 {
+                split($0,p,"##"); d=p[2]; code=p[1];
                 sub(/^[ \t]*func /, "", code); sub(/[ \t]*$/, "", code);
                 split(code, parts, "("); name=parts[1];
                 if(index(name, "_") == 1) next;
-                raw_args=parts[2]; sub(/\).*/, "", raw_args); 
-                if(raw_args=="") args="-"; else { gsub(/,[ \t]*/, "\`<br>\`", raw_args); args="\`" raw_args "\`" }
+                raw_args=parts[2]; sub(/\).*/, "", raw_args);
                 ret="void"; 
                 if(index(code, "->") > 0) { split(code, c, "->"); ret=c[2]; sub(/[ \t]*[:;][ \t]*$/, "", ret); gsub(/[ \t]+/, "", ret); }
-                printf("| **%s()** | %s | \`%s\` | %s |\n", name, args, ret, d) 
-            }' "$script")
-            [ -n "$MD" ] && echo -e "### 🛠️ Methods\n| Method | Arguments | Returns | Description |\n| :--- | :--- | :--- | :--- |\n$MD\n"
+                printf("METHOD|%s|%s|%s|%s\n", name, colorize(raw_args), ret, d);
+            }' "$script" > awk_out.tmp
+
+            # Format the temp output into tables
+            if grep -q "SIGNAL" awk_out.tmp; then
+                echo -e "### 🔔 Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |"
+                grep "SIGNAL" awk_out.tmp | sed 's/SIGNAL|//' | awk -F'|' '{printf "| **%s** | %s | %s |\n", $1, $2, $3}'
+                echo ""
+            fi
+            if grep -q "METHOD" awk_out.tmp; then
+                echo -e "### 🛠️ Methods\n| Method | Arguments | Returns | Description |\n| :--- | :--- | :--- | :--- |"
+                grep "METHOD" awk_out.tmp | sed 's/METHOD|//' | awk -F'|' -v bt="`" '{printf "| **%s()** | %s | %s%s%s | %s |\n", $1, $2, bt, $3, bt, $4}'
+                echo ""
+            fi
+            rm awk_out.tmp
             echo -e "---\n"
         } >> "$BODY_CONTENT"
     done
 
     cat "$BODY_CONTENT" >> "$TEMP_DOC"; rm -f "$BODY_CONTENT"
-
-    # --- 5. FINAL SYNC ---
+    
+    # 5. FINAL SYNC
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
-        git add . && git commit -m "docs: auto-update api (split properties)" && super-git-push
+        git add . && git commit -m "docs: rainbow arguments and improved grouping" && super-git-push
         ((UPDATED_COUNT++))
     else
         rm -f "$TEMP_DOC"
     fi
     cd "$PROJECT_ROOT"
 done
-echo "--------------------------------------------------"
 echo "✅ Finished! $UPDATED_COUNT addons updated."
