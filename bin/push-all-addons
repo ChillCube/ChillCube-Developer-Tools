@@ -67,16 +67,15 @@ for addon_path in addons/*; do
                 split(full_line, parts, "##")
                 desc_col = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc_col)
                 
-                # 1. Clean the variable declaration line
                 clean_line = parts[1]
                 gsub(/@export(_[a-z_]+)?(\(.*\))?/, "", clean_line)
                 gsub(/^[ \t]+|[ \t]+$/, "", clean_line)
 
-                # 2. Extract Name
+                # 1. Extract Name
                 name = ""; split(clean_line, n_p, "var "); split(n_p[2], b, /[ :={]/); name = b[1]
                 if (name == "") next
 
-                # 3. Extract Type
+                # 2. Extract Type
                 type = "Variant"
                 if (clean_line ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
                     match(clean_line, /:[ \t]*[A-zA-Z0-9_\[\]]+/)
@@ -84,48 +83,38 @@ for addon_path in addons/*; do
                     gsub(/[ \t]+/, "", type)
                 }
 
-                # 4. Extract Default Value
+                # 3. Extract Default Value (The "Second Bracket" Fix)
                 def = "-"
                 if (clean_line ~ /=/) {
-                    # Slurp the assignment block
                     idx = index(clean_line, "=")
-                    raw_val = substr(clean_line, idx + 1)
+                    after_eq = substr(clean_line, idx + 1)
                     
-                    # If it contains a bracket, we might need more lines
-                    if (raw_val ~ /\{/ || raw_val ~ /\[/) {
-                        bracket_open = (raw_val ~ /\{/) ? "{" : "["
-                        bracket_close = (bracket_open == "{") ? "}" : "]"
+                    if (after_eq ~ /\{/ || after_eq ~ /\[/) {
+                        bracket_type = (after_eq ~ /\{/) ? "{" : "["
+                        closer = (bracket_type == "{") ? "}" : "]"
                         
-                        combined = raw_val
-                        # Keep reading until we find the closing bracket
-                        while (combined !~ "\\" bracket_close && (getline nl < FILENAME) > 0) {
+                        combined = after_eq
+                        while (combined !~ "\\" closer && (getline nl < FILENAME) > 0) {
                             if (nl ~ /##/) { split(nl, tmp, "##"); nl = tmp[1] }
                             combined = combined " " nl
                         }
                         
-                        # SURGICAL FIX: Isolate only from the first bracket to the last bracket
-                        start_pos = index(combined, bracket_open)
-                        end_pos = 0
-                        # Find the last occurrence of the closing bracket
-                        for (i = length(combined); i > 0; i--) {
-                            if (substr(combined, i, 1) == bracket_close) {
-                                end_pos = i
-                                break
-                            }
-                        }
-                        
-                        if (start_pos > 0 && end_pos > start_pos) {
-                            def = substr(combined, start_pos, end_pos - start_pos + 1)
+                        # --- THE SURGERY ---
+                        # We find the very first bracket after the "=" sign 
+                        # and keep everything from that point to the end.
+                        start_bracket = index(combined, bracket_type)
+                        if (start_bracket > 0) {
+                            def = substr(combined, start_bracket)
                         } else {
                             def = combined
                         }
                     } else {
-                        def = raw_val
+                        def = after_eq
                         sub(/:[ \t]*$/, "", def)
                     }
                 }
                 
-                # Final Formatting for Markdown
+                # Final Formatting for Markdown Table cell
                 gsub(/;/, "", def); gsub(/[ \t]+/, " ", def); gsub(/^[ \t]+|[ \t]+$/, "", def)
                 
                 printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc_col)
