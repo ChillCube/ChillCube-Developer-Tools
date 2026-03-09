@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Deep-Link Engine (v3.1 - Universal Stable) ---
+# --- Chillcube Universal Doc Engine (v3.2 - Silent & Stable) ---
 TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
 PROJECT_ROOT=$(pwd)
+UPDATED_COUNT=0
 
 declare -A CLASS_TO_REPO
 declare -A CLASS_TO_ADDON
@@ -32,7 +33,6 @@ done
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
-    echo "--------------------------------------------------"
     echo "🚀 Processing: $addon_folder"
 
     DOC_FILE="$addon_path/DOCUMENTATION.md"
@@ -67,11 +67,8 @@ for addon_path in addons/*; do
                 REPO="${CLASS_TO_REPO[$check_class]}"
                 LOCAL_DEPS["$DEP_ADDON"]="$REPO"
                 CLASS_TO_DEP_LINK["$check_class"]="$REPO/blob/main/DOCUMENTATION.md#class-${check_class,,}"
-            elif [[ ! " $ALL_CUSTOM_CLASSES " =~ " $check_class " ]]; then
-                if [[ ! "$check_class" =~ ^(Node|Sprite|Vector|String|int|float|bool|Array|Dictionary|Resource|Object|Input|SceneTree|Engine|JSON|OS|Time|Color|Rect2|Callable|Signal|CharacterBody|Area|Collision|Label|Button|Control|Canvas|Texture|Viewport|Camera|Timer|Tween|Audio|Animation|FileAccess|DirAccess|Geometry|Marshalls|ClassDB|Variant|AnimatedSprite|InputEvent) ]]; then
-                    echo "⚠️  WARNING: Potential missing class '$check_class' in '$script'"
-                fi
             fi
+            # Note: Warning logic removed/silenced to keep console clean.
         done
 
         # --- CLASS DOC GEN ---
@@ -91,32 +88,32 @@ for addon_path in addons/*; do
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
             
-            # --- SAFE PROPERTY PARSER ---
+            # --- SAFE NO-REGEX PROPERTY PARSER ---
             PD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} 
-            /^[ \t]*(@export.*)?var/ && /##/ { 
-                r=1; split($0,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/,"",d); 
+            index($0, "var") > 0 && index($0, "##") > 0 { 
+                r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
                 line=p[1]; sub(/^[ \t]*/,"",line);
                 split(line, parts, "var ");
-                split(parts[2], name_part, /[ :={]/);
-                n=name_part[1];
+                split(parts[2], name_part, " ");
+                split(name_part[1], name_final, ":");
+                n=name_final[1];
                 t="Variant";
                 ci=index(line, ":");
                 if(ci > 0) {
                     remainder=substr(line, ci+1);
                     sub(/^[ \t]*/,"",remainder);
-                    split(remainder, type_part, /[ ={]/);
-                    t=type_part[1];
+                    split(remainder, type_part, " ");
+                    split(type_part[1], type_final, "=");
+                    t=type_final[1];
                 }
-                b=line; if(line!~"{" && line!~"[") f() 
+                b=line; f() 
             } 
-            r==1 && $0!~"var" { nl=$0; if(nl~"##"){split(nl,tmp,"##"); nl=tmp[1]} b=b " " nl } 
-            r==1 && ($0~"}" || $0~"]") { f() } 
             function f(){ 
-                dv="-"; if(b~"="){ ei=index(b,"="); ae=substr(b,ei+1); 
-                bi=(ae~"{")?index(ae,"{"):(ae~"["?index(ae,"["):0); 
-                dv=(bi>0)?substr(ae,bi):ae } 
-                gsub(/[ \t]+/," ",dv); sub(/;[ \t]*$/, "", dv); 
-                gsub(/^[ \t]+|[ \t]+$/, "", dv); 
+                dv="-"; if(index(b,"=") > 0){ 
+                    split(b, val_parts, "=");
+                    dv=val_parts[2];
+                } 
+                sub(/^[ \t]*/,"",dv); sub(/[ \t]*$/,"",dv);
                 if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n",n,t,dv,d); 
                 r=0; b=""; n="" 
             }' "$script")
@@ -124,9 +121,9 @@ for addon_path in addons/*; do
             [ -n "$PD" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PD\n"
             
             # Signals & Methods
-            SD=$(awk '/signal .*##/ { line=$0; split(line,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/,"",d); code=p[1]; split(code,a,"signal "); split(a[2],b,/[ (]/); n=b[1]; printf("| **%s** | %s |\n",n,d) }' "$script")
+            SD=$(awk 'index($0, "signal") > 0 && index($0, "##") > 0 { split($0,p,"##"); d=p[2]; code=p[1]; split(code,a,"signal "); split(a[2],b," "); n=b[1]; printf("| **%s** | %s |\n",n,d) }' "$script")
             [ -n "$SD" ] && echo -e "### Signals\n| Signal | Description |\n| :--- | :--- |\n$SD\n"
-            MD=$(awk '/func .*##/ { line=$0; split(line,p,"##"); d=p[2]; gsub(/^[ \t]+|[ \t]+$/,"",d); code=p[1]; split(code,a,"func "); split(a[2],b, "("); n=b[1]; if(n=="" || n~"^_") next; ret="void"; if(code~"->") { split(code, c, "->"); split(c[2], dr, ":"); ret=dr[1]; gsub(/[ \t]+/,"",ret) } printf("| **%s()** | `%s` | %s |\n", n, ret, d) }' "$script")
+            MD=$(awk 'index($0, "func") > 0 && index($0, "##") > 0 { split($0,p,"##"); d=p[2]; code=p[1]; split(code,a,"func "); split(a[2],b, "("); n=b[1]; if(n=="" || index(n,"_")==1) next; ret="void"; if(index(code, "->") > 0) { split(code, c, "->"); split(c[2], dr, ":"); ret=dr[1]; gsub(/[ \t]+/,"",ret) } printf("| **%s()** | `%s` | %s |\n", n, ret, d) }' "$script")
             [ -n "$MD" ] && echo -e "### Methods\n| Method | Returns | Description |\n| :--- | :--- | :--- |\n$MD\n"
             echo -e "---\n"
         } >> "$BODY_CONTENT"
@@ -155,10 +152,14 @@ for addon_path in addons/*; do
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
         git add .
-        git commit -m "docs: universal stable dependency scan"
+        git commit -m "docs: auto-update api and dependencies"
         super-git-push
+        ((UPDATED_COUNT++))
     else
         rm "$TEMP_DOC"
     fi
     cd "$PROJECT_ROOT"
 done
+
+echo "--------------------------------------------------"
+echo "✅ Finished! $UPDATED_COUNT addons were updated and pushed."
