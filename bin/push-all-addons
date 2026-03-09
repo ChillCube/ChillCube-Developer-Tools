@@ -165,7 +165,10 @@ for addon_path in addons/*; do
             } 
             function f(){ 
                 dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } 
-                sub(/^[ \t]*/,"",dv); sub(/[ \t]*[:;][ \t]*$/, "", dv); sub(/[ \t]*$/, "", dv); 
+                sub(/^[ \t]*/,"",dv); 
+                # This line removes all colons and semicolons from the default value string
+                gsub(/[:;]/, "", dv); 
+                sub(/[ \t]*$/, "", dv); 
                 if(n!="") printf("| **%s** | \140%s\140 | \140%s\140 | %s |\n", n, t, dv, d); 
                 r=0; b=""; n="" 
             }' "$script")
@@ -183,7 +186,10 @@ for addon_path in addons/*; do
             } 
             function f(){ 
                 dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } 
-                sub(/^[ \t]*/,"",dv); sub(/[ \t]*[:;][ \t]*$/, "", dv); sub(/[ \t]*$/, "", dv); 
+                sub(/^[ \t]*/,"",dv); 
+                # This line removes all colons and semicolons from the default value string
+                gsub(/[:;]/, "", dv); 
+                sub(/[ \t]*$/, "", dv); 
                 if(n!="") printf("| **%s** | \140%s\140 | \140%s\140 | %s |\n", n, t, dv, d); 
                 r=0; b=""; n="" 
             }' "$script")
