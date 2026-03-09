@@ -82,3 +82,5 @@ Push-all-addons automates several parts of documentation, dependencies and git m
 - creates documentation based on ## comments in your script (they have to be on the same line as the function, signal or variable it is describing)
 - pushes to github
 
+> [!WARNING]
+> Make sure to check the DEPENDENCIES.txt file. While this script does attempt to automatically find all dependencies, it may sometimes fail to do so. Requiring you to add them manually!
