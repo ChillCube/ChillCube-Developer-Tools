@@ -20,9 +20,10 @@ for d in addons/*/; do
     [ -d "$d" ] || continue
     folder_name=$(basename "$d")
     
+    # Inside Section 1
     pushd "$d" > /dev/null
-    # Strips .git from the end so web links don't break
-    repo_url=$(git remote get-url origin 2>/dev/null | sed 's/\.git$//')
+    raw_url=$(git remote get-url origin 2>/dev/null)
+    repo_url="${raw_url%.git}" # Strip .git here
     popd > /dev/null
     
     while read -r c_line; do
@@ -153,13 +154,27 @@ for addon_path in addons/*; do
         
         INHERITS_LINK=""
         if [ -n "$INHERITS" ]; then
-            if [[ -n "${CLASS_TO_REPO[$INHERITS]}" ]]; then
-                if [[ "${CLASS_TO_ADDON[$INHERITS]}" == "$addon_folder" ]]; then
+            TARGET_REPO="${CLASS_TO_REPO[$INHERITS]}"
+            TARGET_ADDON="${CLASS_TO_ADDON[$INHERITS]}"
+
+            if [[ -n "$TARGET_REPO" ]]; then
+                # 1. It's one of YOUR addons
+                if [[ "$TARGET_ADDON" == "$addon_folder" ]]; then
+                    # Internal inheritance (same addon)
                     INHERITS_LINK="[${INHERITS}](#class-${INHERITS,,})"
                 else
-                    INHERITS_LINK="[${INHERITS}](${CLASS_TO_REPO[$INHERITS]}/blob/main/DOCUMENTATION.md)"
+                    # EXTERNAL inheritance (different addon)
+                    clean_url="${TARGET_REPO%.git}"
+                    INHERITS_LINK="[${INHERITS}](${clean_url}/blob/main/DOCUMENTATION.md)"
+                    
+                    # AUTO-ADD TO DEPENDENCY TABLE:
+                    # This ensures the inherited addon appears in the 📦 Dependencies list
+                    if [[ "$AUTO_DEPS_URLS" != *"$clean_url"* ]]; then
+                        AUTO_DEPS_URLS+="$clean_url"$'\n'
+                    fi
                 fi
             else
+                # 2. It's a standard Godot class
                 INHERITS_LINK="[${INHERITS}](https://docs.godotengine.org/en/stable/classes/class_${INHERITS,,}.html)"
             fi
         fi
