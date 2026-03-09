@@ -59,18 +59,15 @@ for addon_path in addons/*; do
         C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/[ \t]*$//')
         [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
 
-        # Grab only the first block of ## for class description
         CLASS_DESC=$(awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script")
         
-        # 3a. Properties Table (Deep Parser for Setters and Multi-line Dicts)
+        # 3a. Properties Table
         PROP_DATA=$(awk '
-            # Line must contain "var" AND "##" to be a documented property
-            /^[ \t]*(@export.*)?var/ && /##/ {
+            /var/ && /##/ {
                 full_line = $0
                 split(full_line, parts, "##")
                 desc = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc)
                 
-                # code_part is everything before the ##
                 code_part = parts[1]
                 gsub(/@export(_[a-z_]+)?(\(.*\))?/, "", code_part)
                 gsub(/^[ \t]+|[ \t]+$/, "", code_part)
@@ -89,7 +86,6 @@ for addon_path in addons/*; do
 
                 # 3. Extract Default Value
                 def = "-"
-                # Isolate assignment part
                 if (code_part ~ /=/ || code_part ~ /:=/) {
                     delim = (code_part ~ /:=/) ? ":=" : "="
                     split(code_part, d_parts, delim)
@@ -107,10 +103,17 @@ for addon_path in addons/*; do
                         def = combined
                     } else {
                         def = val_start
-                        sub(/:[ \t]*$/, "", def) # Clean setter colon
+                        sub(/:[ \t]*$/, "", def) 
                     }
                 }
                 
+                # --- THE FIX: Remove the description if it leaked into "def" ---
+                # Some files might have the ## description on the same line as the opening bracket
+                if (def ~ /##/) {
+                    split(def, def_clean, "##")
+                    def = def_clean[1]
+                }
+
                 # Cleanup for Markdown Table
                 gsub(/;/, "", def)
                 gsub(/[ \t]+/, " ", def)
