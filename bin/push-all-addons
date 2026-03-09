@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Registry Engine (v6.2) ---
+# --- Chillcube Universal Doc & Registry Engine (v6.3) ---
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
 
@@ -34,21 +34,33 @@ for addon_path in addons/*; do
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
             
-            # --- PROPERTY PARSER (Supports Groups & Categories) ---
+            # --- FULL UNIFIED PARSER ---
             awk -v bt_code="\140" '
-            BEGIN { 
-                inspector_out = ""; 
-                class_out = "";
-                cur_group = "";
+            function colorize(raw) {
+                if (raw == "" || raw == "-") return "-";
+                n_args = split(raw, arr, ",[ \t]*");
+                colors[0]="#56b6c2"; colors[1]="#d19a66"; colors[2]="#c678dd"; colors[3]="#98c379";
+                res = "";
+                for (i=1; i<=n_args; i++) {
+                    c = colors[(i-1) % 4];
+                    res = res "<code><font color=\"" c "\">" arr[i] "</font></code>";
+                    if (i < n_args) res = res "<br>";
+                }
+                return res;
             }
-            # Track Groups
+
+            BEGIN { 
+                inspect_out = ""; class_out = ""; sig_out = ""; met_out = "";
+            }
+
+            # 1. Export Groups
             /^@export_(group|category)\(/ {
                 split($0, a, "\"");
-                cur_group = toupper(a[2]);
-                inspector_out = inspector_out "| **--- " cur_group " ---** | | | |\n";
+                inspect_out = inspect_out "| **--- " toupper(a[2]) " ---** | | | |\n";
                 next;
             }
-            # Handle Variables
+
+            # 2. Variables (Exported vs Standard)
             index($0, "var") > 0 && index($0, "##") > 0 {
                 split($0, p, "##"); d = p[2]; sub(/^[ \t]*/, "", d);
                 line = p[1]; split(line, parts, "var "); split(parts[2], name_part, " ");
@@ -64,39 +76,11 @@ for addon_path in addons/*; do
                     sub(/^[ \t]*/, "", dv); sub(/[ \t]*[:;][ \t]*$/, "", dv);
                 }
                 row = "| **" n "** | " bt_code t bt_code " | " bt_code dv bt_code " | " d " |\n";
-                if (index($0, "@export") > 0) inspector_out = inspector_out row;
+                if (index($0, "@export") > 0) inspect_out = inspect_out row;
                 else class_out = class_out row;
             }
-            END {
-                if (inspector_out != "") {
-                    print "### ⚙️ Inspector Variables";
-                    print "| Property | Type | Default | Description |";
-                    print "| :--- | :--- | :--- | :--- |";
-                    printf "%s\n", inspector_out;
-                }
-                if (class_out != "") {
-                    print "### 💾 Class Variables";
-                    print "| Property | Type | Default | Description |";
-                    print "| :--- | :--- | :--- | :--- |";
-                    printf "%s\n", class_out;
-                }
-            }' "$script"
 
-            # --- SIGNALS & METHODS (Rainbow Arguments) ---
-            awk -v bt_code="\140" '
-            function colorize(raw) {
-                if (raw == "" || raw == "-") return "-";
-                n_args = split(raw, arr, ",[ \t]*");
-                colors[0]="#56b6c2"; colors[1]="#d19a66"; colors[2]="#c678dd"; colors[3]="#98c379";
-                res = "";
-                for (i=1; i<=n_args; i++) {
-                    c = colors[(i-1) % 4];
-                    res = res "<code><font color=\"" c "\">" arr[i] "</font></code>";
-                    if (i < n_args) res = res "<br>";
-                }
-                return res;
-            }
-            # Signal
+            # 3. Signals
             index($0, "signal") > 0 && index($0, "##") > 0 {
                 split($0,p,"##"); d=p[2]; code=p[1];
                 sub(/^[ \t]*signal /, "", code); sub(/[ \t]*$/, "", code);
@@ -107,7 +91,8 @@ for addon_path in addons/*; do
                 }
                 sig_out = sig_out "| **" name "** | " args " | " d " |\n";
             }
-            # Method
+
+            # 4. Methods
             index($0, "func") > 0 && index($0, "##") > 0 {
                 split($0,p,"##"); d=p[2]; code=p[1];
                 sub(/^[ \t]*func /, "", code); sub(/[ \t]*$/, "", code);
@@ -119,13 +104,30 @@ for addon_path in addons/*; do
                 if(index(code, "->") > 0) { split(code, c, "->"); ret=c[2]; sub(/[ \t]*[:;][ \t]*$/, "", ret); gsub(/[ \t]+/, "", ret); }
                 met_out = met_out "| **" name "()** | " args " | " bt_code ret bt_code " | " d " |\n";
             }
+
             END {
+                if (inspect_out != "") {
+                    print "### ⚙️ Inspector Variables";
+                    print "| Property | Type | Default | Description |";
+                    print "| :--- | :--- | :--- | :--- |";
+                    printf "%s\n", inspect_out;
+                }
+                if (class_out != "") {
+                    print "### 💾 Class Variables";
+                    print "| Property | Type | Default | Description |";
+                    print "| :--- | :--- | :--- | :--- |";
+                    printf "%s\n", class_out;
+                }
                 if (sig_out != "") {
-                    print "### 🔔 Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |";
+                    print "### 🔔 Signals";
+                    print "| Signal | Arguments | Description |";
+                    print "| :--- | :--- | :--- |";
                     printf "%s\n", sig_out;
                 }
                 if (met_out != "") {
-                    print "### 🛠️ Methods\n| Method | Arguments | Returns | Description |\n| :--- | :--- | :--- | :--- |";
+                    print "### 🛠️ Methods";
+                    print "| Method | Arguments | Returns | Description |";
+                    print "| :--- | :--- | :--- | :--- |";
                     printf "%s\n", met_out;
                 }
             }' "$script"
@@ -138,7 +140,7 @@ for addon_path in addons/*; do
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
-        git add . && git commit -m "docs: grouping and rainbow arguments" && super-git-push
+        git add . && git commit -m "docs: restored all features with rainbow args and groups" && super-git-push
         ((UPDATED_COUNT++))
     else
         rm -f "$TEMP_DOC"
