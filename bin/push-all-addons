@@ -68,25 +68,40 @@ for addon_path in addons/*; do
         cd "$PROJECT_ROOT" && rm -rf "$TEMP_REGISTRY_DIR"
     fi
 
-    # --- 4. DEPENDENCY FILE UPDATE ---
-    MANUAL_DEPS=""
-    if [ -f "$DEP_FILE" ] && grep -q "$MANUAL_MARKER" "$DEP_FILE"; then
-        MANUAL_DEPS=$(sed -n "/$MANUAL_MARKER/,\$p" "$DEP_FILE")
-    fi
-
+    # --- 4. RECURSIVE DEPENDENCY SCAN ---
     AUTO_DEPS_URLS=""
-    while read -r word; do
-        if [[ -n "${CLASS_TO_REPO[$word]}" ]] && [[ "${CLASS_TO_ADDON[$word]}" != "$addon_folder" ]]; then
-            URL="${CLASS_TO_REPO[$word]}"
-            [[ "$AUTO_DEPS_URLS" != *"$URL"* ]] && AUTO_DEPS_URLS+="$URL"$'\n'
-        fi
-    done < <(grep -rEo "\b[A-Za-z0-9_]+\b" "$addon_path" --include="*.gd" | grep -v "^#" | sort -u)
+    FOUND_ADDONS=""
+    
+    # Start by scanning the current addon
+    SCAN_QUEUE="$addon_folder"
+    PROCESSED_ADDONS=""
 
-    {
-        echo "$AUTO_MARKER"
-        echo -e "$AUTO_DEPS_URLS"
-        [ -n "$MANUAL_DEPS" ] && echo "$MANUAL_DEPS" || echo -e "\n$MANUAL_MARKER\n# Add non-Godot dependencies below"
-    } > "$DEP_FILE"
+    while [[ -n "$SCAN_QUEUE" ]]; do
+        # Pop the first addon from the queue
+        CURRENT_SCAN=$(echo "$SCAN_QUEUE" | head -n 1)
+        SCAN_QUEUE=$(echo "$SCAN_QUEUE" | tail -n +2)
+        
+        # Skip if already processed to prevent infinite loops
+        [[ "$PROCESSED_ADDONS" == *"$CURRENT_SCAN"* ]] && continue
+        PROCESSED_ADDONS+="$CURRENT_SCAN "
+
+        # Find all class words in the files of this addon
+        # This matches: .new(), : ClassName, extends ClassName, etc.
+        while read -r word; do
+            # If the word is a known class and belongs to a DIFFERENT addon
+            TARGET_ADDON="${CLASS_TO_ADDON[$word]}"
+            if [[ -n "$TARGET_ADDON" ]] && [[ "$TARGET_ADDON" != "$addon_folder" ]]; then
+                URL="${CLASS_TO_REPO[$word]}"
+                
+                # If we haven't logged this URL yet, add it
+                if [[ "$AUTO_DEPS_URLS" != *"$URL"* ]]; then
+                    AUTO_DEPS_URLS+="$URL"$'\n'
+                    # Add this new addon to the queue to scan ITS dependencies
+                    SCAN_QUEUE+="$TARGET_ADDON"$'\n'
+                fi
+            fi
+        done < <(grep -rEo "\b[A-Za-z0-9_]+\b" "$PROJECT_ROOT/addons/$CURRENT_SCAN" --include="*.gd" | grep -v "^#" | sort -u)
+    done
 
     # --- 5. README & DOCUMENTATION GENERATION ---
     curl -sSL "$TEMPLATE_URL" -o "$TEMP_README"
