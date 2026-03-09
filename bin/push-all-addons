@@ -141,15 +141,22 @@ for addon_path in addons/*; do
         fi
     done
 
-    # --- 4. GIT SYNC ---
-    if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
-        mv "$TEMP_DOC" "$DOC_FILE"
-        cd "$PROJECT_ROOT/$addon_path"
-        git add README.md DOCUMENTATION.md
-        git commit -m "docs($addon_folder): automated api update"
-        if command -v super-git-push &> /dev/null; then super-git-push; else git push origin main; fi
+# --- 4. GIT SYNC (Force push if ANY file in the addon changed) ---
+    mv "$TEMP_DOC" "$DOC_FILE"
+    cd "$PROJECT_ROOT/$addon_path"
+    
+    # Check if there are any changes (staged or unstaged) in this addon folder
+    if [[ -n $(git status --porcelain .) ]]; then
+        git add .
+        git commit -m "docs($addon_folder): automated api update and sync"
+        echo "📤 Changes detected. Pushing [$addon_folder]..."
+        if command -v super-git-push &> /dev/null; then 
+            super-git-push 
+        else 
+            git push origin main
+        fi
     else
-        rm "$TEMP_DOC"
+        echo "ℹ️  No changes detected in $addon_folder folder. Skipping push."
     fi
     cd "$PROJECT_ROOT"
 done
