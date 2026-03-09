@@ -62,71 +62,81 @@ for addon_path in addons/*; do
         CLASS_DESC=$(awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script")
         
         PROP_DATA=$(awk '
+            BEGIN { recording = 0; buffer = ""; desc = ""; name = ""; type = ""; }
+
+            # Detect start of a documented variable
             /^[ \t]*(@export.*)?var/ && /##/ {
-                full_line = $0
-                split(full_line, parts, "##")
-                desc_col = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc_col)
+                # If we were already recording another one, flush it (shouldnt happen in valid GDScript)
+                recording = 1;
+                full_line = $0;
+                split(full_line, parts, "##");
+                desc = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc);
                 
-                clean_line = parts[1]
-                gsub(/@export(_[a-z_]+)?(\(.*\))?/, "", clean_line)
-                gsub(/^[ \t]+|[ \t]+$/, "", clean_line)
-
-                # 1. Extract Name
-                name = ""; split(clean_line, n_p, "var "); split(n_p[2], b, /[ :={]/); name = b[1]
-                if (name == "") next
-
-                # 2. Extract Type
-                type = "Variant"
-                if (clean_line ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
-                    match(clean_line, /:[ \t]*[A-zA-Z0-9_\[\]]+/)
-                    type = substr(clean_line, RSTART+1, RLENGTH-1)
-                    gsub(/[ \t]+/, "", type)
+                code = parts[1];
+                # Extract Name
+                split(code, n_p, "var "); split(n_p[2], b, /[ :={]/); name = b[1];
+                
+                # Extract Type
+                type = "Variant";
+                if (code ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
+                    match(code, /:[ \t]*[A-zA-Z0-9_\[\]]+/);
+                    type = substr(code, RSTART+1, RLENGTH-1);
+                    gsub(/[ \t]+/, "", type);
                 }
+                
+                buffer = code;
+                
+                # If its not a multi-line dict/array, we can finish immediately
+                if (code !~ /\{/ && code !~ /\[/) {
+                    finish_up();
+                }
+            }
 
-                # 3. Extract Default Value (The "Second Bracket" Fix)
-                def = "-"
-                if (clean_line ~ /=/) {
-                    idx = index(clean_line, "=")
-                    after_eq = substr(clean_line, idx + 1)
+            # If we are in recording mode, keep adding lines
+            recording == 1 && $0 !~ /var/ {
+                nl = $0;
+                if (nl ~ /##/) { split(nl, tmp, "##"); nl = tmp[1]; }
+                buffer = buffer " " nl;
+            }
+
+            # Detect end of assignment
+            recording == 1 && ($0 ~ /\}/ || $0 ~ /\]/) {
+                finish_up();
+            }
+
+            function finish_up() {
+                # SURGERY: Find the first { or [ after the =
+                def = "-";
+                if (buffer ~ /=/) {
+                    eq_idx = index(buffer, "=");
+                    after_eq = substr(buffer, eq_idx + 1);
                     
-                    if (after_eq ~ /\{/ || after_eq ~ /\[/) {
-                        bracket_type = (after_eq ~ /\{/) ? "{" : "["
-                        closer = (bracket_type == "{") ? "}" : "]"
-                        
-                        combined = after_eq
-                        while (combined !~ "\\" closer && (getline nl < FILENAME) > 0) {
-                            if (nl ~ /##/) { split(nl, tmp, "##"); nl = tmp[1] }
-                            combined = combined " " nl
-                        }
-                        
-                        # --- THE SURGERY ---
-                        # We find the very first bracket after the "=" sign 
-                        # and keep everything from that point to the end.
-                        start_bracket = index(combined, bracket_type)
-                        if (start_bracket > 0) {
-                            def = substr(combined, start_bracket)
-                        } else {
-                            def = combined
-                        }
+                    b_idx = 0;
+                    if (after_eq ~ /\{/) b_idx = index(after_eq, "{");
+                    else if (after_eq ~ /\[/) b_idx = index(after_eq, "[");
+                    
+                    if (b_idx > 0) {
+                        def = substr(after_eq, b_idx);
                     } else {
-                        def = after_eq
-                        sub(/:[ \t]*$/, "", def)
+                        def = after_eq;
+                        sub(/:[ \t]*$/, "", def);
                     }
                 }
                 
-                # Final Formatting for Markdown Table cell
-                gsub(/;/, "", def); gsub(/[ \t]+/, " ", def); gsub(/^[ \t]+|[ \t]+$/, "", def)
+                # Final Table Formatting
+                gsub(/[ \t]+/, " ", def); gsub(/^[ \t]+|[ \t]+$/, "", def);
+                if (name != "") printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc);
                 
-                printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc_col)
+                recording = 0; buffer = ""; name = "";
             }
         ' "$script")
 
         METHOD_DATA=$(awk '/func .*##/ {
-            line = $0; split(line, p, "##"); desc = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc); code = p[1];
-            split(code, a, "func "); split(a[2], b, "("); name = b[1];
-            if (name == "" || name ~ /^_/) next;
-            ret = "void"; if (code ~ /->/) { split(code, c, "->"); split(c[2], d, ":"); ret = d[1]; gsub(/[ \t]+/, "", ret); }
-            printf("| **%s()** | `%s` | %s |\n", name, ret, desc);
+            line = $0; split(line, p, "##"); d = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", d); code = p[1];
+            split(code, a, "func "); split(a[2], b, "("); n = b[1];
+            if (n == "" || n ~ /^_/) next;
+            ret = "void"; if (code ~ /->/) { split(code, c, "->"); split(c[2], d_ret, ":"); ret = d_ret[1]; gsub(/[ \t]+/, "", ret); }
+            printf("| **%s()** | `%s` | %s |\n", n, ret, d);
         }' "$script")
 
         if [ -n "$CLASS_DESC" ] || [ -n "$PROP_DATA" ] || [ -n "$METHOD_DATA" ]; then
@@ -139,12 +149,13 @@ for addon_path in addons/*; do
     done
 
     # --- 4. GIT SYNC ---
+    # Delete the old doc first to guarantee a new file creation
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
         git add .
         git commit -m "docs($addon_folder): automated api update"
-        echo "📤 Pushing updates for [$addon_folder]..."
+        echo "📤 Changes found. Pushing [$addon_folder]..."
         if command -v super-git-push &> /dev/null; then super-git-push; else git push origin main; fi
     else
         echo "ℹ️  No changes detected for $addon_folder."
@@ -152,4 +163,4 @@ for addon_path in addons/*; do
     fi
     cd "$PROJECT_ROOT"
 done
-echo "✅ Done."
+echo "✅ Finished."
