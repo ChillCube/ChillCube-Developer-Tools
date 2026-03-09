@@ -4,7 +4,7 @@
 TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
 VENV_PATH="/tmp/chillcube_docs_env"
 
-# Ensure godocs is available for API generation (Internal awk logic handles tables)
+# Ensure environment is ready
 if ! command -v godocs &> /dev/null; then
     if [ ! -d "$VENV_PATH" ]; then
         python3 -m venv "$VENV_PATH" &> /dev/null
@@ -15,7 +15,6 @@ fi
 
 PROJECT_ROOT=$(pwd)
 
-# Ensure we are in a Godot project
 if [ ! -d "addons" ]; then
     echo "❌ Error: No addons/ folder found in $(pwd)"
     exit 1
@@ -31,74 +30,65 @@ for addon_path in addons/*; do
     # --- 0. DEPENDENCY RESOLUTION ---
     DEP_FILE="$addon_path/DEPENDENCIES.txt"
     if [ -f "$DEP_FILE" ]; then
-        echo "🔗 Checking dependencies for $addon_folder..."
         while read -r dep_url || [ -n "$dep_url" ]; do
             [[ -z "$dep_url" || "$dep_url" =~ ^# ]] && continue
-            
             dep_name=$(basename "$dep_url" .git)
             dep_target="addons/$dep_name"
-            
             if [ ! -d "$dep_target" ]; then
-                echo "  📥 Cloning missing dependency: $dep_name..."
+                echo "  📥 Cloning dependency: $dep_name..."
                 git clone --depth 1 "$dep_url" "$dep_target"
-            else
-                echo "  ⏭️  Dependency $dep_name already present."
             fi
         done < "$DEP_FILE"
     fi
 
-    # --- 1. SCRAPE METADATA FROM PLUGIN.CFG ---
+    # --- 1. SCRAPE METADATA ---
     CFG_FILE="$addon_path/plugin.cfg"
     if [ -f "$CFG_FILE" ]; then
         A_NAME=$(grep "name" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
         A_DESC=$(grep "description" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
         A_AUTH=$(grep "author" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
         A_MAIN_SCRIPT=$(grep "script" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
-        A_YEAR=$(date +%Y)
     else
-        A_NAME="$addon_folder"
-        A_DESC="A Godot Addon"
-        A_AUTH="ChillCube"
-        A_YEAR=$(date +%Y)
-        A_MAIN_SCRIPT=""
+        A_NAME="$addon_folder"; A_DESC="Godot Addon"; A_AUTH="ChillCube"; A_MAIN_SCRIPT=""
     fi
 
     # --- 2. REGENERATE README ---
-    echo "📥 Regenerating README from template..."
     curl -sSL "$TEMPLATE_URL" -o "$addon_path/README.md"
     sed -i "s@{{NAME}}@$A_NAME@g" "$addon_path/README.md"
     sed -i "s@{{DESC}}@$A_DESC@g" "$addon_path/README.md"
     sed -i "s@{{AUTHOR}}@$A_AUTH@g" "$addon_path/README.md"
-    sed -i "s@{{YEAR}}@$A_YEAR@g" "$addon_path/README.md"
+    sed -i "s@{{YEAR}}@$(date +%Y)@g" "$addon_path/README.md"
 
-    # --- 3. GENERATE TABLE-BASED API DOCUMENTATION ---
+    # --- 3. GENERATE API REFERENCE ---
     DOC_FILE="$addon_path/DOCUMENTATION.md"
-    echo "📖 Generating table-based documentation for $A_NAME..."
-    
     echo "# $A_NAME API Reference" > "$DOC_FILE"
     echo "Generated on: $(date)" >> "$DOC_FILE"
-    echo -e "\n$A_DESC" >> "$DOC_FILE"
-    echo -e "\n---\n" >> "$DOC_FILE"
+    echo -e "\n$A_DESC\n\n---\n" >> "$DOC_FILE"
 
     TARGET_SCRIPT="$addon_path/$A_MAIN_SCRIPT"
-    if [ ! -f "$TARGET_SCRIPT" ]; then
-        TARGET_SCRIPT=$(find "$addon_path" -maxdepth 2 -name "*.gd" | head -n 1)
-    fi
+    [ ! -f "$TARGET_SCRIPT" ] && TARGET_SCRIPT=$(find "$addon_path" -maxdepth 2 -name "*.gd" | head -n 1)
 
     if [ -f "$TARGET_SCRIPT" ]; then
-        # 3a. Capture Properties
+        # 3a. Properties Table
         PROP_DATA=$(awk '
             /(@export|var) .*##/ {
-                line = $0; split(line, parts, "##"); desc = parts[2];
-                gsub(/^[ \t]+|[ \t]+$/, "", desc); line = parts[1];
-                name = ""; if (line ~ /var /) { split(line, a, "var "); split(a[2], b, /[ :={]/); name = b[1]; }
+                line = $0; split(line, p, "##"); desc = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc); code = p[1];
+                # Extract Name
+                split(code, a, "var "); split(a[2], b, /[ :={]/); name = b[1];
                 if (name == "") next;
-                type = "Variant"; if (line ~ /:[ \t]*[A-zA-Z0-9_]+/) { 
-                    split(line, a, ":"); split(a[2], b, /[= ]/); type = b[1]; gsub(/[ \t]+/, "", type);
+                # Extract Type
+                type = "Variant";
+                if (code ~ /:[ \t]*[A-zA-Z0-9_]+/) { 
+                    split(code, a, ":"); split(a[2], b, /[= ]/); type = b[1]; gsub(/[ \t]+/, "", type);
+                } else if (code ~ /:=/) {
+                    if (code ~ /"/) type = "String"; else if (code ~ /true|false/) type = "bool";
+                    else if (code ~ /[0-9]+\.[0-9]+/) type = "float"; else if (code ~ /[0-9]+/) type = "int";
                 }
-                def = "-"; if (line ~ /=/) {
-                    split(line, a, "="); def = a[2]; gsub(/^[ \t;]+|[ \t;]+$/, "", def);
-                }
+                # Extract Default
+                def = "-";
+                if (code ~ /:=/) { split(code, a, ":="); def = a[2]; }
+                else if (code ~ /=/) { split(code, a, "="); def = a[2]; }
+                gsub(/^[ \t;]+|[ \t;]+$/, "", def);
                 printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc);
             }
         ' "$TARGET_SCRIPT")
@@ -107,18 +97,16 @@ for addon_path in addons/*; do
             echo "## Properties" >> "$DOC_FILE"
             echo "| Property | Type | Default | Description |" >> "$DOC_FILE"
             echo "| :--- | :--- | :--- | :--- |" >> "$DOC_FILE"
-            echo "$PROP_DATA" >> "$DOC_FILE"
-            echo "" >> "$DOC_FILE"
+            echo "$PROP_DATA" >> "$DOC_FILE"; echo "" >> "$DOC_FILE"
         fi
 
-        # 3b. Capture Methods
+        # 3b. Methods Table
         METHOD_DATA=$(awk '
             /func .*##/ {
-                line = $0; split(line, p, "##"); desc = p[2]; line = p[1];
-                split(line, a, "func "); split(a[2], b, "("); name = b[1];
+                line = $0; split(line, p, "##"); desc = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc); code = p[1];
+                split(code, a, "func "); split(a[2], b, "("); name = b[1];
                 if (name == "" || name ~ /^_/) next;
-                ret = "void"; if (line ~ /->/) { split(line, c, "->"); split(c[2], d, ":"); ret = d[1]; gsub(/[ \t]+/, "", ret); }
-                gsub(/^[ \t]+|[ \t]+$/, "", desc);
+                ret = "void"; if (code ~ /->/) { split(code, c, "->"); split(c[2], d, ":"); ret = d[1]; gsub(/[ \t]+/, "", ret); }
                 printf("| **%s()** | `%s` | %s |\n", name, ret, desc);
             }
         ' "$TARGET_SCRIPT")
@@ -127,16 +115,14 @@ for addon_path in addons/*; do
             echo "## Methods" >> "$DOC_FILE"
             echo "| Method | Returns | Description |" >> "$DOC_FILE"
             echo "| :--- | :--- | :--- |" >> "$DOC_FILE"
-            echo "$METHOD_DATA" >> "$DOC_FILE"
-            echo "" >> "$DOC_FILE"
+            echo "$METHOD_DATA" >> "$DOC_FILE"; echo "" >> "$DOC_FILE"
         fi
 
-        # 3c. Capture Signals
+        # 3c. Signals Table
         SIGNAL_DATA=$(awk '
             /signal .*##/ {
-                line = $0; split(line, p, "##"); desc = p[2]; line = p[1];
-                split(line, a, "signal "); split(a[2], b, /[ (]/); name = b[1];
-                gsub(/^[ \t]+|[ \t]+$/, "", desc);
+                line = $0; split(line, p, "##"); desc = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc); code = p[1];
+                split(code, a, "signal "); split(a[2], b, /[ (]/); name = b[1];
                 printf("| **%s** | %s |\n", name, desc);
             }
         ' "$TARGET_SCRIPT")
@@ -145,34 +131,21 @@ for addon_path in addons/*; do
             echo "## Signals" >> "$DOC_FILE"
             echo "| Signal | Description |" >> "$DOC_FILE"
             echo "| :--- | :--- |" >> "$DOC_FILE"
-            echo "$SIGNAL_DATA" >> "$DOC_FILE"
-            echo "" >> "$DOC_FILE"
+            echo "$SIGNAL_DATA" >> "$DOC_FILE"; echo "" >> "$DOC_FILE"
         fi
     fi
 
-    # --- 4. INTERACTIVE GIT SYNC ---
+    # --- 4. GIT SYNC ---
     cd "$PROJECT_ROOT/$addon_path"
     git add README.md DOCUMENTATION.md
-    
     if ! git diff --cached --quiet; then
-        echo -e "\n💬 Changes ready for [$addon_folder]."
-        read -p "Enter commit message (empty for default): " user_msg
-        user_msg=${user_msg:-"sync: update documentation and readme template"}
-        
-        git commit -m "docs($addon_folder): $user_msg"
-        
-        echo "📤 Pushing to GitHub..."
-        if command -v super-git-push &> /dev/null; then
-            super-git-push
-        elif [ -f "$PROJECT_ROOT/bin/super-git-push" ]; then
-            "$PROJECT_ROOT/bin/super-git-push"
-        else
-            git push origin main
-        fi
+        echo -e "\n💬 Documentation changes for [$addon_folder]."
+        read -p "Commit message (default: docs update): " msg
+        git commit -m "docs($addon_folder): ${msg:-docs update}"
+        if command -v super-git-push &> /dev/null; then super-git-push; else git push origin main; fi
     else
-        echo "ℹ️ No changes detected for $addon_folder."
+        echo "ℹ️  No changes for $addon_folder."
     fi
-
     cd "$PROJECT_ROOT"
-    echo "✅ Finished $addon_folder"
 done
+echo "✅ All addons processed."
