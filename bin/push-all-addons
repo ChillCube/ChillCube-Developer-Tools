@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Registry Engine (v4.0) ---
-# Combined: Doc Gen + Smart Deps + Global Registry Sync
+# --- Chillcube Universal Doc & Registry Engine (v4.5) ---
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
 MANUAL_MARKER="# --- Manual Dependencies (Do Not Delete) ---"
 ORG_REPO="https://github.com/ChillCube/.github.git"
 REGISTRY_FILE="ADDONS.md"
+# URL for the initial template if ADDONS.md doesn't exist
+REGISTRY_TEMPLATE="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/ADDONS_TEMPLATE.md"
 
 declare -A CLASS_TO_REPO
 declare -A CLASS_TO_ADDON
@@ -15,7 +16,6 @@ ALL_CUSTOM_CLASSES=""
 echo "🔍 Indexing Project-Wide Class Map..."
 
 # --- 1. GLOBAL PRE-SCAN ---
-# Maps every class_name in the project to its parent addon and repo URL
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
@@ -48,9 +48,8 @@ for addon_path in addons/*; do
     declare -A CLASS_TO_DEP_LINK
     MANUAL_DEPS_CONTENT=""
 
-    # --- 3. EXTRACT METADATA & PERSISTENT DEPS ---
+    # --- 3. EXTRACT METADATA ---
     if [ -f "$DEP_FILE" ]; then
-        # Capture everything AFTER the marker for manual persistence
         MANUAL_DEPS_CONTENT=$(awk -v m="$MANUAL_MARKER" 'found {print} $0 == m {found=1}' "$DEP_FILE")
     fi
 
@@ -62,50 +61,34 @@ for addon_path in addons/*; do
     
     CURRENT_REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//')
 
+    # (API Documentation Generation Logic)
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
-
     BODY_CONTENT=$(mktemp)
     mapfile -t SCRIPTS < <(find "$addon_path" -name "*.gd")
-
     for script in "${SCRIPTS[@]}"; do
-        # --- DEEP SCAN (Dependencies) ---
         POTENTIAL=$(grep -oE '(extends|:|is|[A-Za-z0-9_]+\.new)\s+[A-Z][a-zA-Z0-9_]+' "$script" | awk '{print $NF}' | sort -u)
-        
         for check_class in $POTENTIAL; do
             [ -z "$check_class" ] && continue
             DEP_ADDON="${CLASS_TO_ADDON[$check_class]}"
-            
             if [ -n "$DEP_ADDON" ] && [ "$DEP_ADDON" != "$addon_folder" ]; then
                 REPO="${CLASS_TO_REPO[$check_class]}"
                 AUTO_DEP_REPOS["$REPO"]="Code Reference"
                 CLASS_TO_DEP_LINK["$check_class"]="$REPO/blob/main/DOCUMENTATION.md#class-${check_class,,}"
             fi
         done
-
-        # --- CLASS DOC GEN ---
-        C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/ .*//')
-        [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
-        
-        RAW_EXT=$(grep "^extends " "$script" | sed 's/extends //' | sed 's/ .*//')
-        [ -z "$RAW_EXT" ] && RAW_EXT="Object"
-        
+        C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/ .*//'); [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
+        RAW_EXT=$(grep "^extends " "$script" | sed 's/extends //' | sed 's/ .*//'); [ -z "$RAW_EXT" ] && RAW_EXT="Object"
         if [[ -n "${CLASS_TO_REPO[$RAW_EXT]}" ]]; then
             [[ "${CLASS_TO_ADDON[$RAW_EXT]}" == "$addon_folder" ]] && L="[\`$RAW_EXT\`](#class-${RAW_EXT,,})" || L="[\`$RAW_EXT\`](${CLASS_TO_REPO[$RAW_EXT]}/blob/main/DOCUMENTATION.md#class-${RAW_EXT,,})"
         elif [[ "$RAW_EXT" =~ ^[A-Z] ]]; then L="[\`$RAW_EXT\`](https://docs.godotengine.org/en/stable/classes/class_${RAW_EXT,,}.html)"; else L="\`$RAW_EXT\`"; fi
-
         {
-            echo -e "## Class: $C_NAME"
-            echo -e "**Inherits:** $L\n"
+            echo -e "## Class: $C_NAME\n**Inherits:** $L\n"
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
-            
-            # Safe Property Parser
             PD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 { r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); line=p[1]; sub(/^[ \t]*/,"",line); split(line, parts, "var "); split(parts[2], name_part, " "); split(name_part[1], name_final, ":"); n=name_final[1]; t="Variant"; ci=index(line, ":"); if(ci > 0) { remainder=substr(line, ci+1); sub(/^[ \t]*/,"",remainder); split(remainder, type_part, " "); split(type_part[1], type_final, "="); t=type_final[1]; } b=line; f() } function f(){ dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } sub(/^[ \t]*/,"",dv); sub(/[ \t]*$/,"",dv); if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n",n,t,dv,d); r=0; b=""; n="" }' "$script")
             [ -n "$PD" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PD\n"
-            
-            # Signals & Methods
-            SD=$(awk 'index($0, "signal") > 0 && index($0, "##") > 0 { split($0,p,"##"); d=p[2]; code=p[1]; split(code,a,"signal "); split(a[2],b," "); n=b[1]; printf("| **%s** | %s |\n",n,d) }' "$script")
+            SD=$(awk 'index($0, "signal") > 0 && index($0, "##") > 0 { split($0,p,"##"); d=p[2]; code=p[1]; split(code,a,"signal "); split(a[2],b,/[ (]/); n=b[1]; printf("| **%s** | %s |\n",n,d) }' "$script")
             [ -n "$SD" ] && echo -e "### Signals\n| Signal | Description |\n| :--- | :--- |\n$SD\n"
             MD=$(awk 'index($0, "func") > 0 && index($0, "##") > 0 { split($0,p,"##"); d=p[2]; code=p[1]; split(code,a,"func "); split(a[2],b, "("); n=b[1]; if(n=="" || index(n,"_")==1) next; ret="void"; if(index(code, "->") > 0) { split(code, c, "->"); split(c[2], dr, ":"); ret=dr[1]; gsub(/[ \t]+/,"",ret) } printf("| **%s()** | `%s` | %s |\n", n, ret, d) }' "$script")
             [ -n "$MD" ] && echo -e "### Methods\n| Method | Returns | Description |\n| :--- | :--- | :--- |\n$MD\n"
@@ -115,69 +98,69 @@ for addon_path in addons/*; do
 
     # --- 4. REBUILD DEPENDENCIES.TXT & DOC TABLE ---
     if [ ${#AUTO_DEP_REPOS[@]} -gt 0 ] || [ -n "$MANUAL_DEPS_CONTENT" ]; then
-        echo -e "### 📦 Dependencies" >> "$TEMP_DOC"
-        echo "| Source | Reference | Repository |" >> "$TEMP_DOC"
-        echo "| :--- | :--- | :--- |" >> "$TEMP_DOC"
-        
+        echo -e "### 📦 Dependencies\n| Source | Reference | Repository |\n| :--- | :--- | :--- |" >> "$TEMP_DOC"
         echo "# --- Automated Dependencies (Managed by Script) ---" > "$DEP_FILE"
         printf "%s\n" "${!AUTO_DEP_REPOS[@]}" | sort -u >> "$DEP_FILE"
         echo -e "\n$MANUAL_MARKER" >> "$DEP_FILE"
         [ -n "$MANUAL_DEPS_CONTENT" ] && echo "$MANUAL_DEPS_CONTENT" >> "$DEP_FILE"
-
-        IFS=$'\n' sorted_classes=($(sort <<<"${!CLASS_TO_DEP_LINK[*]}"))
-        unset IFS
-        for cls in "${sorted_classes[@]}"; do
-            echo "| Code | [\`$cls\`](${CLASS_TO_DEP_LINK[$cls]}) | [Repo](${CLASS_TO_REPO[$cls]}) |" >> "$TEMP_DOC"
-        done
-
-        if [ -n "$MANUAL_DEPS_CONTENT" ]; then
-            while read -r line; do
-                [[ -z "$line" || "$line" =~ ^# ]] && continue
-                echo "| Manual | $(basename "$line") | [Repo]($line) |" >> "$TEMP_DOC"
-            done <<< "$MANUAL_DEPS_CONTENT"
-        fi
+        IFS=$'\n' sorted_classes=($(sort <<<"${!CLASS_TO_DEP_LINK[*]}")); unset IFS
+        for cls in "${sorted_classes[@]}"; do echo "| Code | [\`$cls\`](${CLASS_TO_DEP_LINK[$cls]}) | [Repo](${CLASS_TO_REPO[$cls]}) |" >> "$TEMP_DOC"; done
+        if [ -n "$MANUAL_DEPS_CONTENT" ]; then while read -r line; do [[ -z "$line" || "$line" =~ ^# ]] && continue; echo "| Manual | $(basename "$line") | [Repo]($line) |" >> "$TEMP_DOC"; done <<< "$MANUAL_DEPS_CONTENT"; fi
         echo -e "\n---\n" >> "$TEMP_DOC"
     fi
+    cat "$BODY_CONTENT" >> "$TEMP_DOC"; rm "$BODY_CONTENT"
 
-    cat "$BODY_CONTENT" >> "$TEMP_DOC"
-    rm "$BODY_CONTENT"
-
-    # --- 5. GLOBAL REGISTRY SYNC (.github repo) ---
+    # --- 5. GLOBAL REGISTRY SYNC (Numbered Selection & Template) ---
     TEMP_REGISTRY_DIR=$(mktemp -d)
     if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR" > /dev/null 2>&1; then
         cd "$TEMP_REGISTRY_DIR"
+        # Create from template if missing
+        if [ ! -f "$REGISTRY_FILE" ]; then
+            echo "📝 Initializing $REGISTRY_FILE from template..."
+            curl -s "$REGISTRY_TEMPLATE" > "$REGISTRY_FILE"
+        fi
+        
         if ! grep -q "$CURRENT_REPO_URL" "$REGISTRY_FILE"; then
             echo "🆕 $A_NAME is not in the Global Registry."
-            echo "Current Categories:"
-            grep "^## " "$REGISTRY_FILE" | sed 's/## /  - /'
-            read -p "📁 Enter category for $A_NAME: " SELECTED_CAT
+            mapfile -t CATEGORIES < <(grep "^## " "$REGISTRY_FILE" | sed 's/## //')
+            
+            echo "Available Categories:"
+            for i in "${!CATEGORIES[@]}"; do
+                printf "  [%d] %s\n" "$((i+1))" "${CATEGORIES[$i]}"
+            done
+            echo "  [0] Create New Category"
+            
+            read -p "📁 Select a category number or type a new name: " CAT_INPUT
+            
+            if [[ "$CAT_INPUT" =~ ^[0-9]+$ ]] && [ "$CAT_INPUT" -gt 0 ] && [ "$CAT_INPUT" -le "${#CATEGORIES[@]}" ]; then
+                SELECTED_CAT="${CATEGORIES[$((CAT_INPUT-1))]}"
+            elif [ "$CAT_INPUT" == "0" ] || [[ ! "$CAT_INPUT" =~ ^[0-9]+$ ]]; then
+                if [ "$CAT_INPUT" == "0" ]; then read -p "Enter new category name: " SELECTED_CAT; else SELECTED_CAT="$CAT_INPUT"; fi
+            fi
+
             if ! grep -q "## $SELECTED_CAT" "$REGISTRY_FILE"; then
                 echo -e "\n## $SELECTED_CAT\n* [$A_NAME]($CURRENT_REPO_URL) - $A_DESC" >> "$REGISTRY_FILE"
             else
                 sed -i "/## $SELECTED_CAT/a * [$A_NAME]($CURRENT_REPO_URL) - $A_DESC" "$REGISTRY_FILE"
             fi
-            git add "$REGISTRY_FILE"
-            git commit -m "registry: add $A_NAME to $SELECTED_CAT"
+            
+            git add "$REGISTRY_FILE"; git commit -m "registry: add $A_NAME to $SELECTED_CAT"
             git push origin main > /dev/null 2>&1
             echo "✅ Global Registry Updated."
         fi
-        cd "$PROJECT_ROOT"
-        rm -rf "$TEMP_REGISTRY_DIR"
+        cd "$PROJECT_ROOT"; rm -rf "$TEMP_REGISTRY_DIR"
     fi
 
-    # --- 6. FINAL SYNC & PUSH ---
+    # --- 6. FINAL SYNC ---
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
-        git add .
-        git commit -m "docs: auto-update api and registry sync"
-        super-git-push
+        git add .; git commit -m "docs: auto-update api and registry sync"; super-git-push
         ((UPDATED_COUNT++))
     else
         rm "$TEMP_DOC"
     fi
     cd "$PROJECT_ROOT"
 done
-
 echo "--------------------------------------------------"
-echo "✅ Finished! $UPDATED_COUNT addons synced with repos and Global Registry."
+echo "✅ Finished! $UPDATED_COUNT addons updated."
