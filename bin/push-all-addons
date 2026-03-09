@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Registry Engine (v6.6) ---
-# Restores: Registry Sync, Global Mapping, Auto-Git Sync
-# Adds: Rainbow Args, Export Groups, Stateful Parsing
-
+# --- Chillcube Universal Doc & Registry Engine (v5.9 - Reverted) ---
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
+MANUAL_MARKER="# --- Manual Dependencies (Do Not Delete) ---"
 ORG_REPO="https://github.com/ChillCube/.github.git"
 REGISTRY_FILE="ADDONS.md"
 
@@ -14,7 +12,7 @@ declare -A CLASS_TO_ADDON
 
 echo "🔍 Indexing Project-Wide Class Map..."
 
-# --- 1. GLOBAL PRE-SCAN (Restored) ---
+# --- 1. GLOBAL PRE-SCAN ---
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
@@ -46,7 +44,7 @@ for addon_path in addons/*; do
     
     CURRENT_REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//')
 
-    # --- 3. REGISTRY SYNC (Restored) ---
+    # --- 3. REGISTRY SYNC ---
     TEMP_REGISTRY_DIR=$(mktemp -d)
     if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR" > /dev/null 2>&1; then
         cd "$TEMP_REGISTRY_DIR"
@@ -68,7 +66,7 @@ for addon_path in addons/*; do
         cd "$PROJECT_ROOT" && rm -rf "$TEMP_REGISTRY_DIR"
     fi
 
-    # --- 4. DOCUMENTATION GEN (Enhanced Stateful Parser) ---
+    # --- 4. DOCUMENTATION GEN ---
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
     BODY_CONTENT=$(mktemp)
@@ -81,93 +79,86 @@ for addon_path in addons/*; do
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
             
-            awk -v bt_code="\140" '
-            function colorize(raw) {
-                if (raw == "" || raw == "-") return "-";
-                n_args = split(raw, arr, ",[ \t]*");
-                colors[0]="#56b6c2"; colors[1]="#d19a66"; colors[2]="#c678dd"; colors[3]="#98c379";
-                res = "";
-                for (i=1; i<=n_args; i++) {
-                    c = colors[(i-1) % 4];
-                    res = res "<code><font color=\"" c "\">" arr[i] "</font></code>";
-                    if (i < n_args) res = res "<br>";
-                }
-                return res;
-            }
+            # --- SPLIT PROPERTIES LOGIC ---
+            # Exported Properties
+            EXPD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 && index($0, "@export") > 0 { 
+                r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
+                line=p[1]; sub(/^[ \t]*/,"",line); 
+                split(line, parts, "var "); split(parts[2], name_part, " "); 
+                split(name_part[1], name_final, ":"); n=name_final[1]; 
+                t="Variant"; ci=index(line, ":"); 
+                if(ci > 0) { 
+                    remainder=substr(line, ci+1); sub(/^[ \t]*/,"",remainder); 
+                    split(remainder, type_part, " "); split(type_part[1], type_final, "="); t=type_final[1]; 
+                } 
+                b=line; f() 
+            } 
+            function f(){ 
+                dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } 
+                sub(/^[ \t]*/,"",dv); sub(/[ \t]*[:;][ \t]*$/, "", dv); sub(/[ \t]*$/, "", dv); 
+                if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n", n, t, dv, d); 
+                r=0; b=""; n="" 
+            }' "$script")
+            [ -n "$EXPD" ] && echo -e "### ⚙️ Inspector Variables (Exported)\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$EXPD\n"
 
-            BEGIN { inspect_out = ""; class_out = ""; sig_out = ""; met_out = ""; last_doc = ""; }
+            # Standard Properties
+            STPD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 && index($0, "@export") == 0 { 
+                r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
+                line=p[1]; sub(/^[ \t]*/,"",line); 
+                split(line, parts, "var "); split(parts[2], name_part, " "); 
+                split(name_part[1], name_final, ":"); n=name_final[1]; 
+                t="Variant"; ci=index(line, ":"); 
+                if(ci > 0) { 
+                    remainder=substr(line, ci+1); sub(/^[ \t]*/,"",remainder); 
+                    split(remainder, type_part, " "); split(type_part[1], type_final, "="); t=type_final[1]; 
+                } 
+                b=line; f() 
+            } 
+            function f(){ 
+                dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } 
+                sub(/^[ \t]*/,"",dv); sub(/[ \t]*[:;][ \t]*$/, "", dv); sub(/[ \t]*$/, "", dv); 
+                if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n", n, t, dv, d); 
+                r=0; b=""; n="" 
+            }' "$script")
+            [ -n "$STPD" ] && echo -e "### 💾 Class Variables (Standard)\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$STPD\n"
 
-            # Capture comments
-            /^[ \t]*##/ { 
-                sub(/^[ \t]*##[ \t]*/, ""); 
-                if (last_doc == "") last_doc = $0; else last_doc = last_doc " " $0;
-                next; 
-            }
-
-            # Export Groups
-            /@export_(group|category)\(/ {
-                split($0, a, "\"");
-                inspect_out = inspect_out "| **--- " toupper(a[2]) " ---** | | | |\n";
-                last_doc = ""; next;
-            }
-
-            # Variables
-            /var / {
-                if (last_doc == "") next;
-                line = $0;
-                split(line, parts, "var "); split(parts[2], name_part, /[ :={]/); n = name_part[1];
-                t = "Variant";
-                if (index(line, ":") > 0) { split(substr(line, index(line, ":")+1), tp, /[ \t=]/); t = tp[1]; }
-                dv = "-";
-                if (index(line, "=") > 0) {
-                    split(line, vp, "="); dv = vp[2];
-                    sub(/^[ \t]*/, "", dv); sub(/[ \t]*[:;][ \t]*$/, "", dv);
-                }
-                row = "| **" n "** | " bt_code t bt_code " | " bt_code dv bt_code " | " last_doc " |\n";
-                if (index(line, "@export") > 0) inspect_out = inspect_out row; else class_out = class_out row;
-                last_doc = "";
-            }
-
-            # Signals
-            /signal / {
-                if (last_doc == "") next;
-                code = $0; sub(/.*signal /, "", code);
-                name = code; raw_args = "";
+            # Signals (Fixed AWK warnings with hex code \140 for backticks)
+            SD=$(awk 'index($0, "signal") > 0 && index($0, "##") > 0 { 
+                split($0,p,"##"); d=p[2]; code=p[1]; 
+                sub(/^[ \t]*signal /, "", code); sub(/[ \t]*$/, "", code);
+                name=code; args="-";
                 if(index(code, "(") > 0) {
-                    split(code, arr, "("); name = arr[1]; raw_args = arr[2]; sub(/\).*/, "", raw_args);
+                    split(code, arr, "("); name=arr[1]; raw_args=arr[2]; sub(/\).*/, "", raw_args);
+                    gsub(/,[ \t]*/, "\140<br>\140", raw_args); args="\140" raw_args "\140"
                 }
-                sig_out = sig_out "| **" name "** | " colorize(raw_args) " | " last_doc " |\n";
-                last_doc = "";
-            }
+                printf("| **%s** | %s | %s |\n", name, args, d) 
+            }' "$script")
+            [ -n "$SD" ] && echo -e "### 🔔 Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |\n$SD\n"
 
-            # Methods
-            /func / {
-                if (last_doc == "" || index($0, "func _") > 0) { last_doc = ""; next; }
-                code = $0; sub(/.*func /, "", code); split(code, parts, "("); name = parts[1];
-                raw_args = parts[2]; sub(/\).*/, "", raw_args);
-                ret = "void"; 
-                if(index(code, "->") > 0) { split(code, c, "->"); ret = c[2]; sub(/[ \t]*[:;][ \t]*$/, "", ret); gsub(/[ \t]+/, "", ret); }
-                met_out = met_out "| **" name "()** | " colorize(raw_args) " | " bt_code ret bt_code " | " last_doc " |\n";
-                last_doc = "";
-            }
-
-            END {
-                if (inspect_out != "") { print "### ⚙️ Inspector Variables\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |"; printf "%s\n", inspect_out; }
-                if (class_out != "") { print "### 💾 Class Variables\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |"; printf "%s\n", class_out; }
-                if (sig_out != "") { print "### 🔔 Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |"; printf "%s\n", sig_out; }
-                if (met_out != "") { print "### 🛠️ Methods\n| Method | Arguments | Returns | Description |\n| :--- | :--- | :--- | :--- |"; printf "%s\n", met_out; }
-            }' "$script"
+            # Methods (Fixed AWK warnings with hex code \140 for backticks)
+            MD=$(awk 'index($0, "func") > 0 && index($0, "##") > 0 { 
+                split($0,p,"##"); d=p[2]; code=p[1]; 
+                sub(/^[ \t]*func /, "", code); sub(/[ \t]*$/, "", code);
+                split(code, parts, "("); name=parts[1];
+                if(index(name, "_") == 1) next;
+                raw_args=parts[2]; sub(/\).*/, "", raw_args); 
+                if(raw_args=="") args="-"; else { gsub(/,[ \t]*/, "\140<br>\140", raw_args); args="\140" raw_args "\140" }
+                ret="void"; 
+                if(index(code, "->") > 0) { split(code, c, "->"); ret=c[2]; sub(/[ \t]*[:;][ \t]*$/, "", ret); gsub(/[ \t]+/, "", ret); }
+                printf("| **%s()** | %s | \140%s\140 | %s |\n", name, args, ret, d) 
+            }' "$script")
+            [ -n "$MD" ] && echo -e "### 🛠️ Methods\n| Method | Arguments | Returns | Description |\n| :--- | :--- | :--- | :--- |\n$MD\n"
             echo -e "---\n"
         } >> "$BODY_CONTENT"
     done
 
     cat "$BODY_CONTENT" >> "$TEMP_DOC"; rm -f "$BODY_CONTENT"
 
-    # --- 5. FINAL SYNC & PUSH (Restored) ---
+    # --- 5. FINAL SYNC ---
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
-        git add . && git commit -m "docs: auto-update api (v6.6 restored)" && super-git-push
+        git add . && git commit -m "docs: auto-update api (restored stable v5.9)" && super-git-push
         ((UPDATED_COUNT++))
     else
         rm -f "$TEMP_DOC"
