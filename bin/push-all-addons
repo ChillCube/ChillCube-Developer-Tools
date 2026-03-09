@@ -59,65 +59,59 @@ for addon_path in addons/*; do
         C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/[ \t]*$//')
         [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
 
+        # Grab only the first block of ## for class description
         CLASS_DESC=$(awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script")
         
         # 3a. Properties Table (Deep Parser for Setters and Multi-line Dicts)
         PROP_DATA=$(awk '
-            /var/ && /##/ {
-                line_num = NR
+            # Line must contain "var" AND "##" to be a documented property
+            /^[ \t]*(@export.*)?var/ && /##/ {
                 full_line = $0
                 split(full_line, parts, "##")
                 desc = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc)
                 
-                code = parts[1]
-                gsub(/@export(_[a-z_]+)?(\(.*\))?/, "", code)
-                gsub(/^[ \t]+|[ \t]+$/, "", code)
+                # code_part is everything before the ##
+                code_part = parts[1]
+                gsub(/@export(_[a-z_]+)?(\(.*\))?/, "", code_part)
+                gsub(/^[ \t]+|[ \t]+$/, "", code_part)
 
                 # 1. Extract Name
-                name = ""; split(code, n_parts, "var "); split(n_parts[2], b, /[ :={]/); name = b[1]
+                name = ""; split(code_part, n_parts, "var "); split(n_parts[2], b, /[ :={]/); name = b[1]
                 if (name == "") next
 
-                # 2. Extract Type (Setter-Safe)
+                # 2. Extract Type
                 type = "Variant"
-                if (code ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
-                    match(code, /:[ \t]*[A-zA-Z0-9_\[\]]+/)
-                    type = substr(code, RSTART+1, RLENGTH-1)
+                if (code_part ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
+                    match(code_part, /:[ \t]*[A-zA-Z0-9_\[\]]+/)
+                    type = substr(code_part, RSTART+1, RLENGTH-1)
                     gsub(/[ \t]+/, "", type)
-                } else if (parts[1] ~ /:=/) {
-                    if (parts[1] ~ /"/) type = "String"
-                    else if (parts[1] ~ /true|false/) type = "bool"
-                    else if (parts[1] ~ /[0-9]+\.[0-9]+/) type = "float"
-                    else if (parts[1] ~ /[0-9]+/) type = "int"
                 }
 
-                # 3. Extract Default Value (Multi-line aware)
+                # 3. Extract Default Value
                 def = "-"
-                raw_code = parts[1]
-                
-                if (raw_code ~ /=/ || raw_code ~ /:=/) {
-                    delim = (raw_code ~ /:=/) ? ":=" : "="
-                    split(raw_code, d_parts, delim)
-                    def_start = d_parts[2]
-                    gsub(/^[ \t]+|[ \t]+$/, "", def_start)
+                # Isolate assignment part
+                if (code_part ~ /=/ || code_part ~ /:=/) {
+                    delim = (code_part ~ /:=/) ? ":=" : "="
+                    split(code_part, d_parts, delim)
+                    val_start = d_parts[2]
+                    gsub(/^[ \t]+|[ \t]+$/, "", val_start)
 
-                    # If it is a multi-line Dictionary or Array
-                    if (def_start ~ /^\{/ || def_start ~ /^\[/) {
-                        bracket_type = (def_start ~ /^\{/) ? "}" : "]"
-                        current_def = def_start
-                        # Keep reading lines until we find the closing bracket
-                        while (current_def !~ bracket_type && (getline next_line < FILENAME) > 0) {
-                            gsub(/^[ \t]+|[ \t]+$/, " ", next_line)
-                            current_def = current_def next_line
+                    # Multi-line Dictionary/Array check
+                    if (val_start ~ /^\{/ || val_start ~ /^\[/) {
+                        bracket_end = (val_start ~ /^\{/) ? "}" : "]"
+                        combined = val_start
+                        while (combined !~ bracket_end && (getline nl < FILENAME) > 0) {
+                            gsub(/^[ \t]+|[ \t]+$/, " ", nl)
+                            combined = combined nl
                         }
-                        def = current_def
+                        def = combined
                     } else {
-                        def = def_start
-                        # Strip Godot 4 setter colon
-                        sub(/:[ \t]*$/, "", def)
+                        def = val_start
+                        sub(/:[ \t]*$/, "", def) # Clean setter colon
                     }
                 }
                 
-                # Cleanup: remove semicolons and collapse extra spaces for the table cell
+                # Cleanup for Markdown Table
                 gsub(/;/, "", def)
                 gsub(/[ \t]+/, " ", def)
                 gsub(/^[ \t]+|[ \t]+$/, "", def)
@@ -134,27 +128,11 @@ for addon_path in addons/*; do
             printf("| **%s()** | `%s` | %s |\n", name, ret, desc);
         }' "$script")
 
-        SIGNAL_DATA=$(awk '/signal .*##/ {
-            line = $0; split(line, p, "##"); desc = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc); code = p[1];
-            split(code, a, "signal "); split(a[2], b, /[ (]/); name = b[1];
-            printf("| **%s** | %s |\n", name, desc);
-        }' "$script")
-
-        if [ -n "$CLASS_DESC" ] || [ -n "$PROP_DATA" ] || [ -n "$METHOD_DATA" ] || [ -n "$SIGNAL_DATA" ]; then
+        if [ -n "$CLASS_DESC" ] || [ -n "$PROP_DATA" ] || [ -n "$METHOD_DATA" ]; then
             echo -e "\n## Class: $C_NAME" >> "$TEMP_DOC"
             [ -n "$CLASS_DESC" ] && echo -e "$CLASS_DESC\n" >> "$TEMP_DOC"
-            if [ -n "$PROP_DATA" ]; then
-                echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |" >> "$TEMP_DOC"
-                echo "$PROP_DATA" >> "$TEMP_DOC"; echo "" >> "$TEMP_DOC"
-            fi
-            if [ -n "$METHOD_DATA" ]; then
-                echo -e "### Methods\n| Method | Returns | Description |\n| :--- | :--- | :--- |" >> "$TEMP_DOC"
-                echo "$METHOD_DATA" >> "$TEMP_DOC"; echo "" >> "$TEMP_DOC"
-            fi
-            if [ -n "$SIGNAL_DATA" ]; then
-                echo -e "### Signals\n| Signal | Description |\n| :--- | :--- |" >> "$TEMP_DOC"
-                echo "$SIGNAL_DATA" >> "$TEMP_DOC"; echo "" >> "$TEMP_DOC"
-            fi
+            [ -n "$PROP_DATA" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PROP_DATA\n" >> "$TEMP_DOC"
+            [ -n "$METHOD_DATA" ] && echo -e "### Methods\n| Method | Returns | Description |\n| :--- | :--- | :--- |\n$METHOD_DATA\n" >> "$TEMP_DOC"
             echo "---" >> "$TEMP_DOC"
         fi
     done
@@ -167,7 +145,6 @@ for addon_path in addons/*; do
         git commit -m "docs($addon_folder): automated api update"
         if command -v super-git-push &> /dev/null; then super-git-push; else git push origin main; fi
     else
-        echo "ℹ️  No changes detected for $addon_folder."
         rm "$TEMP_DOC"
     fi
     cd "$PROJECT_ROOT"
