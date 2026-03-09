@@ -101,26 +101,25 @@ for addon_path in addons/*; do
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
 
-    # --- DOCUMENTATION DEPENDENCY TABLE ---
-    if [ -n "$AUTO_DEPS_URLS" ] || [ -n "$MANUAL_DEPS" ]; then
-        echo -e "### 📦 Dependencies\n" >> "$TEMP_DOC"
-        echo -e "| Source | Reference | Repository |" >> "$TEMP_DOC"
-        echo -e "| :--- | :--- | :--- |" >> "$TEMP_DOC"
-
-        # Add Automated Dependencies with Documentation Links
-        while read -r url; do
-            [ -z "$url" ] && continue
-            
-            # 1. Clean up the folder name for the display
-            DEP_FOLDER=$(basename "$url" | sed 's/\.git$//')
-            REF_NAME=$(echo "$DEP_FOLDER" | sed 's/Godot_//g')
-            
-            # 2. Create the link to the DOCUMENTATION.md of that repo
-            # We append /blob/main/DOCUMENTATION.md to the base GitHub URL
-            DOC_LINK="${url}/blob/main/DOCUMENTATION.md"
-            
-            echo "| Code | [\`$REF_NAME\`]($DOC_LINK) | [Repo]($url) |" >> "$TEMP_DOC"
-        done <<< "$AUTO_DEPS_URLS"
+    while read -r url; do
+        [ -z "$url" ] && continue
+    
+        # Find all classes in the project that belong to THIS repo
+        USED_CLASSES=""
+        for cname in "${!CLASS_TO_REPO[@]}"; do
+            if [[ "${CLASS_TO_REPO[$cname]}" == "$url" ]]; then
+                # Only add it if it's actually used in the current addon's code
+                if grep -qr "$cname" "$addon_path" --include="*.gd"; then
+                    USED_CLASSES+="\`$cname\`, "
+                fi
+            fi
+        done
+        # Clean trailing comma
+        USED_CLASSES=$(echo "$USED_CLASSES" | sed 's/, $//')
+        
+        DOC_LINK="${url}/blob/main/DOCUMENTATION.md"
+        echo "| Code | [$USED_CLASSES]($DOC_LINK) | [Repo]($url) |" >> "$TEMP_DOC"
+    done <<< "$AUTO_DEPS_URLS"
 
         # Add Manual Dependencies
         if [ -n "$MANUAL_DEPS" ]; then
