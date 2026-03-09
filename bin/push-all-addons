@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc Engine (v3.5 - Smart Partition Sync) ---
+# --- Chillcube Universal Doc & Registry Engine (v4.0) ---
+# Combined: Doc Gen + Smart Deps + Global Registry Sync
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
 MANUAL_MARKER="# --- Manual Dependencies (Do Not Delete) ---"
+ORG_REPO="https://github.com/ChillCube/.github.git"
+REGISTRY_FILE="ADDONS.md"
 
 declare -A CLASS_TO_REPO
 declare -A CLASS_TO_ADDON
@@ -12,6 +15,7 @@ ALL_CUSTOM_CLASSES=""
 echo "🔍 Indexing Project-Wide Class Map..."
 
 # --- 1. GLOBAL PRE-SCAN ---
+# Maps every class_name in the project to its parent addon and repo URL
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
@@ -33,6 +37,7 @@ done
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
+    echo "--------------------------------------------------"
     echo "🚀 Processing: $addon_folder"
 
     DOC_FILE="$addon_path/DOCUMENTATION.md"
@@ -43,19 +48,20 @@ for addon_path in addons/*; do
     declare -A CLASS_TO_DEP_LINK
     MANUAL_DEPS_CONTENT=""
 
-    # --- 3. EXTRACT MANUAL SECTION ---
+    # --- 3. EXTRACT METADATA & PERSISTENT DEPS ---
     if [ -f "$DEP_FILE" ]; then
-        # Capture everything AFTER the marker
+        # Capture everything AFTER the marker for manual persistence
         MANUAL_DEPS_CONTENT=$(awk -v m="$MANUAL_MARKER" 'found {print} $0 == m {found=1}' "$DEP_FILE")
     fi
 
-    # Documentation Header
     CFG_FILE="$addon_path/plugin.cfg"
     A_NAME=$(grep "name" "$CFG_FILE" 2>/dev/null | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     [ -z "$A_NAME" ] && A_NAME="$addon_folder"
     A_DESC=$(grep "description" "$CFG_FILE" 2>/dev/null | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     [ -z "$A_DESC" ] && A_DESC="Godot Addon"
     
+    CURRENT_REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//')
+
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
 
@@ -63,7 +69,7 @@ for addon_path in addons/*; do
     mapfile -t SCRIPTS < <(find "$addon_path" -name "*.gd")
 
     for script in "${SCRIPTS[@]}"; do
-        # --- DEEP SCAN ---
+        # --- DEEP SCAN (Dependencies) ---
         POTENTIAL=$(grep -oE '(extends|:|is|[A-Za-z0-9_]+\.new)\s+[A-Z][a-zA-Z0-9_]+' "$script" | awk '{print $NF}' | sort -u)
         
         for check_class in $POTENTIAL; do
@@ -94,9 +100,11 @@ for addon_path in addons/*; do
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
             
+            # Safe Property Parser
             PD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 { r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); line=p[1]; sub(/^[ \t]*/,"",line); split(line, parts, "var "); split(parts[2], name_part, " "); split(name_part[1], name_final, ":"); n=name_final[1]; t="Variant"; ci=index(line, ":"); if(ci > 0) { remainder=substr(line, ci+1); sub(/^[ \t]*/,"",remainder); split(remainder, type_part, " "); split(type_part[1], type_final, "="); t=type_final[1]; } b=line; f() } function f(){ dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } sub(/^[ \t]*/,"",dv); sub(/[ \t]*$/,"",dv); if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n",n,t,dv,d); r=0; b=""; n="" }' "$script")
             [ -n "$PD" ] && echo -e "### Properties\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$PD\n"
             
+            # Signals & Methods
             SD=$(awk 'index($0, "signal") > 0 && index($0, "##") > 0 { split($0,p,"##"); d=p[2]; code=p[1]; split(code,a,"signal "); split(a[2],b," "); n=b[1]; printf("| **%s** | %s |\n",n,d) }' "$script")
             [ -n "$SD" ] && echo -e "### Signals\n| Signal | Description |\n| :--- | :--- |\n$SD\n"
             MD=$(awk 'index($0, "func") > 0 && index($0, "##") > 0 { split($0,p,"##"); d=p[2]; code=p[1]; split(code,a,"func "); split(a[2],b, "("); n=b[1]; if(n=="" || index(n,"_")==1) next; ret="void"; if(index(code, "->") > 0) { split(code, c, "->"); split(c[2], dr, ":"); ret=dr[1]; gsub(/[ \t]+/,"",ret) } printf("| **%s()** | `%s` | %s |\n", n, ret, d) }' "$script")
@@ -111,24 +119,17 @@ for addon_path in addons/*; do
         echo "| Source | Reference | Repository |" >> "$TEMP_DOC"
         echo "| :--- | :--- | :--- |" >> "$TEMP_DOC"
         
-        # Start fresh with Auto section in DEPENDENCIES.txt
         echo "# --- Automated Dependencies (Managed by Script) ---" > "$DEP_FILE"
         printf "%s\n" "${!AUTO_DEP_REPOS[@]}" | sort -u >> "$DEP_FILE"
         echo -e "\n$MANUAL_MARKER" >> "$DEP_FILE"
-        
-        # Put Manual content back
-        if [ -n "$MANUAL_DEPS_CONTENT" ]; then
-            echo "$MANUAL_DEPS_CONTENT" >> "$DEP_FILE"
-        fi
+        [ -n "$MANUAL_DEPS_CONTENT" ] && echo "$MANUAL_DEPS_CONTENT" >> "$DEP_FILE"
 
-        # Add Auto Classes to Documentation Table
         IFS=$'\n' sorted_classes=($(sort <<<"${!CLASS_TO_DEP_LINK[*]}"))
         unset IFS
         for cls in "${sorted_classes[@]}"; do
             echo "| Code | [\`$cls\`](${CLASS_TO_DEP_LINK[$cls]}) | [Repo](${CLASS_TO_REPO[$cls]}) |" >> "$TEMP_DOC"
         done
 
-        # Add Manual URLs to Documentation Table
         if [ -n "$MANUAL_DEPS_CONTENT" ]; then
             while read -r line; do
                 [[ -z "$line" || "$line" =~ ^# ]] && continue
@@ -141,12 +142,35 @@ for addon_path in addons/*; do
     cat "$BODY_CONTENT" >> "$TEMP_DOC"
     rm "$BODY_CONTENT"
 
-    # --- 5. SYNC ---
+    # --- 5. GLOBAL REGISTRY SYNC (.github repo) ---
+    TEMP_REGISTRY_DIR=$(mktemp -d)
+    if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR" > /dev/null 2>&1; then
+        cd "$TEMP_REGISTRY_DIR"
+        if ! grep -q "$CURRENT_REPO_URL" "$REGISTRY_FILE"; then
+            echo "🆕 $A_NAME is not in the Global Registry."
+            echo "Current Categories:"
+            grep "^## " "$REGISTRY_FILE" | sed 's/## /  - /'
+            read -p "📁 Enter category for $A_NAME: " SELECTED_CAT
+            if ! grep -q "## $SELECTED_CAT" "$REGISTRY_FILE"; then
+                echo -e "\n## $SELECTED_CAT\n* [$A_NAME]($CURRENT_REPO_URL) - $A_DESC" >> "$REGISTRY_FILE"
+            else
+                sed -i "/## $SELECTED_CAT/a * [$A_NAME]($CURRENT_REPO_URL) - $A_DESC" "$REGISTRY_FILE"
+            fi
+            git add "$REGISTRY_FILE"
+            git commit -m "registry: add $A_NAME to $SELECTED_CAT"
+            git push origin main > /dev/null 2>&1
+            echo "✅ Global Registry Updated."
+        fi
+        cd "$PROJECT_ROOT"
+        rm -rf "$TEMP_REGISTRY_DIR"
+    fi
+
+    # --- 6. FINAL SYNC & PUSH ---
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
         git add .
-        git commit -m "docs: smart dependency partition sync"
+        git commit -m "docs: auto-update api and registry sync"
         super-git-push
         ((UPDATED_COUNT++))
     else
@@ -156,4 +180,4 @@ for addon_path in addons/*; do
 done
 
 echo "--------------------------------------------------"
-echo "✅ Finished! $UPDATED_COUNT addons were updated and pushed."
+echo "✅ Finished! $UPDATED_COUNT addons synced with repos and Global Registry."
