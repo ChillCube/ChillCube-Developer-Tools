@@ -81,22 +81,25 @@ for addon_path in addons/*; do
         CURRENT=$(echo "$SCAN_QUEUE" | head -n 1)
         SCAN_QUEUE=$(echo "$SCAN_QUEUE" | tail -n +2)
 
-        # Look for ANY word that exists in our Global Map
+        # This regex \b[A-Z][A-Za-z0-9_]+\b specifically targets PascalCase words 
+        # (which Godot classes use) to speed up the map lookup.
         while read -r word; do
             TARGET_ADDON="${CLASS_TO_ADDON[$word]}"
-            # If the word is a class we know, and it's NOT from the current addon
+            
+            # If it's a known class and NOT in the current addon we are documenting
             if [[ -n "$TARGET_ADDON" ]] && [[ "$TARGET_ADDON" != "$addon_folder" ]]; then
                 URL="${CLASS_TO_REPO[$word]}"
                 if [[ "$AUTO_DEPS_URLS" != *"$URL"* ]]; then
                     AUTO_DEPS_URLS+="$URL"$'\n'
-                    # Add the new addon to the queue to find its own dependencies (Recursion)
+                    
+                    # If this is a new addon, queue it to find its dependencies
                     if [[ "$PROCESSED_ADDONS" != *"$TARGET_ADDON"* ]]; then
                         SCAN_QUEUE+="$TARGET_ADDON"$'\n'
                         PROCESSED_ADDONS+="$TARGET_ADDON "
                     fi
                 fi
             fi
-        done < <(grep -rEo "\b[A-Za-z0-9_]+\b" "addons/$CURRENT" --include="*.gd" | grep -v "^#" | sort -u)
+        done < <(grep -rEo "\b[A-Z][A-Za-z0-9_]+\b" "addons/$CURRENT" --include="*.gd" | grep -v "^#" | sort -u)
     done
 
     # --- 5. README & DOCUMENTATION GENERATION ---
@@ -147,10 +150,14 @@ for addon_path in addons/*; do
     fi
 
     # --- CLASS SCANNING ---
+    # --- CLASS SCANNING ---
     BODY_CONTENT=$(mktemp)
     while IFS= read -r -d '' script; do
-        C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/ .*//'); [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
-        INHERITS=$(grep "^extends " "$script" | sed 's/extends //; s/[ \t]*$//')
+        # Improved Class and Inheritance Detection
+        C_NAME=$(grep -m 1 "^class_name " "$script" | awk '{print $2}' | sed 's/[ \t\r\n]*//g')
+        [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
+        
+        INHERITS=$(grep -m 1 "^extends " "$script" | awk '{print $2}' | sed 's/[ \t\r\n]*//g')
         
         INHERITS_LINK=""
         if [ -n "$INHERITS" ]; then
@@ -161,6 +168,7 @@ for addon_path in addons/*; do
                     INHERITS_LINK="[${INHERITS}](${CLASS_TO_REPO[$INHERITS]}/blob/main/DOCUMENTATION.md)"
                 fi
             else
+                # Default to Official Godot Docs
                 INHERITS_LINK="[${INHERITS}](https://docs.godotengine.org/en/stable/classes/class_${INHERITS,,}.html)"
             fi
         fi
@@ -168,76 +176,72 @@ for addon_path in addons/*; do
         {
             echo -e "## Class: $C_NAME"
             [ -n "$INHERITS_LINK" ] && echo -e "**Inherits:** $INHERITS_LINK\n" || echo ""
+            
+            # Extract Class-level Description (lines starting with ## at top of file)
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
 
-            # EXPORTS
-            EXPD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 && index($0, "@export") > 0 { 
-                r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
-                line=p[1]; sub(/^[ \t]*/,"",line); 
-                split(line, parts, "var "); split(parts[2], name_part, " "); 
-                split(name_part[1], name_final, ":"); n=name_final[1]; 
-                t="Variant"; ci=index(line, ":"); 
-                if(ci > 0) { remainder=substr(line, ci+1); sub(/^[ \t]*/,"",remainder); split(remainder, type_part, " "); split(type_part[1], type_final, "="); t=type_final[1]; } 
-                b=line; f() 
-            } 
-            function f(){ 
-                dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } 
-                sub(/^[ \t]*/,"",dv); 
-                # This line removes all colons and semicolons from the default value string
-                gsub(/[:;]/, "", dv); 
-                sub(/[ \t]*$/, "", dv); 
-                if(n!="") printf("| **%s** | \140%s\140 | \140%s\140 | %s |\n", n, t, dv, d); 
-                r=0; b=""; n="" 
-            }' "$script")
-            [ -n "$EXPD" ] && echo -e "### ⚙️ Inspector Variables (Exported)\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$EXPD\n"
-
-            # STANDARD VARS
-            STPD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 && index($0, "@export") == 0 { 
-                r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
-                line=p[1]; sub(/^[ \t]*/,"",line); 
-                split(line, parts, "var "); split(parts[2], name_part, " "); 
-                split(name_part[1], name_final, ":"); n=name_final[1]; 
-                t="Variant"; ci=index(line, ":"); 
-                if(ci > 0) { remainder=substr(line, ci+1); sub(/^[ \t]*/,"",remainder); split(remainder, type_part, " "); split(type_part[1], type_final, "="); t=type_final[1]; } 
-                b=line; f() 
-            } 
-            function f(){ 
-                dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } 
-                sub(/^[ \t]*/,"",dv); 
-                # This line removes all colons and semicolons from the default value string
-                gsub(/[:;]/, "", dv); 
-                sub(/[ \t]*$/, "", dv); 
-                if(n!="") printf("| **%s** | \140%s\140 | \140%s\140 | %s |\n", n, t, dv, d); 
-                r=0; b=""; n="" 
-            }' "$script")
-            [ -n "$STPD" ] && echo -e "### 💾 Class Variables (Standard)\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$STPD\n"
-
-            # SIGNALS
-            SD=$(awk 'index($0, "signal") > 0 && index($0, "##") > 0 { 
-                split($0,p,"##"); d=p[2]; code=p[1]; 
-                sub(/^[ \t]*signal /, "", code); sub(/[ \t]*$/, "", code);
-                name=code; args="-";
-                if(index(code, "(") > 0) {
-                    split(code, arr, "("); name=arr[1]; raw_args=arr[2]; sub(/\).*/, "", raw_args);
-                    gsub(/,[ \t]*/, "\140<br>\140", raw_args); args="\140" raw_args "\140"
+            # --- EXPORTS (Supports Pre-line and Inline Comments) ---
+            EXPD=$(awk '
+                function f(){ 
+                    dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } 
+                    if(b ~ /##/) { split(b, cs, "##"); d=cs[2]; }
+                    sub(/^[ \t]*/,"",dv); gsub(/[:;]/, "", dv); sub(/[ \t]*$/, "", dv);
+                    sub(/^[ \t]*/,"",d); sub(/[ \t]*$/, "", d);
+                    if(n!="") printf("| **%s** | \140%s\140 | \140%s\140 | %s |\n", n, t, dv, d); 
+                    n=""; d="-"; b="";
                 }
-                printf("| **%s** | %s | %s |\n", name, args, d) 
-            }' "$script")
+                /^[ \t]*## / { sub(/^[ \t]*## /, ""); d=$0; next; }
+                /@export/ { 
+                    b=$0;
+                    if($0 ~ /: /) { 
+                        split($0, a, ":"); split(a[1], b_parts, " "); n=b_parts[length(b_parts)]; 
+                        split(a[2], c, " "); t=c[1]; 
+                    } else { 
+                        split($0, a, " "); for(i=1; i<=NF; i++) { if($i == "var") { n=$(i+1); break; } }
+                        t="any"; 
+                    }
+                    f();
+                }
+            ' "$script")
+            [ -n "$EXPD" ] && echo -e "### ⚙️ Inspector Variables\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$EXPD\n"
+
+            # --- SIGNALS (Supports Pre-line and Inline Comments) ---
+            SD=$(awk '
+                function f(){ 
+                    if(b ~ /##/) { split(b, cs, "##"); d=cs[2]; }
+                    sub(/^[ \t]*/,"",d); sub(/[ \t]*$/, "", d);
+                    if(n!="") printf("| **%s** | %s | %s |\n", n, args, d); 
+                    n=""; d="-"; b="";
+                }
+                /^[ \t]*## / { sub(/^[ \t]*## /, ""); d=$0; next; }
+                /^[ \t]*signal / { 
+                    b=$0; split($0, a, "signal "); split(a[2], b_parts, " ");
+                    n=b_parts[1]; args="-";
+                    if(n ~ /\(/) { split(n, c, "("); n=c[1]; args=c[2]; sub(/\).*/, "", args); gsub(/,/, "<br>", args); }
+                    f();
+                }
+            ' "$script")
             [ -n "$SD" ] && echo -e "### 🔔 Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |\n$SD\n"
 
-            # METHODS
-            MD=$(awk 'index($0, "func") > 0 && index($0, "##") > 0 { 
-                split($0,p,"##"); d=p[2]; code=p[1]; 
-                sub(/^[ \t]*func /, "", code); sub(/[ \t]*$/, "", code);
-                split(code, parts, "("); name=parts[1];
-                if(index(name, "_") == 1) next;
-                raw_args=parts[2]; sub(/\).*/, "", raw_args); 
-                if(raw_args=="") args="-"; else { gsub(/,[ \t]*/, "\140<br>\140", raw_args); args="\140" raw_args "\140" }
-                ret="void"; 
-                if(index(code, "->") > 0) { split(code, c, "->"); ret=c[2]; sub(/[ \t]*[:;][ \t]*$/, "", ret); gsub(/[ \t]+/, "", ret); }
-                printf("| **%s()** | %s | \140%s\140 | %s |\n", name, args, ret, d) 
-            }' "$script")
+            # --- METHODS (Supports Pre-line and Inline Comments) ---
+            MD=$(awk '
+                function f(){ 
+                    if(b ~ /##/) { split(b, cs, "##"); d=cs[2]; }
+                    sub(/^[ \t]*/,"",d); sub(/[ \t]*$/, "", d);
+                    if(n!="" && substr(n,1,1) != "_") printf("| **%s()** | %s | \140%s\140 | %s |\n", n, args, ret, d); 
+                    n=""; d="-"; b="";
+                }
+                /^[ \t]*## / { sub(/^[ \t]*## /, ""); d=$0; next; }
+                /^[ \t]*func / { 
+                    b=$0; split($0, a, "func "); split(a[2], b_parts, "("); n=b_parts[1];
+                    args="-"; ret="void";
+                    split(a[2], c, "("); split(c[2], d_parts, ")"); args=d_parts[1]; gsub(/,/, "<br>", args);
+                    if($0 ~ /->/) { split($0, r, "->"); split(r[2], r2, ":"); ret=r2[1]; gsub(/[ \t]/, "", ret); }
+                    if(args == "") args="-";
+                    f();
+                }
+            ' "$script")
             [ -n "$MD" ] && echo -e "### 🛠️ Methods\n| Method | Arguments | Returns | Description |\n| :--- | :--- | :--- | :--- |\n$MD\n"
             echo -e "---\n"
         } >> "$BODY_CONTENT"
