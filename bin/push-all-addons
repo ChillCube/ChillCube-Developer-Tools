@@ -99,23 +99,28 @@ for addon_path in addons/*; do
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
 
-    # --- THE DEPENDENCY TABLE (CORRECTED) ---
-    if [ -n "$AUTO_DEPS_URLS" ] || [ -n "$(echo "$MANUAL_DEPS" | grep -v "$MANUAL_MARKER")" ]; then
+    # --- 5. DOCUMENTATION GENERATION ---
+    CLEAN_AUTO=$(echo "$AUTO_DEPS_URLS" | tr -d '[:space:]')
+    CLEAN_MANUAL=$(echo "$MANUAL_DEPS" | grep -v "$MANUAL_MARKER" | tr -d '[:space:]')
+
+    if [ -n "$CLEAN_AUTO" ] || [ -n "$CLEAN_MANUAL" ]; then
         echo -e "### 📦 Dependencies\n" >> "$TEMP_DOC"
         echo -e "| Source | Reference | Repository |" >> "$TEMP_DOC"
         echo -e "| :--- | :--- | :--- |" >> "$TEMP_DOC"
 
         # Automated Loop
-        while read -r url; do
-            [ -z "$url" ] && continue
-            DEP_FOLDER=$(basename "$url" | sed 's/\.git$//')
-            REF_NAME=$(echo "$DEP_FOLDER" | sed 's/Godot_//g')
-            DOC_LINK="${url}/blob/main/DOCUMENTATION.md"
-            echo "| Code | [\`$REF_NAME\`]($DOC_LINK) | [Repo]($url) |" >> "$TEMP_DOC"
-        done <<< "$AUTO_DEPS_URLS"
+        if [ -n "$CLEAN_AUTO" ]; then
+            while read -r url; do
+                [ -z "$url" ] && continue
+                DEP_FOLDER=$(basename "$url" | sed 's/\.git$//')
+                REF_NAME=$(echo "$DEP_FOLDER" | sed 's/Godot_//g')
+                DOC_LINK="${url}/blob/main/DOCUMENTATION.md"
+                echo "| Code | [\`$REF_NAME\`]($DOC_LINK) | [Repo]($url) |" >> "$TEMP_DOC"
+            done <<< "$AUTO_DEPS_URLS"
+        fi
 
         # Manual Loop
-        if [ -n "$MANUAL_DEPS" ]; then
+        if [ -n "$CLEAN_MANUAL" ]; then
             while read -r m_url; do
                 [[ "$m_url" =~ ^http ]] || continue
                 M_DEP_NAME=$(basename "$m_url" | sed 's/\.git$//')
