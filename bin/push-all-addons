@@ -61,9 +61,10 @@ for addon_path in addons/*; do
 
         CLASS_DESC=$(awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script")
         
-        # 3a. Properties Table (Deep Parser)
+        # 3a. Properties Table (Deep Parser for Setters and Multi-line Dicts)
         PROP_DATA=$(awk '
             /var/ && /##/ {
+                line_num = NR
                 full_line = $0
                 split(full_line, parts, "##")
                 desc = parts[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc)
@@ -76,7 +77,7 @@ for addon_path in addons/*; do
                 name = ""; split(code, n_parts, "var "); split(n_parts[2], b, /[ :={]/); name = b[1]
                 if (name == "") next
 
-                # 2. Extract Type (Improved Setter Awareness)
+                # 2. Extract Type (Setter-Safe)
                 type = "Variant"
                 if (code ~ /:[ \t]*[A-zA-Z0-9_\[\]]+/) {
                     match(code, /:[ \t]*[A-zA-Z0-9_\[\]]+/)
@@ -89,33 +90,42 @@ for addon_path in addons/*; do
                     else if (parts[1] ~ /[0-9]+/) type = "int"
                 }
 
-                # 3. Extract Default Value (Setter and Multi-line Aware)
+                # 3. Extract Default Value (Multi-line aware)
                 def = "-"
                 raw_code = parts[1]
                 
-                if (raw_code ~ /=/) {
-                    split(raw_code, d_parts, "=")
-                    def = d_parts[2]
-                    # Handle the Godot 4 setter colon "var x : int = 100:"
-                    if (def ~ /:$/ || def ~ /:[ \t]*$/) {
+                if (raw_code ~ /=/ || raw_code ~ /:=/) {
+                    delim = (raw_code ~ /:=/) ? ":=" : "="
+                    split(raw_code, d_parts, delim)
+                    def_start = d_parts[2]
+                    gsub(/^[ \t]+|[ \t]+$/, "", def_start)
+
+                    # If it is a multi-line Dictionary or Array
+                    if (def_start ~ /^\{/ || def_start ~ /^\[/) {
+                        bracket_type = (def_start ~ /^\{/) ? "}" : "]"
+                        current_def = def_start
+                        # Keep reading lines until we find the closing bracket
+                        while (current_def !~ bracket_type && (getline next_line < FILENAME) > 0) {
+                            gsub(/^[ \t]+|[ \t]+$/, " ", next_line)
+                            current_def = current_def next_line
+                        }
+                        def = current_def
+                    } else {
+                        def = def_start
+                        # Strip Godot 4 setter colon
                         sub(/:[ \t]*$/, "", def)
                     }
-                } else if (raw_code ~ /:=/) {
-                    split(raw_code, d_parts, ":=")
-                    def = d_parts[2]
                 }
-
-                # If it looks like a dictionary/array start, we clean it up
-                if (def ~ /\{/) { def = "Dictionary" }
-                else if (def ~ /\[/) { def = "Array" }
                 
-                gsub(/^[ \t;]+|[ \t;]+$/, "", def)
+                # Cleanup: remove semicolons and collapse extra spaces for the table cell
+                gsub(/;/, "", def)
+                gsub(/[ \t]+/, " ", def)
+                gsub(/^[ \t]+|[ \t]+$/, "", def)
                 
                 printf("| **%s** | `%s` | `%s` | %s |\n", name, type, def, desc)
             }
         ' "$script")
 
-        # (Methods and Signals sections remain the same as previous stable version)
         METHOD_DATA=$(awk '/func .*##/ {
             line = $0; split(line, p, "##"); desc = p[2]; gsub(/^[ \t]+|[ \t]+$/, "", desc); code = p[1];
             split(code, a, "func "); split(a[2], b, "("); name = b[1];
@@ -162,4 +172,4 @@ for addon_path in addons/*; do
     fi
     cd "$PROJECT_ROOT"
 done
-echo "✅ Finished."
+echo "✅ Done."
