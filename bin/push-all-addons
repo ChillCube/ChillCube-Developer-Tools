@@ -29,7 +29,10 @@ for d in addons/*/; do
         c_name=$(echo "$c_line" | awk '{print $2}')
         CLASS_TO_REPO[$c_name]="$repo_url"
         CLASS_TO_ADDON[$c_name]="$folder_name"
-    done < <(grep -r "class_name " "$d" --include="*.gd")
+    # This scans for both general Class usage AND 'extends' keywords
+    done < <(grep -rE "(\b[A-Z][A-Za-z0-9_]+\b|^extends\s+[A-Za-z0-9_]+)" "addons/$CURRENT" --include="*.gd" | \
+         sed -E 's/.*extends\s+//; s/[^a-zA-Z0-9_ ]//g' | \
+         tr ' ' '\n' | grep -v "^#" | sort -u)
 done
 
 # --- 2. GENERATION LOOP ---
