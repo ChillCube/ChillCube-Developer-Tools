@@ -128,7 +128,7 @@ for addon_path in addons/*; do
 
     if [ -n "$CLEAN_AUTO" ] || [ -n "$CLEAN_MANUAL" ]; then
         echo -e "### 📦 Dependencies\n" >> "$TEMP_DOC"
-        echo -e "| Source | Reference | Repository |" >> "$TEMP_DOC"
+        echo -e "| Source | Documentation | Repository |" >> "$TEMP_DOC"
         echo -e "| :--- | :--- | :--- |" >> "$TEMP_DOC"
 
         if [ -n "$CLEAN_AUTO" ]; then
