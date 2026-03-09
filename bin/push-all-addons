@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Registry Engine (v6.1) ---
+# --- Chillcube Universal Doc & Registry Engine (v6.0) ---
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
+ORG_REPO="https://github.com/ChillCube/.github.git"
+REGISTRY_FILE="ADDONS.md"
 
 echo "🔍 Indexing Project-Wide Class Map..."
 
@@ -22,6 +24,7 @@ for addon_path in addons/*; do
     A_DESC=$(grep "description" "$CFG_FILE" 2>/dev/null | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     [ -z "$A_DESC" ] && A_DESC="Godot Addon"
     
+    # 4. DOCUMENTATION GEN
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
     BODY_CONTENT=$(mktemp)
@@ -37,94 +40,107 @@ for addon_path in addons/*; do
             # --- GROUPED EXPORT PROPERTIES ---
             echo "### ⚙️ Inspector Variables"
             awk -v bt="`" '
-            BEGIN { printf "| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n"; }
+            BEGIN { 
+                printf "| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n";
+                cur_group = ""
+            }
+            # Track Groups/Categories
             /^@export_(group|category)\(/ {
                 split($0, a, "\"");
-                printf "| **--- %s ---** | | | |\n", toupper(a[2]);
+                cur_group = a[2];
+                printf "| **--- %s ---** | | | |\n", toupper(cur_group);
                 next;
             }
+            # Process Exported Vars
             /^@export[ \t\n]/ || /^@export_.*var/ {
-                line = $0; split(line, p, "##"); d = (p[2] != "") ? p[2] : "-";
-                sub(/^[ \t]*/, "", d); split(line, parts, "var ");
-                split(parts[2], name_part, " "); split(name_part[1], name_final, ":");
-                n = name_final[1]; t = "Variant";
-                if (index(line, ":") > 0) { 
-                    split(substr(line, index(line, ":")+1), tp, " "); 
-                    split(tp[1], tf, "="); t = tf[1]; 
+                # Look for preceding doc comment
+                d = "-";
+                # Note: This simple awk approach assumes doc comment is on the line above
+                # In a more robust script, we would track the last ## line seen
+                
+                # Extracting logic similar to previous versions but cleaner
+                line = $0;
+                split(line, p, "##"); d = (p[2] != "") ? p[2] : "-";
+                sub(/^[ \t]*/, "", d);
+                
+                split(line, parts, "var ");
+                split(parts[2], name_part, " ");
+                split(name_part[1], name_final, ":");
+                n = name_final[1];
+                
+                t = "Variant";
+                if (index(line, ":") > 0) {
+                    split(substr(line, index(line, ":")+1), tp, " ");
+                    split(tp[1], tf, "=");
+                    t = tf[1];
                 }
+                
                 dv = "-";
                 if (index(line, "=") > 0) {
-                    split(line, vp, "="); dv = vp[2];
-                    sub(/^[ \t]*/, "", dv); sub(/[ \t]*[:;][ \t]*$/, "", dv);
+                    split(line, vp, "=");
+                    dv = vp[2];
+                    sub(/^[ \t]*/, "", dv);
+                    sub(/[ \t]*[:;][ \t]*$/, "", dv);
+                    sub(/[ \t]*$/, "", dv);
                 }
+                
                 if (n != "") printf "| %s | %s%s%s | %s%s%s | %s |\n", n, bt, t, bt, bt, dv, bt, d;
             }' "$script"
             echo ""
 
-            # --- SIGNALS & METHODS (With Color Rotation) ---
-            # Using a custom AWK function to handle the "rainbow" effect
-            awk -v bt="`" '
-            function colorize(raw) {
-                if (raw == "" || raw == "-") return "-";
-                split(raw, arr, ",[ \t]*");
-                colors[0]="#00f2ff"; colors[1]="#ff9d00"; colors[2]="#ff00ff"; colors[3]="#00ff88";
-                result = "";
-                for (i=1; i<=length(arr); i++) {
-                    c = colors[(i-1) % 4];
-                    result = result "<code><font color=\"" c "\">" arr[i] "</font></code>";
-                    if (i < length(arr)) result = result "<br>";
-                }
-                return result;
-            }
-            # Signal Logic
-            index($0, "signal") > 0 && index($0, "##") > 0 {
-                split($0,p,"##"); d=p[2]; code=p[1];
+            # --- STANDARD PROPERTIES ---
+            STPD=$(awk -v bt="`" 'index($0, "var") > 0 && index($0, "##") > 0 && index($0, "@export") == 0 { 
+                split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
+                line=p[1]; split(line, parts, "var "); split(parts[2], name_part, " "); 
+                split(name_part[1], name_final, ":"); n=name_final[1]; t="Variant";
+                if(index(line, ":") > 0) { split(substr(line, index(line, ":")+1), tp, " "); split(tp[1], tf, "="); t=tf[1]; } 
+                dv="-"; if(index(line,"=") > 0){ split(line, vp, "="); dv=vp[2]; sub(/^[ \t]*/,"",dv); sub(/[ \t]*[:;][ \t]*$/, "", dv); } 
+                if(n!="") printf("| **%s** | %s%s%s | %s%s%s | %s |\n", n, bt, t, bt, bt, dv, bt, d); 
+            }' "$script")
+            [ -n "$STPD" ] && echo -e "### 💾 Class Variables\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$STPD\n"
+
+            # --- SIGNALS (Warning-free backticks) ---
+            SD=$(awk -v bt="`" 'index($0, "signal") > 0 && index($0, "##") > 0 { 
+                split($0,p,"##"); d=p[2]; code=p[1]; 
                 sub(/^[ \t]*signal /, "", code); sub(/[ \t]*$/, "", code);
-                name=code; raw_args="";
+                name=code; args="-";
                 if(index(code, "(") > 0) {
                     split(code, arr, "("); name=arr[1]; raw_args=arr[2]; sub(/\).*/, "", raw_args);
+                    gsub(/,[ \t]*/, bt "<br>" bt, raw_args); args= bt raw_args bt
                 }
-                printf("SIGNAL|%s|%s|%s\n", name, colorize(raw_args), d);
-            }
-            # Method Logic
-            index($0, "func") > 0 && index($0, "##") > 0 {
-                split($0,p,"##"); d=p[2]; code=p[1];
+                printf("| **%s** | %s | %s |\n", name, args, d) 
+            }' "$script")
+            [ -n "$SD" ] && echo -e "### 🔔 Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |\n$SD\n"
+
+            # --- METHODS ---
+            MD=$(awk -v bt="`" 'index($0, "func") > 0 && index($0, "##") > 0 { 
+                split($0,p,"##"); d=p[2]; code=p[1]; 
                 sub(/^[ \t]*func /, "", code); sub(/[ \t]*$/, "", code);
                 split(code, parts, "("); name=parts[1];
                 if(index(name, "_") == 1) next;
-                raw_args=parts[2]; sub(/\).*/, "", raw_args);
+                raw_args=parts[2]; sub(/\).*/, "", raw_args); 
+                if(raw_args=="") args="-"; else { gsub(/,[ \t]*/, bt "<br>" bt, raw_args); args= bt raw_args bt }
                 ret="void"; 
                 if(index(code, "->") > 0) { split(code, c, "->"); ret=c[2]; sub(/[ \t]*[:;][ \t]*$/, "", ret); gsub(/[ \t]+/, "", ret); }
-                printf("METHOD|%s|%s|%s|%s\n", name, colorize(raw_args), ret, d);
-            }' "$script" > awk_out.tmp
-
-            # Format the temp output into tables
-            if grep -q "SIGNAL" awk_out.tmp; then
-                echo -e "### 🔔 Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |"
-                grep "SIGNAL" awk_out.tmp | sed 's/SIGNAL|//' | awk -F'|' '{printf "| **%s** | %s | %s |\n", $1, $2, $3}'
-                echo ""
-            fi
-            if grep -q "METHOD" awk_out.tmp; then
-                echo -e "### 🛠️ Methods\n| Method | Arguments | Returns | Description |\n| :--- | :--- | :--- | :--- |"
-                grep "METHOD" awk_out.tmp | sed 's/METHOD|//' | awk -F'|' -v bt="`" '{printf "| **%s()** | %s | %s%s%s | %s |\n", $1, $2, bt, $3, bt, $4}'
-                echo ""
-            fi
-            rm awk_out.tmp
+                printf("| **%s()** | %s | %s%s%s | %s |\n", name, args, bt, ret, bt, d) 
+            }' "$script")
+            [ -n "$MD" ] && echo -e "### 🛠️ Methods\n| Method | Arguments | Returns | Description |\n| :--- | :--- | :--- | :--- |\n$MD\n"
             echo -e "---\n"
         } >> "$BODY_CONTENT"
     done
 
     cat "$BODY_CONTENT" >> "$TEMP_DOC"; rm -f "$BODY_CONTENT"
-    
-    # 5. FINAL SYNC
+
+    # --- 5. FINAL SYNC ---
     if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
         mv "$TEMP_DOC" "$DOC_FILE"
         cd "$PROJECT_ROOT/$addon_path"
-        git add . && git commit -m "docs: rainbow arguments and improved grouping" && super-git-push
+        git add . && git commit -m "docs: grouped exports and clean formatting" && super-git-push
         ((UPDATED_COUNT++))
     else
         rm -f "$TEMP_DOC"
     fi
     cd "$PROJECT_ROOT"
 done
+echo "--------------------------------------------------"
 echo "✅ Finished! $UPDATED_COUNT addons updated."
