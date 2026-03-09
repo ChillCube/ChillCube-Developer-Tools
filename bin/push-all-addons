@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Registry Engine (v5.9.5) ---
+# --- Chillcube Universal Doc & Registry Engine (v5.9.7) ---
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
 ORG_REPO="https://github.com/ChillCube/.github.git"
@@ -51,7 +51,7 @@ for addon_path in addons/*; do
     
     CURRENT_REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//')
 
-    # --- 3. REGISTRY SYNC ---
+    # --- 3. REGISTRY SYNC (Interactive Categorization) ---
     TEMP_REGISTRY_DIR=$(mktemp -d)
     if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR" > /dev/null 2>&1; then
         cd "$TEMP_REGISTRY_DIR"
@@ -72,23 +72,19 @@ for addon_path in addons/*; do
         cd "$PROJECT_ROOT" && rm -rf "$TEMP_REGISTRY_DIR"
     fi
 
-    # --- 4. README TEMPLATE INJECTION (Synced with Initializer) ---
-    echo "📥 Injecting README template..."
+    # --- 4. README TEMPLATE INJECTION ---
     curl -sSL "$TEMPLATE_URL" -o "$TEMP_README"
-    
-    # Use | as a delimiter to handle descriptions with special characters
     sed -i "s|{{NAME}}|$A_NAME|g" "$TEMP_README"
     sed -i "s|{{DESC}}|$A_DESC|g" "$TEMP_README"
     sed -i "s|{{AUTHOR}}|$A_AUTHOR|g" "$TEMP_README"
     sed -i "s|{{YEAR}}|$YEAR|g" "$TEMP_README"
-    
-    # Auto-fix the Clone URL inside the generated README to be space-safe
-    # This targets the code block specifically to use the actual Git URL
+    # Fix the terminal command to use the actual URL (no spaces)
     sed -i "s|clone-gd-addon.*|clone-gd-addon $CURRENT_REPO_URL.git|g" "$TEMP_README"
 
-    # --- 5. DOCUMENTATION GEN ---
+    # --- 5. DOCUMENTATION GEN (Full Engine) ---
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
+    
     BODY_CONTENT=$(mktemp)
     mapfile -t SCRIPTS < <(find "$addon_path" -name "*.gd")
 
@@ -99,7 +95,7 @@ for addon_path in addons/*; do
             awk '/^##/ { print substr($0, 4); next } /^[^#]/ { exit }' "$script"
             echo ""
             
-            # Exported Properties
+            # --- EXPORTED PROPERTIES ---
             EXPD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 && index($0, "@export") > 0 { 
                 r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
                 line=p[1]; sub(/^[ \t]*/,"",line); 
@@ -112,12 +108,12 @@ for addon_path in addons/*; do
             function f(){ 
                 dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } 
                 sub(/^[ \t]*/,"",dv); sub(/[ \t]*[:;][ \t]*$/, "", dv); sub(/[ \t]*$/, "", dv); 
-                if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n", n, t, dv, d); 
+                if(n!="") printf("| **%s** | \140%s\140 | \140%s\140 | %s |\n", n, t, dv, d); 
                 r=0; b=""; n="" 
             }' "$script")
             [ -n "$EXPD" ] && echo -e "### ⚙️ Inspector Variables (Exported)\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$EXPD\n"
 
-            # Standard Properties
+            # --- STANDARD PROPERTIES ---
             STPD=$(awk 'BEGIN{r=0;b="";d="";n="";t=""} index($0, "var") > 0 && index($0, "##") > 0 && index($0, "@export") == 0 { 
                 r=1; split($0,p,"##"); d=p[2]; sub(/^[ \t]*/,"",d); 
                 line=p[1]; sub(/^[ \t]*/,"",line); 
@@ -130,12 +126,12 @@ for addon_path in addons/*; do
             function f(){ 
                 dv="-"; if(index(b,"=") > 0){ split(b, val_parts, "="); dv=val_parts[2]; } 
                 sub(/^[ \t]*/,"",dv); sub(/[ \t]*[:;][ \t]*$/, "", dv); sub(/[ \t]*$/, "", dv); 
-                if(n!="") printf("| **%s** | `%s` | `%s` | %s |\n", n, t, dv, d); 
+                if(n!="") printf("| **%s** | \140%s\140 | \140%s\140 | %s |\n", n, t, dv, d); 
                 r=0; b=""; n="" 
             }' "$script")
             [ -n "$STPD" ] && echo -e "### 💾 Class Variables (Standard)\n| Property | Type | Default | Description |\n| :--- | :--- | :--- | :--- |\n$STPD\n"
 
-            # Signals (Using \140 to avoid awk warnings)
+            # --- SIGNALS ---
             SD=$(awk 'index($0, "signal") > 0 && index($0, "##") > 0 { 
                 split($0,p,"##"); d=p[2]; code=p[1]; 
                 sub(/^[ \t]*signal /, "", code); sub(/[ \t]*$/, "", code);
@@ -148,7 +144,7 @@ for addon_path in addons/*; do
             }' "$script")
             [ -n "$SD" ] && echo -e "### 🔔 Signals\n| Signal | Arguments | Description |\n| :--- | :--- | :--- |\n$SD\n"
 
-            # Methods (Using \140 to avoid awk warnings)
+            # --- METHODS ---
             MD=$(awk 'index($0, "func") > 0 && index($0, "##") > 0 { 
                 split($0,p,"##"); d=p[2]; code=p[1]; 
                 sub(/^[ \t]*func /, "", code); sub(/[ \t]*$/, "", code);
@@ -164,20 +160,21 @@ for addon_path in addons/*; do
             echo -e "---\n"
         } >> "$BODY_CONTENT"
     done
-
     cat "$BODY_CONTENT" >> "$TEMP_DOC"; rm -f "$BODY_CONTENT"
 
-    # --- 6. FINAL SYNC ---
-    mv "$TEMP_README" "$README_FILE"
-    if [ ! -f "$DOC_FILE" ] || ! diff <(sed '2d' "$TEMP_DOC") <(sed '2d' "$DOC_FILE") > /dev/null; then
-        mv "$TEMP_DOC" "$DOC_FILE"
-        cd "$PROJECT_ROOT/$addon_path"
-        git add . && git commit -m "docs: template-synced sync" && super-git-push
+    # --- 6. FINAL SYNC & SUPER-PUSH ---
+    cp "$TEMP_README" "$README_FILE"
+    cp "$TEMP_DOC" "$DOC_FILE"
+
+    cd "$PROJECT_ROOT/$addon_path"
+    if [[ -n $(git status -s) ]]; then
+        git add README.md DOCUMENTATION.md
+        git commit -m "docs: auto-sync (template + api)"
+        super-git-push
         ((UPDATED_COUNT++))
-    else
-        rm -f "$TEMP_DOC"
     fi
     cd "$PROJECT_ROOT"
+    
+    rm -f "$TEMP_README" "$TEMP_DOC"
 done
-echo "--------------------------------------------------"
-echo "✅ Finished! $UPDATED_COUNT addons updated."
+echo "✅ Finished! $UPDATED_COUNT repositories synced via super-git-push."
