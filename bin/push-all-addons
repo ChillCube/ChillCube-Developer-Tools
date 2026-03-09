@@ -7,17 +7,20 @@ ORG_REPO="https://github.com/ChillCube/.github.git"
 REGISTRY_FILE="ADDONS.md"
 TEMPLATE_URL="https://raw.githubusercontent.com/ChillCube/ChillCube-Developer-Tools/main/templates/README_GODOT_ADDON_TEMPLATE.md"
 
+# --- INDEXING BRAIN ---
 declare -A CLASS_TO_REPO
 declare -A CLASS_TO_ADDON
 
-echo "🔍 Indexing Project-Wide Class Map..."
+echo "🔍 Indexing Project-Wide Class Map for Dependency Tracking..."
 
-# --- 1. GLOBAL PRE-SCAN ---
 for addon_path in addons/*; do
     [ -d "$addon_path/.git" ] || continue
     addon_folder=$(basename "$addon_path")
+    
+    # Get clean GitHub URL for this addon
     REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//' | sed 's/git@github\.com:/https:\/\/github\.com\//' | sed 's/ssh:\/\/git@github\.com\//https:\/\/github\.com\//')
     
+    # Map every class_name found in this addon to its repo
     while read -r cname; do
         if [ -n "$cname" ]; then
             CLASS_TO_REPO["$cname"]="$REPO_URL"
@@ -50,6 +53,35 @@ for addon_path in addons/*; do
     YEAR=$(date +%Y)
     
     CURRENT_REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//')
+
+    # --- DEPENDENCY DETECTION ---
+    FOUND_DEPS=""
+    DEP_FILE="$addon_path/DEPENDENCIES.txt"
+
+    # Scan all scripts in THIS addon to see if they use classes from OTHER addons
+    while read -r line; do
+        for cname in "${!CLASS_TO_REPO[@]}"; do
+            # If the class is mentioned but belongs to a different folder/addon
+            if [[ "$line" == *"$cname"* ]] && [[ "${CLASS_TO_ADDON[$cname]}" != "$addon_folder" ]]; then
+                DEP_LINE="* [$cname](${CLASS_TO_REPO[$cname]}) (via ${CLASS_TO_ADDON[$cname]})"
+                # Avoid duplicate lines
+                if [[ "$FOUND_DEPS" != *"$DEP_LINE"* ]]; then
+                    FOUND_DEPS+="$DEP_LINE"$'\n'
+                fi
+            fi
+        done
+    done < <(grep -r "" "$addon_path" --include="*.gd")
+
+    # Write to DEPENDENCIES.txt
+    if [ -n "$FOUND_DEPS" ]; then
+        echo -e "The following ChillCube addons are required:\n\n$FOUND_DEPS" > "$DEP_FILE"
+        # Optional: Inject into README if your template has a placeholder or specific header
+        if [ -f "$TEMP_README" ]; then
+             sed -i "/## 📥 Installation/i ## 🔗 Dependencies\n\n$FOUND_DEPS\n" "$TEMP_README"
+        fi
+    else
+        echo "No external ChillCube dependencies found." > "$DEP_FILE"
+    fi
 
     # --- 3. REGISTRY SYNC (Interactive Categorization) ---
     TEMP_REGISTRY_DIR=$(mktemp -d)
