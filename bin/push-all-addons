@@ -36,6 +36,7 @@ for d in addons/*/; do
             CLASS_TO_ADDON["$c_name"]="$folder_name"
         fi
     done < <(grep -r "class_name " "$d" --include="*.gd")
+done
 
 # --- 2. GENERATION LOOP ---
 for addon_path in addons/*; do
