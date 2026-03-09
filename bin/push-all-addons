@@ -100,7 +100,34 @@ for addon_path in addons/*; do
 
     echo "# $A_NAME API Reference" > "$TEMP_DOC"
     echo -e "Generated: $(date +'%Y-%m-%d')\n\n$A_DESC\n" >> "$TEMP_DOC"
-    
+
+    # --- DOCUMENTATION DEPENDENCY TABLE ---
+    if [ -n "$AUTO_DEPS_URLS" ] || [ -n "$MANUAL_DEPS" ]; then
+        echo -e "## 📦 Dependencies\n" >> "$TEMP_DOC"
+        echo -e "| Source | Reference | Repository |" >> "$TEMP_DOC"
+        echo -e "| :--- | :--- | :--- |" >> "$TEMP_DOC"
+
+        # Add Automated Dependencies
+        while read -r url; do
+            [ -z "$url" ] && continue
+            # Extract name from URL (e.g., Godot_SmoothMovement)
+            DEP_NAME=$(basename "$url" | sed 's/\.git$//')
+            # Clean name for the reference link (SmoothMovement)
+            REF_NAME=$(echo "$DEP_NAME" | sed 's/Godot_//g')
+            echo "| Code | \140$REF_NAME\140 | [Repo]($url) |" >> "$TEMP_DOC"
+        done <<< "$AUTO_DEPS_URLS"
+
+        # Add Manual Dependencies (if any exist below the marker)
+        if [ -n "$MANUAL_DEPS" ]; then
+            while read -r m_url; do
+                [[ "$m_url" =~ ^http ]] || continue
+                M_DEP_NAME=$(basename "$m_url" | sed 's/\.git$//')
+                echo "| Manual | \140$M_DEP_NAME\140 | [Repo]($m_url) |" >> "$TEMP_DOC"
+            done <<< "$(echo "$MANUAL_DEPS" | grep -v "$MANUAL_MARKER")"
+        fi
+        echo -e "\n---\n" >> "$TEMP_DOC"
+    fi
+
     BODY_CONTENT=$(mktemp)
     while IFS= read -r -d '' script; do
         C_NAME=$(grep "class_name" "$script" | sed 's/class_name //' | sed 's/ .*//'); [ -z "$C_NAME" ] && C_NAME=$(basename "$script" .gd)
