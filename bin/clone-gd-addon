@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Addon Bootstrapper ---
-# Usage: clone-gd-addon <github_url>
-
+# --- Chillcube Universal Bootstrapper (v2.0) ---
 REPO_URL=$1
 
 if [ -z "$REPO_URL" ]; then
@@ -10,41 +8,62 @@ if [ -z "$REPO_URL" ]; then
     exit 1
 fi
 
-ADDON_NAME=$(basename "$REPO_URL" .git)
-TARGET_DIR="addons/$ADDON_NAME"
-
-echo "🧊 Initializing Addon: $ADDON_NAME"
-
+# 1. Setup Environment
 mkdir -p addons
+TEMP_CLONE=".tmp_addon_clone"
+rm -rf "$TEMP_CLONE"
 
-if [ ! -d "$TARGET_DIR" ]; then
-    echo "📥 Cloning main addon into $TARGET_DIR..."
-    git clone --depth 1 "$REPO_URL" "$TARGET_DIR"
+# 2. Clone to Temp
+echo "📥 Cloning: $REPO_URL..."
+git clone --depth 1 "$REPO_URL" "$TEMP_CLONE" || { echo "❌ Clone failed"; exit 1; }
+
+# 3. Detect Structure
+# Many Godot repos are: MyRepo/addons/addon_name/...
+# We want to find the ACTUAL addon folder inside the 'addons' directory of the repo
+INTERNAL_ADDONS_DIR="$TEMP_CLONE/addons"
+
+if [ -d "$INTERNAL_ADDONS_DIR" ]; then
+    echo "📂 Detected nested /addons folder structure."
+    # Iterate through all subfolders in the repo's addons folder
+    for d in "$INTERNAL_ADDONS_DIR"/*/; do
+        [ -d "$d" ] || continue
+        ADDON_NAME=$(basename "$d")
+        TARGET_DIR="addons/$ADDON_NAME"
+        
+        echo "📦 Installing sub-addon: $ADDON_NAME"
+        rm -rf "$TARGET_DIR"
+        mv "$d" "addons/"
+    done
 else
-    echo "⏭️  $ADDON_NAME already exists. Checking for dependencies..."
+    # The repo IS the addon (Standard for Chillcube)
+    ADDON_NAME=$(basename "$REPO_URL" .git)
+    TARGET_DIR="addons/$ADDON_NAME"
+    echo "📦 Detected flat addon structure: $ADDON_NAME"
+    
+    rm -rf "$TARGET_DIR"
+    mkdir -p "$TARGET_DIR"
+    # Move everything EXCEPT the .git folder to the target
+    find "$TEMP_CLONE" -mindepth 1 -maxdepth 1 ! -name ".git" -exec mv -t "$TARGET_DIR" {} +
 fi
 
-DEP_FILE="$TARGET_DIR/DEPENDENCIES.txt"
+# Cleanup
+rm -rf "$TEMP_CLONE"
 
-if [ -f "$DEP_FILE" ]; then
-    echo "📜 Found dependencies in $ADDON_NAME. Processing..."
-    
+# 4. Process Dependencies (Recursive)
+# We now scan the folder(s) we just moved for DEPENDENCIES.txt
+# Using find to catch dependencies in any newly installed addon
+find addons -maxdepth 2 -name "DEPENDENCIES.txt" | while read -r DEP_FILE; do
+    echo "📜 Processing: $DEP_FILE"
     while read -r dep_url || [ -n "$dep_url" ]; do
-        # Skip empty lines or comments
         [[ -z "$dep_url" || "$dep_url" =~ ^# ]] && continue
         
+        # Self-Reference Check (prevent infinite loops)
         dep_name=$(basename "$dep_url" .git)
-        dep_target="addons/$dep_name"
-        
-        if [ ! -d "$dep_target" ]; then
-            echo "🔗 Cloning dependency: $dep_name..."
-            git clone --depth 1 "$dep_url" "$dep_target"
-        else
-            echo "⏭️  Dependency $dep_name already exists."
+        if [ ! -d "addons/$dep_name" ]; then
+            echo "🔗 Found dependency: $dep_name. Recursing..."
+            $0 "$dep_url" # Re-run this script for the dependency
         fi
     done < "$DEP_FILE"
-else
-    echo "ℹ️  No DEPENDENCIES.txt found in $ADDON_NAME."
-fi
+done
 
-echo "✅ Done! Addon and its dependencies are ready in /addons."
+echo "✅ Done! Project structure synchronized."
