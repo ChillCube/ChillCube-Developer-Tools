@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Bootstrapper (v2.0) ---
+# --- Chillcube Universal Bootstrapper (v2.1 - The "Elevator") ---
 REPO_URL=$1
 
 if [ -z "$REPO_URL" ]; then
@@ -10,60 +10,57 @@ fi
 
 # 1. Setup Environment
 mkdir -p addons
-TEMP_CLONE=".tmp_addon_clone"
+TEMP_CLONE=".tmp_addon_$(date +%s)" # Unique temp folder
 rm -rf "$TEMP_CLONE"
 
 # 2. Clone to Temp
 echo "📥 Cloning: $REPO_URL..."
 git clone --depth 1 "$REPO_URL" "$TEMP_CLONE" || { echo "❌ Clone failed"; exit 1; }
 
-# 3. Detect Structure
-# Many Godot repos are: MyRepo/addons/addon_name/...
-# We want to find the ACTUAL addon folder inside the 'addons' directory of the repo
+# 3. The "Elevation" Logic
 INTERNAL_ADDONS_DIR="$TEMP_CLONE/addons"
 
 if [ -d "$INTERNAL_ADDONS_DIR" ]; then
-    echo "📂 Detected nested /addons folder structure."
-    # Iterate through all subfolders in the repo's addons folder
+    echo "📂 Detected /addons folder. Elevating contents..."
+    
+    # Move every subfolder from inside their 'addons/' to our 'addons/'
+    # Using 'cp -rn' to copy and then 'rm' to ensure we don't break the loop
     for d in "$INTERNAL_ADDONS_DIR"/*/; do
         [ -d "$d" ] || continue
         ADDON_NAME=$(basename "$d")
-        TARGET_DIR="addons/$ADDON_NAME"
+        echo "📦 Installing: $ADDON_NAME"
         
-        echo "📦 Installing sub-addon: $ADDON_NAME"
-        rm -rf "$TARGET_DIR"
+        # Remove old version if exists, then move the new one in
+        rm -rf "addons/$ADDON_NAME"
         mv "$d" "addons/"
     done
 else
-    # The repo IS the addon (Standard for Chillcube)
+    # FALLBACK: If no /addons folder exists, assume the whole repo is the addon
     ADDON_NAME=$(basename "$REPO_URL" .git)
-    TARGET_DIR="addons/$ADDON_NAME"
-    echo "📦 Detected flat addon structure: $ADDON_NAME"
+    echo "📦 No /addons folder found. Treating repo as flat addon: $ADDON_NAME"
     
-    rm -rf "$TARGET_DIR"
-    mkdir -p "$TARGET_DIR"
-    # Move everything EXCEPT the .git folder to the target
-    find "$TEMP_CLONE" -mindepth 1 -maxdepth 1 ! -name ".git" -exec mv -t "$TARGET_DIR" {} +
+    rm -rf "addons/$ADDON_NAME"
+    mkdir -p "addons/$ADDON_NAME"
+    # Move everything except the .git folder
+    find "$TEMP_CLONE" -mindepth 1 -maxdepth 1 ! -name ".git" -exec mv -t "addons/$ADDON_NAME" {} +
 fi
 
-# Cleanup
+# 4. Final Cleanup
+echo "🧹 Cleaning up temporary files..."
 rm -rf "$TEMP_CLONE"
 
-# 4. Process Dependencies (Recursive)
-# We now scan the folder(s) we just moved for DEPENDENCIES.txt
-# Using find to catch dependencies in any newly installed addon
+# 5. Recursive Dependency Check
+# Now we scan only the folders we just added/updated for new dependencies
 find addons -maxdepth 2 -name "DEPENDENCIES.txt" | while read -r DEP_FILE; do
-    echo "📜 Processing: $DEP_FILE"
     while read -r dep_url || [ -n "$dep_url" ]; do
         [[ -z "$dep_url" || "$dep_url" =~ ^# ]] && continue
         
-        # Self-Reference Check (prevent infinite loops)
-        dep_name=$(basename "$dep_url" .git)
-        if [ ! -d "addons/$dep_name" ]; then
-            echo "🔗 Found dependency: $dep_name. Recursing..."
-            $0 "$dep_url" # Re-run this script for the dependency
+        DEP_NAME=$(basename "$dep_url" .git)
+        if [ ! -d "addons/$DEP_NAME" ]; then
+            echo "🔗 New dependency found in $DEP_FILE: $DEP_NAME"
+            $0 "$dep_url" # Recursive call
         fi
     done < "$DEP_FILE"
 done
 
-echo "✅ Done! Project structure synchronized."
+echo "✅ Done! Structure synchronized."
