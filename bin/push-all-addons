@@ -86,21 +86,32 @@ for addon_path in addons/*; do
     SCAN_QUEUE="$addon_folder"
 
     while [[ -n "$SCAN_QUEUE" ]]; do
-        CURRENT=$(echo "$SCAN_QUEUE" | head -n 1)
+        # Get the first item in the queue
+        CURRENT=$(echo "$SCAN_QUEUE" | head -n 1 | xargs)
         SCAN_QUEUE=$(echo "$SCAN_QUEUE" | tail -n +2)
 
+        # Scan all .gd files in the current addon for known class names
         while read -r word; do
+            # Check if this word is a class name we mapped in the PRE-SCAN
             TARGET_ADDON="${CLASS_TO_ADDON[$word]}"
+            
+            # If it belongs to a different addon folder than the one we are currently generating for
             if [[ -n "$TARGET_ADDON" ]] && [[ "$TARGET_ADDON" != "$addon_folder" ]]; then
                 URL="${CLASS_TO_REPO[$word]}"
-                if [[ "$AUTO_DEPS_URLS" != *"$URL"* ]]; then
+                
+                # Check if we've already added this URL to avoid duplicates
+                if [[ ! "$AUTO_DEPS_URLS" =~ "$URL" ]]; then
                     AUTO_DEPS_URLS+="$URL"$'\n'
-                    if [[ "$PROCESSED_ADDONS" != *"$TARGET_ADDON"* ]]; then
+                    
+                    # If we haven't scanned this NEW dependency yet, add it to the queue 
+                    # for recursive (transitive) dependency discovery
+                    if [[ ! "$PROCESSED_ADDONS" =~ "$TARGET_ADDON" ]]; then
                         SCAN_QUEUE+="$TARGET_ADDON"$'\n'
                         PROCESSED_ADDONS+="$TARGET_ADDON "
                     fi
                 fi
             fi
+        # Regex looks for capitalized words (Godot class convention) that aren't inside comments
         done < <(grep -rEo "\b[A-Z][A-Za-z0-9_]+\b" "addons/$CURRENT" --include="*.gd" | grep -v "^#" | sort -u)
     done
 
