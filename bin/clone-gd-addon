@@ -13,9 +13,9 @@ mkdir -p addons
 TEMP_CLONE=".tmp_addon_$(date +%s)" # Unique temp folder
 rm -rf "$TEMP_CLONE"
 
-# 2. Clone to Temp
+# 2. Clone to Temp (using a full clone to ensure we get all metadata)
 echo "📥 Cloning: $REPO_URL..."
-git clone --depth 1 "$REPO_URL" "$TEMP_CLONE" || { echo "❌ Clone failed"; exit 1; }
+git clone --quiet "$REPO_URL" "$TEMP_CLONE" || { echo "❌ Clone failed"; exit 1; }
 
 # 3. The "Elevation" Logic
 INTERNAL_ADDONS_DIR="$TEMP_CLONE/addons"
@@ -23,31 +23,37 @@ INTERNAL_ADDONS_DIR="$TEMP_CLONE/addons"
 if [ -d "$INTERNAL_ADDONS_DIR" ]; then
     echo "📂 Detected /addons folder. Elevating contents..."
     
-    # Move every subfolder from inside their 'addons/' to our 'addons/'
-    # Using 'cp -rn' to copy and then 'rm' to ensure we don't break the loop
     for d in "$INTERNAL_ADDONS_DIR"/*/; do
         [ -d "$d" ] || continue
         ADDON_NAME=$(basename "$d")
-        echo "📦 Installing: $ADDON_NAME"
+        TARGET_DIR="addons/$ADDON_NAME"
         
-        # Remove old version if exists, then move the new one in
-        rm -rf "addons/$ADDON_NAME"
-        mv "$d" "addons/"
+        echo "📦 Installing: $ADDON_NAME"
+        rm -rf "$TARGET_DIR"
+        mv "$d" "$TARGET_DIR"
+        
+        # --- CRITICAL: Restore Git Identity ---
+        pushd "$TARGET_DIR" > /dev/null
+        git init -q
+        git remote add origin "$REPO_URL"
+        # Optional: fetch to link history, though this increases disk usage
+        # git fetch --depth 1 origin main 
+        popd > /dev/null
     done
 else
-    # FALLBACK: If no /addons folder exists, assume the whole repo is the addon
+    # FALLBACK: Repo is already flat
     ADDON_NAME=$(basename "$REPO_URL" .git)
-    echo "📦 No /addons folder found. Treating repo as flat addon: $ADDON_NAME"
+    TARGET_DIR="addons/$ADDON_NAME"
     
-    rm -rf "addons/$ADDON_NAME"
-    mkdir -p "addons/$ADDON_NAME"
-    # Move everything except the .git folder
-    find "$TEMP_CLONE" -mindepth 1 -maxdepth 1 ! -name ".git" -exec mv -t "addons/$ADDON_NAME" {} +
+    echo "📦 Flat repo detected: $ADDON_NAME"
+    rm -rf "$TARGET_DIR"
+    
+    # Move the entire temp clone folder (including .git) to the destination
+    mv "$TEMP_CLONE" "$TARGET_DIR"
 fi
 
-# 4. Final Cleanup
-echo "🧹 Cleaning up temporary files..."
-rm -rf "$TEMP_CLONE"
+# 4. Cleanup (Only if temp folder still exists)
+[ -d "$TEMP_CLONE" ] && rm -rf "$TEMP_CLONE"
 
 # 5. Recursive Dependency Check
 # Now we scan only the folders we just added/updated for new dependencies
