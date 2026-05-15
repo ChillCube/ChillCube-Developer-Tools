@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Bootstrapper (v2.2 - Auto-Enable) ---
+# --- Chillcube Universal Bootstrapper (v2.3 - Auto-Detect Deps) ---
 REPO_URL=$1
 
 if [ -z "$REPO_URL" ]; then
@@ -8,56 +8,52 @@ if [ -z "$REPO_URL" ]; then
     exit 1
 fi
 
+AUTO_MARKER="# --- Automated Dependencies (Managed by Script) ---"
+MANUAL_MARKER="# --- Manually Add Dependencies Here  ---"
+
 # 1. Setup Environment
 mkdir -p addons
-TEMP_CLONE=".tmp_addon_$(date +%s)" # Unique temp folder
+TEMP_CLONE=".tmp_addon_$(date +%s)"
 rm -rf "$TEMP_CLONE"
 
-# 2. Clone to Temp (using a full clone to ensure we get all metadata)
+# 2. Clone to Temp
 echo "📥 Cloning: $REPO_URL..."
 git clone --quiet "$REPO_URL" "$TEMP_CLONE" || { echo "❌ Clone failed"; exit 1; }
 
-# 3. The "Elevation" Logic
+# 3. The "Elevation" Logic — track installed dirs for later steps
+INSTALLED_ADDONS=()
 INTERNAL_ADDONS_DIR="$TEMP_CLONE/addons"
 
 if [ -d "$INTERNAL_ADDONS_DIR" ]; then
     echo "📂 Detected /addons folder. Elevating contents..."
-    
     for d in "$INTERNAL_ADDONS_DIR"/*/; do
         [ -d "$d" ] || continue
         ADDON_NAME=$(basename "$d")
         TARGET_DIR="addons/$ADDON_NAME"
-        
         echo "📦 Installing: $ADDON_NAME"
         rm -rf "$TARGET_DIR"
         mv "$d" "$TARGET_DIR"
-        
-        # --- CRITICAL: Restore Git Identity ---
         pushd "$TARGET_DIR" > /dev/null
         git init -q
         git remote add origin "$REPO_URL"
-        # Optional: fetch to link history, though this increases disk usage
-        # git fetch --depth 1 origin main 
         popd > /dev/null
+        INSTALLED_ADDONS+=("$TARGET_DIR")
     done
 else
-    # FALLBACK: Repo is already flat
     ADDON_NAME=$(basename "$REPO_URL" .git)
     TARGET_DIR="addons/$ADDON_NAME"
-    
     echo "📦 Flat repo detected: $ADDON_NAME"
     rm -rf "$TARGET_DIR"
-    
-    # Move the entire temp clone folder (including .git) to the destination
     mv "$TEMP_CLONE" "$TARGET_DIR"
+    INSTALLED_ADDONS+=("$TARGET_DIR")
 fi
 
-# 4. Cleanup (Only if temp folder still exists)
+# 4. Cleanup
 [ -d "$TEMP_CLONE" ] && rm -rf "$TEMP_CLONE"
 
 # 5. Auto-enable plugin(s) in project.godot
 _enable_plugin() {
-    local cfg_path="$1"   # e.g. addons/foo/plugin.cfg
+    local cfg_path="$1"
     local pfile="project.godot"
     [ -f "$pfile" ] || return
     local res="res://$cfg_path"
@@ -82,16 +78,62 @@ while IFS= read -r -d '' cfg; do
     _enable_plugin "${cfg#./}"
 done < <(find addons -name "plugin.cfg" -print0)
 
-# 6. Recursive Dependency Check
-# Now we scan only the folders we just added/updated for new dependencies
+# 6. Auto-detect dependencies from class usage (safety net for human errors)
+#    Builds a class_name → repo_url map from all OTHER installed addons,
+#    then scans the new addon's .gd files for references to those classes.
+#    Any found are written to the automated section of DEPENDENCIES.txt so
+#    the recursive install step below picks them up automatically.
+
+declare -A CLASS_URL
+for d in addons/*/; do
+    [ -d "$d" ] || continue
+    pushd "$d" > /dev/null
+    repo_url=$(git remote get-url origin 2>/dev/null | sed 's/\.git$//' | sed 's|git@github\.com:|https://github.com/|')
+    popd > /dev/null
+    [ -z "$repo_url" ] && continue
+    while read -r c_line; do
+        c_name=$(echo "$c_line" | awk '{print $2}' | sed 's/[: \t]*$//')
+        [ -n "$c_name" ] && CLASS_URL["$c_name"]="$repo_url"
+    done < <(grep -r "^class_name " "$d" --include="*.gd" 2>/dev/null)
+done
+
+for addon_dir in "${INSTALLED_ADDONS[@]}"; do
+    dep_file="${addon_dir}/DEPENDENCIES.txt"
+
+    # Ensure DEPENDENCIES.txt exists with both markers
+    if [ ! -f "$dep_file" ]; then
+        printf '%s\n\n%s\n' "$AUTO_MARKER" "$MANUAL_MARKER" > "$dep_file"
+    elif ! grep -qF "$AUTO_MARKER" "$dep_file"; then
+        sed -i "1s|^|$AUTO_MARKER\n\n|" "$dep_file"
+    fi
+
+    # Collect capitalised words used in .gd files, look them up in CLASS_URL
+    while read -r word; do
+        url="${CLASS_URL[$word]}"
+        [ -z "$url" ] && continue
+        # Skip if this addon IS that url (self-reference)
+        pushd "$addon_dir" > /dev/null
+        self_url=$(git remote get-url origin 2>/dev/null | sed 's/\.git$//' | sed 's|git@github\.com:|https://github.com/|')
+        popd > /dev/null
+        [ "$url" = "$self_url" ] && continue
+        # Skip if already recorded
+        grep -qF "$url" "$dep_file" && continue
+        # Insert after the AUTO_MARKER line
+        awk -v url="$url" -v marker="$AUTO_MARKER" \
+            '$0 == marker { print; print url; next } { print }' \
+            "$dep_file" > "${dep_file}.tmp" && mv "${dep_file}.tmp" "$dep_file"
+        echo "🔍 Auto-detected dependency: $(basename "$url") (used by $(basename "$addon_dir"))"
+    done < <(grep -rEoh "\b[A-Z][A-Za-z0-9_]+\b" "$addon_dir" --include="*.gd" 2>/dev/null | sort -u)
+done
+
+# 7. Recursive Dependency Check — now also catches auto-detected ones above
 find addons -maxdepth 2 -name "DEPENDENCIES.txt" | while read -r DEP_FILE; do
     while read -r dep_url || [ -n "$dep_url" ]; do
         [[ -z "$dep_url" || "$dep_url" =~ ^# ]] && continue
-        
         DEP_NAME=$(basename "$dep_url" .git)
         if [ ! -d "addons/$DEP_NAME" ]; then
             echo "🔗 New dependency found in $DEP_FILE: $DEP_NAME"
-            $0 "$dep_url" # Recursive call
+            $0 "$dep_url"
         fi
     done < "$DEP_FILE"
 done
