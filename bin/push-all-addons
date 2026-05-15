@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Doc & Registry Engine (v6.6.1) ---
+# --- Chillcube Universal Doc & Registry Engine (v6.7.0) ---
 
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
@@ -36,6 +36,26 @@ for d in addons/*/; do
             CLASS_TO_ADDON["$c_name"]="$folder_name"
         fi
     done < <(grep -r "class_name " "$d" --include="*.gd")
+done
+
+# --- 1b. REVERSE DEPENDENCY PRE-SCAN ---
+declare -A DEPENDENTS_OF
+
+for d in addons/*/; do
+    [ -d "$d" ] || continue
+    dep_file="${d}DEPENDENCIES.txt"
+    [ -f "$dep_file" ] || continue
+    cfg="${d}plugin.cfg"
+    [ -f "$cfg" ] || continue
+    depender_name=$(grep "^name" "$cfg" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+    [ -z "$depender_name" ] && depender_name=$(basename "$d")
+    pushd "$d" > /dev/null
+    depender_url=$(git remote get-url origin 2>/dev/null | sed 's/\.git$//' | sed 's|git@github\.com:|https://github.com/|')
+    popd > /dev/null
+    while read -r dep_url; do
+        dep_url_clean="${dep_url%.git}"
+        DEPENDENTS_OF["$dep_url_clean"]+=$'- ['"$depender_name"']('"$depender_url"$')\n'
+    done < <(grep "^http" "$dep_file")
 done
 
 # --- 2. GENERATION LOOP ---
@@ -136,6 +156,32 @@ for addon_path in addons/*; do
 
     CLEAN_AUTO=$(echo "$AUTO_DEPS_URLS" | tr -d '[:space:]')
     CLEAN_MANUAL=$(echo "$MANUAL_CONTENT" | tr -d '[:space:]')
+
+    # Append Dependencies section to README
+    if [ -n "$CLEAN_AUTO" ] || [ -n "$CLEAN_MANUAL" ]; then
+        echo -e "\n## Dependencies\n" >> "$TEMP_README"
+        if [ -n "$CLEAN_AUTO" ]; then
+            while read -r url; do
+                [ -z "$url" ] && continue
+                DEP_NAME=$(basename "$url" | sed 's/\.git$//; s/Godot_//g')
+                echo "- [$DEP_NAME]($url)" >> "$TEMP_README"
+            done <<< "$AUTO_DEPS_URLS"
+        fi
+        if [ -n "$CLEAN_MANUAL" ]; then
+            while read -r m_url; do
+                [[ "$m_url" =~ ^http ]] || continue
+                M_DEP_NAME=$(basename "$m_url" | sed 's/\.git$//; s/Godot_//g')
+                echo "- [$M_DEP_NAME]($m_url)" >> "$TEMP_README"
+            done <<< "$MANUAL_CONTENT"
+        fi
+    fi
+
+    # Append Used By section to README
+    DEPENDENTS_TEXT="${DEPENDENTS_OF[$CURRENT_REPO_URL]}"
+    if [ -n "$DEPENDENTS_TEXT" ]; then
+        DEPENDENT_COUNT=$(printf '%b' "$DEPENDENTS_TEXT" | grep -c "^- ")
+        printf '\n## Used By\n%d other ChillCube addon(s) depend on this:\n\n%b' "$DEPENDENT_COUNT" "$DEPENDENTS_TEXT" >> "$TEMP_README"
+    fi
 
     if [ -n "$CLEAN_AUTO" ] || [ -n "$CLEAN_MANUAL" ]; then
         echo -e "### 📦 Dependencies\n" >> "$TEMP_DOC"
