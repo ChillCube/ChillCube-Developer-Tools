@@ -326,7 +326,7 @@ for addon_path in addons/*; do
     cd "$PROJECT_ROOT/$addon_path"
     if [[ -n $(git status -s) ]]; then
         git add .
-        git commit -m "docs: auto-sync v6.6.1 (fixed manual dependency ingestion)"
+        git commit -m "docs: auto-sync v6.8.0"
         super-git-push
         ((UPDATED_COUNT++))
     fi
@@ -339,36 +339,69 @@ TEMP_REGISTRY_DIR2=$(mktemp -d)
 if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR2" > /dev/null 2>&1; then
     cd "$TEMP_REGISTRY_DIR2"
 
-    declare -A NODE_LABELS
-    declare -A NODE_URLS
-    MERMAID_EDGES=""
+    declare -A T_LABEL    # id -> display label
+    declare -A T_URL      # id -> https url
+    declare -A T_INDEGREE # id -> number of addons depending on it
+    declare -A T_HASEDGE  # id -> 1 if it appears in any edge
+    declare -a T_EDGES    # "from_id|to_id" pairs
 
+    _make_id()  { echo "$1" | sed 's/[^a-zA-Z0-9]/_/g; s/^[0-9]/n_&/'; }
+    _clean_label() { echo "$1" | sed 's/^Godot_//; s/_/ /g'; }
+
+    # First pass: register every addon that has a plugin.cfg
     for d in "$PROJECT_ROOT"/addons/*/; do
         [ -d "$d" ] || continue
         cfg="${d}plugin.cfg"
         [ -f "$cfg" ] || continue
-        from_name=$(grep "^name" "$cfg" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
-        [ -z "$from_name" ] && from_name=$(basename "$d")
-        from_id=$(echo "$from_name" | sed 's/[^a-zA-Z0-9]/_/g; s/^[0-9]/n_&/')
+        raw=$(grep "^name" "$cfg" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+        [ -z "$raw" ] && raw=$(basename "$d")
+        id=$(_make_id "$raw")
         pushd "$d" > /dev/null
-        from_url=$(git remote get-url origin 2>/dev/null | sed 's/\.git$//' | sed 's|git@github\.com:|https://github.com/|')
+        url=$(git remote get-url origin 2>/dev/null | sed 's/\.git$//' | sed 's|git@github\.com:|https://github.com/|')
         popd > /dev/null
-        NODE_LABELS["$from_id"]="$from_name"
-        [ -n "$from_url" ] && NODE_URLS["$from_id"]="$from_url"
+        T_LABEL["$id"]=$(_clean_label "$raw")
+        T_URL["$id"]="$url"
+        T_INDEGREE["$id"]=0
+    done
+
+    # Second pass: collect edges from DEPENDENCIES.txt
+    for d in "$PROJECT_ROOT"/addons/*/; do
+        [ -d "$d" ] || continue
+        cfg="${d}plugin.cfg"
+        [ -f "$cfg" ] || continue
+        raw=$(grep "^name" "$cfg" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
+        [ -z "$raw" ] && raw=$(basename "$d")
+        from_id=$(_make_id "$raw")
 
         dep_file="${d}DEPENDENCIES.txt"
         [ -f "$dep_file" ] || continue
         while read -r dep_url; do
             dep_url_clean="${dep_url%.git}"
             dep_repo=$(basename "$dep_url_clean")
-            dep_id=$(echo "$dep_repo" | sed 's/[^a-zA-Z0-9]/_/g; s/^[0-9]/n_&/')
-            NODE_LABELS["$dep_id"]="${NODE_LABELS[$dep_id]:-$dep_repo}"
-            NODE_URLS["$dep_id"]="${NODE_URLS[$dep_id]:-$dep_url_clean}"
-            MERMAID_EDGES+="    $from_id --> $dep_id\n"
+            to_id=$(_make_id "$dep_repo")
+            T_LABEL["$to_id"]="${T_LABEL[$to_id]:-$(_clean_label "$dep_repo")}"
+            T_URL["$to_id"]="${T_URL[$to_id]:-$dep_url_clean}"
+            T_INDEGREE["$to_id"]=$(( ${T_INDEGREE[$to_id]:-0} + 1 ))
+            T_HASEDGE["$from_id"]=1
+            T_HASEDGE["$to_id"]=1
+            T_EDGES+=("$from_id|$to_id")
         done < <(grep "^http" "$dep_file")
     done
 
-    # Strip existing tree block (including its header) if present
+    # Sort edges for consistent output
+    mapfile -t T_EDGES < <(printf '%s\n' "${T_EDGES[@]}" | sort -u)
+
+    # Collect standalone addons (registered but no edges) for plain-text listing
+    STANDALONE_LIST=""
+    for id in $(printf '%s\n' "${!T_LABEL[@]}" | sort); do
+        [[ -n "${T_HASEDGE[$id]}" ]] && continue
+        label="${T_LABEL[$id]}"
+        url="${T_URL[$id]}"
+        [ -n "$url" ] && STANDALONE_LIST+="[$label]($url) · " || STANDALONE_LIST+="$label · "
+    done
+    STANDALONE_LIST="${STANDALONE_LIST% · }"
+
+    # Strip existing tree block
     if grep -q "<!-- DEPENDENCY-TREE-START -->" "$REGISTRY_FILE"; then
         awk '/<!-- DEPENDENCY-TREE-START -->/,/<!-- DEPENDENCY-TREE-END -->/ { next } { print }' \
             "$REGISTRY_FILE" > "${REGISTRY_FILE}.tmp"
@@ -379,15 +412,40 @@ if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR2" > /dev/null 2>&1; then
         echo -e "\n<!-- DEPENDENCY-TREE-START -->"
         echo -e "## 🌳 Dependency Tree\n"
         echo '```mermaid'
-        echo 'flowchart TD'
-        for id in "${!NODE_LABELS[@]}"; do
-            echo "    $id[\"${NODE_LABELS[$id]}\"]"
+        echo 'flowchart LR'
+        echo '    classDef core  fill:#4a9eff,stroke:#2471d4,color:#fff,font-weight:bold'
+        echo '    classDef shared fill:#a29bfe,stroke:#6c5ce7,color:#fff'
+        echo ''
+
+        # Node definitions (connected nodes only, sorted)
+        for id in $(printf '%s\n' "${!T_HASEDGE[@]}" | sort); do
+            echo "    $id[\"${T_LABEL[$id]}\"]"
         done
-        printf '%b' "$MERMAID_EDGES"
-        for id in "${!NODE_URLS[@]}"; do
-            echo "    click $id href \"${NODE_URLS[$id]}\" _blank"
+        echo ''
+
+        # Edges
+        for edge in "${T_EDGES[@]}"; do
+            echo "    ${edge%%|*} --> ${edge##*|}"
         done
+        echo ''
+
+        # Class assignments
+        for id in $(printf '%s\n' "${!T_HASEDGE[@]}" | sort); do
+            deg="${T_INDEGREE[$id]:-0}"
+            if   [ "$deg" -ge 2 ]; then echo "    class $id core"
+            elif [ "$deg" -eq 1 ]; then echo "    class $id shared"
+            fi
+        done
+        echo ''
+
+        # Click handlers
+        for id in $(printf '%s\n' "${!T_HASEDGE[@]}" | sort); do
+            url="${T_URL[$id]}"
+            [ -n "$url" ] && echo "    click $id href \"$url\" _blank"
+        done
+
         echo '```'
+        [ -n "$STANDALONE_LIST" ] && echo -e "\n**Standalone addons:** $STANDALONE_LIST"
         echo "<!-- DEPENDENCY-TREE-END -->"
     } >> "$REGISTRY_FILE"
 
