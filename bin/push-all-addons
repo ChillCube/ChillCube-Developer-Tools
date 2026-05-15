@@ -57,7 +57,7 @@ for addon_path in addons/*; do
     A_DESC=$(grep "description" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     A_AUTHOR=$(grep "author" "$CFG_FILE" | head -n 1 | sed 's/.*"\(.*\)".*/\1/')
     YEAR=$(date +%Y)
-    CURRENT_REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//')
+    CURRENT_REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//' | sed 's|git@github\.com:|https://github.com/|')
 
     # --- 3. REGISTRY SYNC (Interactive) ---
     TEMP_REGISTRY_DIR=$(mktemp -d)
