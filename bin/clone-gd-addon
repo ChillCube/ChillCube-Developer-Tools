@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Bootstrapper (v2.1 - The "Elevator") ---
+# --- Chillcube Universal Bootstrapper (v2.2 - Auto-Enable) ---
 REPO_URL=$1
 
 if [ -z "$REPO_URL" ]; then
@@ -55,7 +55,34 @@ fi
 # 4. Cleanup (Only if temp folder still exists)
 [ -d "$TEMP_CLONE" ] && rm -rf "$TEMP_CLONE"
 
-# 5. Recursive Dependency Check
+# 5. Auto-enable plugin(s) in project.godot
+_enable_plugin() {
+    local cfg_path="$1"   # e.g. addons/foo/plugin.cfg
+    local pfile="project.godot"
+    [ -f "$pfile" ] || return
+    local res="res://$cfg_path"
+    grep -qF "$res" "$pfile" && return
+    if grep -q '^\[editor_plugins\]' "$pfile"; then
+        if grep -q '^enabled=PackedStringArray(' "$pfile"; then
+            awk -v p="$res" '
+                /^enabled=PackedStringArray\(\)/ { print "enabled=PackedStringArray(\"" p "\")"; next }
+                /^enabled=PackedStringArray\(/   { sub(/\)$/, ", \"" p "\")"); print; next }
+                { print }
+            ' "$pfile" > "${pfile}.tmp" && mv "${pfile}.tmp" "$pfile"
+        else
+            sed -i "/^\[editor_plugins\]/a enabled=PackedStringArray(\"$res\")" "$pfile"
+        fi
+    else
+        printf '\n[editor_plugins]\n\nenabled=PackedStringArray("%s")\n' "$res" >> "$pfile"
+    fi
+    echo "⚡ Plugin enabled: $cfg_path"
+}
+
+while IFS= read -r -d '' cfg; do
+    _enable_plugin "${cfg#./}"
+done < <(find addons -name "plugin.cfg" -print0)
+
+# 6. Recursive Dependency Check
 # Now we scan only the folders we just added/updated for new dependencies
 find addons -maxdepth 2 -name "DEPENDENCIES.txt" | while read -r DEP_FILE; do
     while read -r dep_url || [ -n "$dep_url" ]; do
