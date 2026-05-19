@@ -20,32 +20,42 @@ rm -rf "$TEMP_CLONE"
 echo "📥 Cloning: $REPO_URL..."
 git clone --quiet "$REPO_URL" "$TEMP_CLONE" || { echo "❌ Clone failed"; exit 1; }
 
-# 3. The "Elevation" Logic — track installed dirs for later steps
+# 3. Locate addon(s) by finding plugin.cfg — works with any repo structure
 INSTALLED_ADDONS=()
-INTERNAL_ADDONS_DIR="$TEMP_CLONE/addons"
+mapfile -d '' PLUGIN_CFGS < <(find "$TEMP_CLONE" -name "plugin.cfg" -print0 2>/dev/null)
 
-if [ -d "$INTERNAL_ADDONS_DIR" ]; then
-    echo "📂 Detected /addons folder. Elevating contents..."
-    for d in "$INTERNAL_ADDONS_DIR"/*/; do
-        [ -d "$d" ] || continue
-        ADDON_NAME=$(basename "$d")
-        TARGET_DIR="addons/$ADDON_NAME"
-        echo "📦 Installing: $ADDON_NAME"
-        rm -rf "$TARGET_DIR"
-        mv "$d" "$TARGET_DIR"
-        pushd "$TARGET_DIR" > /dev/null
-        git init -q
-        git remote add origin "$REPO_URL"
-        popd > /dev/null
-        INSTALLED_ADDONS+=("$TARGET_DIR")
-    done
-else
+if [ ${#PLUGIN_CFGS[@]} -eq 0 ]; then
     ADDON_NAME=$(basename "$REPO_URL" .git)
     TARGET_DIR="addons/$ADDON_NAME"
-    echo "📦 Flat repo detected: $ADDON_NAME"
+    echo "📦 No plugin.cfg found — installing as: $ADDON_NAME"
     rm -rf "$TARGET_DIR"
     mv "$TEMP_CLONE" "$TARGET_DIR"
     INSTALLED_ADDONS+=("$TARGET_DIR")
+else
+    for cfg in "${PLUGIN_CFGS[@]}"; do
+        ADDON_DIR=$(dirname "$cfg")
+        if [ "$ADDON_DIR" = "$TEMP_CLONE" ]; then
+            ADDON_NAME=$(basename "$REPO_URL" .git)
+            TARGET_DIR="addons/$ADDON_NAME"
+            echo "📦 Installing: $ADDON_NAME (repo root)"
+            rm -rf "$TARGET_DIR"
+            mv "$TEMP_CLONE" "$TARGET_DIR"
+            INSTALLED_ADDONS+=("$TARGET_DIR")
+            break
+        else
+            ADDON_NAME=$(basename "$ADDON_DIR")
+            TARGET_DIR="addons/$ADDON_NAME"
+            REL_PATH="${ADDON_DIR#$TEMP_CLONE/}"
+            echo "📦 Installing: $ADDON_NAME (from $REL_PATH/)"
+            rm -rf "$TARGET_DIR"
+            mv "$ADDON_DIR" "$TARGET_DIR"
+            pushd "$TARGET_DIR" > /dev/null
+            git init -q
+            git remote add origin "$REPO_URL"
+            popd > /dev/null
+            INSTALLED_ADDONS+=("$TARGET_DIR")
+        fi
+    done
 fi
 
 # 4. Cleanup

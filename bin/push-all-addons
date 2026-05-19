@@ -2,6 +2,11 @@
 
 # --- Chillcube Universal Doc & Registry Engine (v6.8.0) ---
 
+if [ "$EUID" -eq 0 ]; then
+    echo "❌ Do not run push-all-addons with sudo." >&2
+    exit 1
+fi
+
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
 AUTO_MARKER="# --- Automated Dependencies (Managed by Script) ---"
@@ -324,6 +329,10 @@ for addon_path in addons/*; do
     fi
 
     cd "$PROJECT_ROOT/$addon_path"
+    # Fix .git/objects owned by root from a previous `sudo git` run
+    if [ -d ".git/objects" ] && [ "$(stat -c '%U' .git/objects 2>/dev/null)" != "$(whoami)" ]; then
+        sudo chown -R "$(whoami)" .git
+    fi
     if [[ -n $(git status -s) ]]; then
         git add .
         git commit -m "docs: auto-sync v6.8.0"
@@ -344,8 +353,12 @@ if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR2" > /dev/null 2>&1; then
     declare -A T_INDEGREE # id -> number of addons depending on it
     declare -A T_HASEDGE  # id -> 1 if it appears in any edge
     declare -a T_EDGES    # "from_id|to_id" pairs
+    declare -A T_SIZE     # id -> .gd file count in addon dir
+    declare -A T_DEPS     # id -> space-separated list of dependency ids
+    declare -A T_LAYER    # id -> topological depth (0 = no dependencies)
+    declare -A T_INTERNAL # id -> 1 if addon is locally installed (vs external dependency)
 
-    _make_id()  { echo "$1" | sed 's/[^a-zA-Z0-9]/_/g; s/^[0-9]/n_&/'; }
+    _make_id()  { echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g; s/^[0-9]/n_&/'; }
     _clean_label() { echo "$1" | sed 's/^Godot_//; s/_/ /g'; }
 
     # First pass: register every addon that has a plugin.cfg
@@ -362,6 +375,8 @@ if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR2" > /dev/null 2>&1; then
         T_LABEL["$id"]=$(_clean_label "$raw")
         T_URL["$id"]="$url"
         T_INDEGREE["$id"]=0
+        T_SIZE["$id"]=$(find "$d" -name "*.gd" 2>/dev/null | wc -l)
+        T_INTERNAL["$id"]=1
     done
 
     # Second pass: collect edges from DEPENDENCIES.txt
@@ -391,6 +406,46 @@ if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR2" > /dev/null 2>&1; then
     # Sort edges for consistent output
     mapfile -t T_EDGES < <(printf '%s\n' "${T_EDGES[@]}" | sort -u)
 
+    # Build dependency adjacency map (from_id -> space-sep list of to_ids it depends on)
+    for _edge in "${T_EDGES[@]}"; do
+        _f="${_edge%%|*}"; _t="${_edge##*|}"
+        T_DEPS["$_f"]+="$_t "
+    done
+
+    # Compute topological layer: 0 = no dependencies, N = max(dep layers)+1
+    for _id in "${!T_HASEDGE[@]}"; do
+        [ -z "${T_DEPS[$_id]}" ] && T_LAYER["$_id"]=0
+    done
+    _changed=1
+    while [ "$_changed" -eq 1 ]; do
+        _changed=0
+        for _id in "${!T_HASEDGE[@]}"; do
+            [ -n "${T_LAYER[$_id]}" ] && continue
+            _all=1; _max=-1
+            for _dep in ${T_DEPS[$_id]}; do
+                if [ -z "${T_LAYER[$_dep]}" ]; then _all=0; break; fi
+                [ "${T_LAYER[$_dep]}" -gt "$_max" ] && _max="${T_LAYER[$_dep]}"
+            done
+            if [ "$_all" -eq 1 ]; then
+                T_LAYER["$_id"]=$(( _max + 1 ))
+                _changed=1
+            fi
+        done
+    done
+    # Assign layer 0 to any remaining nodes (e.g. in cycles)
+    for _id in "${!T_HASEDGE[@]}"; do [ -z "${T_LAYER[$_id]}" ] && T_LAYER["$_id"]=0; done
+
+    # Compute total progress score
+    # Each addon earns: (file_count * 10) + (indegree * 50) + (layer * 20)
+    TOTAL_SCORE=0
+    for _id in "${!T_LABEL[@]}"; do
+        _sz="${T_SIZE[$_id]:-0}"
+        _ind="${T_INDEGREE[$_id]:-0}"
+        _lay="${T_LAYER[$_id]:-0}"
+        _pts=$(( (_sz * 10) + (_ind * 50) + (_lay * 20) ))
+        TOTAL_SCORE=$(( TOTAL_SCORE + _pts ))
+    done
+
     # Collect standalone addons (registered but no edges) for plain-text listing
     STANDALONE_LIST=""
     for id in $(printf '%s\n' "${!T_LABEL[@]}" | sort); do
@@ -412,28 +467,54 @@ if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR2" > /dev/null 2>&1; then
         echo -e "\n<!-- DEPENDENCY-TREE-START -->"
         echo -e "## 🌳 Dependency Tree\n"
         echo '```mermaid'
-        echo 'flowchart LR'
-        echo '    classDef core  fill:#4a9eff,stroke:#2471d4,color:#fff,font-weight:bold'
+        echo '%%{init: {"flowchart": {"curve": "linear"}}}%%'
+        echo 'flowchart BT'
+        echo '    classDef core  fill:#4a9eff,stroke:#2471d4,color:#fff'
         echo '    classDef shared fill:#a29bfe,stroke:#6c5ce7,color:#fff'
+        echo '    classDef external fill:#fd9644,stroke:#e67e22,color:#fff'
         echo ''
 
-        # Node definitions (connected nodes only, sorted)
-        for id in $(printf '%s\n' "${!T_HASEDGE[@]}" | sort); do
-            echo "    $id[\"${T_LABEL[$id]}\"]"
+        # Find max layer among connected nodes
+        _max_layer=0
+        for id in "${!T_HASEDGE[@]}"; do
+            _l="${T_LAYER[$id]:-0}"
+            [ "$_l" -gt "$_max_layer" ] && _max_layer="$_l"
+        done
+
+        # Node definitions grouped into subgraphs by topological layer (bottom = foundation)
+        for (( _l=0; _l<=_max_layer; _l++ )); do
+            _layer_ids=()
+            for id in $(printf '%s\n' "${!T_HASEDGE[@]}" | sort); do
+                [ "${T_LAYER[$id]:-0}" -eq "$_l" ] && _layer_ids+=("$id")
+            done
+            [ ${#_layer_ids[@]} -eq 0 ] && continue
+            if [ "$_l" -eq 0 ]; then
+                echo "    subgraph Layer_0[\"🧱 Layer 0 — Foundation\"]"
+            else
+                echo "    subgraph Layer_${_l}[\"Layer ${_l}\"]"
+            fi
+            for id in "${_layer_ids[@]}"; do
+                echo "        $id[\"${T_LABEL[$id]}\"]"
+            done
+            echo "    end"
         done
         echo ''
 
         # Edges
         for edge in "${T_EDGES[@]}"; do
-            echo "    ${edge%%|*} --> ${edge##*|}"
+            echo "    ${edge##*|} --> ${edge%%|*}"
         done
         echo ''
 
         # Class assignments
         for id in $(printf '%s\n' "${!T_HASEDGE[@]}" | sort); do
-            deg="${T_INDEGREE[$id]:-0}"
-            if   [ "$deg" -ge 2 ]; then echo "    class $id core"
-            elif [ "$deg" -eq 1 ]; then echo "    class $id shared"
+            if [ -z "${T_INTERNAL[$id]}" ]; then
+                echo "    class $id external"
+            else
+                deg="${T_INDEGREE[$id]:-0}"
+                if   [ "$deg" -ge 2 ]; then echo "    class $id core"
+                elif [ "$deg" -eq 1 ]; then echo "    class $id shared"
+                fi
             fi
         done
         echo ''
@@ -446,6 +527,7 @@ if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR2" > /dev/null 2>&1; then
 
         echo '```'
         [ -n "$STANDALONE_LIST" ] && echo -e "\n**Standalone addons:** $STANDALONE_LIST"
+        echo -e "\n**🏆 Progress Score: $(printf "%'d" "$TOTAL_SCORE") pts** — _+10 per .gd file · +50 per module that depends on you · +20 per dependency layer_"
         echo "<!-- DEPENDENCY-TREE-END -->"
     } >> "$REGISTRY_FILE"
 
