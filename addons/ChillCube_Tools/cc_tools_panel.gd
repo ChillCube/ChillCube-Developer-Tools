@@ -70,47 +70,74 @@ func _build_addons_tab(tabs: TabContainer) -> void:
 	header.add_child(refresh_btn)
 	root.add_child(header)
 
+	var split := HBoxContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_addon_list = VBoxContainer.new()
 	_addon_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(_addon_list)
-	root.add_child(scroll)
+	split.add_child(scroll)
 
-	_installed_log = _log_box(root)
-	_installed_log.custom_minimum_size = Vector2(0, 70)
+	split.add_child(VSeparator.new())
+
+	_installed_log = _side_log()
+	split.add_child(_installed_log)
+	root.add_child(split)
 
 func _build_create_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Create Addon", tabs)
 
+	var split := HBoxContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var left := VBoxContainer.new()
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
 	var grid := GridContainer.new()
 	grid.columns = 2
 	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-
 	_create_name = _field(grid, "Addon Name")
 	_create_desc = _field(grid, "Description")
 	_create_author = _field(grid, "Author")
-	root.add_child(grid)
+	left.add_child(grid)
 
 	_create_gh = CheckBox.new()
 	_create_gh.text = "Create GitHub repo (requires gh CLI)"
 	_create_gh.button_pressed = true
-	root.add_child(_create_gh)
+	left.add_child(_create_gh)
 
 	_create_btn = Button.new()
 	_create_btn.text = "✨ Create Addon"
 	_create_btn.pressed.connect(_start_create)
-	root.add_child(_create_btn)
+	left.add_child(_create_btn)
 
-	_create_log = _log_box(root)
+	split.add_child(left)
+	split.add_child(VSeparator.new())
+
+	_create_log = _side_log()
+	split.add_child(_create_log)
+	root.add_child(split)
 
 func _build_clone_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Clone Addon", tabs)
 
+	var split := HBoxContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var left := VBoxContainer.new()
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
 	var lbl := Label.new()
 	lbl.text = "Paste a Git URL to clone and install a ChillCube addon:"
-	root.add_child(lbl)
+	left.add_child(lbl)
 
 	var row := HBoxContainer.new()
 	_clone_url = LineEdit.new()
@@ -121,24 +148,42 @@ func _build_clone_tab(tabs: TabContainer) -> void:
 	_clone_btn.pressed.connect(_start_clone)
 	row.add_child(_clone_url)
 	row.add_child(_clone_btn)
-	root.add_child(row)
+	left.add_child(row)
 
-	_clone_log = _log_box(root)
+	split.add_child(left)
+	split.add_child(VSeparator.new())
+
+	_clone_log = _side_log()
+	split.add_child(_clone_log)
+	root.add_child(split)
 
 func _build_push_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Push All", tabs)
 
+	var split := HBoxContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var left := VBoxContainer.new()
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
 	var info := Label.new()
 	info.text = "Scans all addons, generates README + DOCUMENTATION, commits, pushes to GitHub, and updates the ChillCube registry."
 	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	root.add_child(info)
+	left.add_child(info)
 
 	_push_btn = Button.new()
 	_push_btn.text = "🚀 Push All Addons"
 	_push_btn.pressed.connect(_start_push)
-	root.add_child(_push_btn)
+	left.add_child(_push_btn)
 
-	_push_log = _log_box(root)
+	split.add_child(left)
+	split.add_child(VSeparator.new())
+
+	_push_log = _side_log()
+	split.add_child(_push_log)
+	root.add_child(split)
 
 # ─── UI helpers ───────────────────────────────────────────────────────────────
 
@@ -168,13 +213,13 @@ func _field(grid: GridContainer, label: String) -> LineEdit:
 	grid.add_child(edit)
 	return edit
 
-func _log_box(parent: VBoxContainer) -> TextEdit:
+func _side_log() -> TextEdit:
 	var te := TextEdit.new()
 	te.editable = false
 	te.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	te.custom_minimum_size = Vector2(0, 120)
+	te.size_flags_horizontal = Control.SIZE_SHRINK_END
+	te.custom_minimum_size = Vector2(240, 0)
 	te.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-	parent.add_child(te)
 	return te
 
 # ─── Refresh helpers ─────────────────────────────────────────────────────────
@@ -311,17 +356,23 @@ func _build_browse_tab(tabs: TabContainer) -> void:
 	root.add_child(toolbar)
 	root.add_child(HSeparator.new())
 
+	var split := HBoxContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.custom_minimum_size = Vector2(0, 120)
 	_registry_list = VBoxContainer.new()
 	_registry_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(_registry_list)
-	root.add_child(scroll)
+	split.add_child(scroll)
 
-	_browse_log = _log_box(root)
-	_browse_log.custom_minimum_size = Vector2(0, 70)
+	split.add_child(VSeparator.new())
+
+	_browse_log = _side_log()
+	split.add_child(_browse_log)
+	root.add_child(split)
 
 	_fetch_registry()
 
@@ -390,8 +441,7 @@ func _populate_registry(entries: Array) -> void:
 		var cat: String = entry.get("category", "Uncategorized")
 		if cat != current_cat:
 			current_cat = cat
-			var sep := HSeparator.new()
-			_registry_list.add_child(sep)
+			_registry_list.add_child(HSeparator.new())
 			var cat_lbl := Label.new()
 			cat_lbl.text = cat
 			cat_lbl.add_theme_font_size_override("font_size", 13)
