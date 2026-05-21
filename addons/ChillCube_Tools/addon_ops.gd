@@ -249,7 +249,7 @@ static func _install_deps(root: String, installed: Array[String], log: Callable)
 		var found: Array[String] = []
 
 		var re := RegEx.new()
-		re.compile(r"\b[A-Z][A-Za-z0-9_]+\b")
+		re.compile("\\b[A-Z][A-Za-z0-9_]+\\b")
 		for gf: String in _find(addon_path, "*.gd"):
 			for m: RegExMatch in re.search_all(_read(gf)):
 				var word := m.get_string()
@@ -309,7 +309,7 @@ static func _enable_plugin(root: String, cfg_rel: String, log: Callable) -> void
 
 	if "[editor_plugins]" in content:
 		var re := RegEx.new()
-		re.compile(r'enabled=PackedStringArray\(([^)]*)\)')
+		re.compile("enabled=PackedStringArray\\(([^)]*)\\)")
 		var m := re.search(content)
 		if m:
 			var inner := m.get_string(1).strip_edges()
@@ -477,7 +477,7 @@ static func _process_one(root: String, folder: String, c2r: Dictionary, c2a: Dic
 		var cur: String = queue.pop_front()
 		var words: Dictionary = {}
 		var re := RegEx.new()
-		re.compile(r"\b[A-Z][A-Za-z0-9_]+\b")
+		re.compile("\\b[A-Z][A-Za-z0-9_]+\\b")
 		for gf: String in _find(addons_dir + "/" + cur, "*.gd"):
 			for m: RegExMatch in re.search_all(_read(gf)):
 				words[m.get_string()] = true
@@ -659,21 +659,21 @@ static func _parse_vars(lines: PackedStringArray, exported: bool) -> Array:
 		var desc := parts[1].strip_edges()
 		var code := parts[0].strip_edges()
 		var re := RegEx.new()
-		re.compile(r"var\s+(\w+)")
+		re.compile("var\\s+(\\w+)")
 		var vm := re.search(code)
 		if not vm:
 			continue
 		var vname := vm.get_string(1)
 		var vtype := "Variant"
 		var type_re := RegEx.new()
-		type_re.compile(r":\s*([A-Za-z_]\w*)")
+		type_re.compile(":\\s*([A-Za-z_]\\w*)")
 		var tm := type_re.search(code)
 		if tm:
 			vtype = tm.get_string(1)
 		var vdefault := "-"
 		if "=" in code:
 			var def_re := RegEx.new()
-			def_re.compile(r"=\s*(.+?)(?:\s*$)")
+			def_re.compile("=\\s*(.+?)(?:\\s*$)")
 			var dm := def_re.search(parts[0])
 			if dm:
 				vdefault = dm.get_string(1).strip_edges()
@@ -711,7 +711,7 @@ static func _parse_methods(lines: PackedStringArray) -> Array:
 		var desc := parts[1].strip_edges()
 		var code := parts[0].strip_edges()
 		var re := RegEx.new()
-		re.compile(r"func\s+(\w+)\(([^)]*)\)")
+		re.compile("func\\s+(\\w+)\\(([^)]*)\\)")
 		var fm := re.search(code)
 		if not fm:
 			continue
@@ -723,7 +723,7 @@ static func _parse_methods(lines: PackedStringArray) -> Array:
 		var ret := "void"
 		if "->" in code:
 			var rre := RegEx.new()
-			rre.compile(r"->\s*(\w+)")
+			rre.compile("->\\s*(\\w+)")
 			var rm := rre.search(code)
 			if rm:
 				ret = rm.get_string(1)
