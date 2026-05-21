@@ -185,6 +185,36 @@ static func create_addon(root: String, addon_name: String, desc: String, author:
 	log.call("✅ Done! addons/" + safe)
 	return true
 
+# ─── SYNC ADDON ──────────────────────────────────────────────────────────────
+
+static func sync_addon(root: String, url: String, log: Callable) -> bool:
+	var addons_dir := root + "/addons"
+	var clean_url := url.replace(".git", "").replace("git@github.com:", "https://github.com/")
+	var dir := DirAccess.open(addons_dir)
+	if dir:
+		dir.list_dir_begin()
+		var name := dir.get_next()
+		while name != "":
+			if dir.current_is_dir() and not name.begins_with("."):
+				var apath := addons_dir + "/" + name
+				var remote := git_remote(apath)
+				if remote == clean_url:
+					log.call("🔄 Syncing: " + name)
+					var status_out: Array = []
+					OS.execute("git", PackedStringArray(["-C", apath, "status", "--porcelain"]), status_out, true)
+					var dirty := not status_out.is_empty() and not (status_out[0] as String).strip_edges().is_empty()
+					if dirty:
+						log.call("📦 Stashing local changes...")
+						_git(["stash", "push", "-q", "-m", "pre-sync"], apath, Callable())
+					var ok := _git(["pull", "--rebase", "origin", "main"], apath, log) == OK
+					if dirty:
+						_git(["stash", "pop", "-q"], apath, Callable())
+					log.call("✅ Synced!" if ok else "⚠️  Conflicts — resolve manually in addons/" + name)
+					return ok
+			name = dir.get_next()
+		dir.list_dir_end()
+	return clone_addon(root, url, log)
+
 # ─── CLONE ADDON ─────────────────────────────────────────────────────────────
 
 static func clone_addon(root: String, repo_url: String, log: Callable) -> bool:

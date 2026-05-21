@@ -6,6 +6,7 @@ const Ops = preload("res://addons/ChillCube_Tools/addon_ops.gd")
 # ─── Node refs ───────────────────────────────────────────────────────────────
 
 var _addon_list: VBoxContainer
+var _installed_log: TextEdit
 var _create_name: LineEdit
 var _create_desc: LineEdit
 var _create_author: LineEdit
@@ -15,11 +16,14 @@ var _create_log: TextEdit
 var _clone_url: LineEdit
 var _clone_btn: Button
 var _clone_log: TextEdit
-var _remove_option: OptionButton
-var _remove_btn: Button
-var _remove_log: TextEdit
 var _push_btn: Button
 var _push_log: TextEdit
+
+var _http: HTTPRequest
+var _registry_list: VBoxContainer
+var _registry_status: Label
+var _browse_log: TextEdit
+var _registry_installed: Dictionary  # url -> folder name
 
 var _thread: Thread = null
 
@@ -29,14 +33,18 @@ func _ready() -> void:
 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 
+	_http = HTTPRequest.new()
+	add_child(_http)
+	_http.request_completed.connect(_on_registry_fetched)
+
 	var tabs := TabContainer.new()
 	tabs.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(tabs)
 
+	_build_browse_tab(tabs)
 	_build_addons_tab(tabs)
 	_build_create_tab(tabs)
 	_build_clone_tab(tabs)
-	_build_remove_tab(tabs)
 	_build_push_tab(tabs)
 
 	_refresh_addons()
@@ -52,10 +60,11 @@ func _build_addons_tab(tabs: TabContainer) -> void:
 
 	var header := HBoxContainer.new()
 	var lbl := Label.new()
-	lbl.text = "Installed addons in this project:"
+	lbl.text = "Installed addons — click 🗑️ to remove an addon and its orphaned dependencies."
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var refresh_btn := Button.new()
-	refresh_btn.text = "Refresh"
+	refresh_btn.text = "↺ Refresh"
 	refresh_btn.pressed.connect(_refresh_addons)
 	header.add_child(lbl)
 	header.add_child(refresh_btn)
@@ -68,6 +77,9 @@ func _build_addons_tab(tabs: TabContainer) -> void:
 	_addon_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(_addon_list)
 	root.add_child(scroll)
+
+	_installed_log = _log_box(root)
+	_installed_log.custom_minimum_size = Vector2(0, 70)
 
 func _build_create_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Create Addon", tabs)
@@ -112,26 +124,6 @@ func _build_clone_tab(tabs: TabContainer) -> void:
 	root.add_child(row)
 
 	_clone_log = _log_box(root)
-
-func _build_remove_tab(tabs: TabContainer) -> void:
-	var root := _vbox("Remove Addon", tabs)
-
-	var lbl := Label.new()
-	lbl.text = "Select an addon to remove. Orphaned dependencies will also be removed."
-	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	root.add_child(lbl)
-
-	var row := HBoxContainer.new()
-	_remove_option = OptionButton.new()
-	_remove_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_remove_btn = Button.new()
-	_remove_btn.text = "🗑️ Remove"
-	_remove_btn.pressed.connect(_start_remove)
-	row.add_child(_remove_option)
-	row.add_child(_remove_btn)
-	root.add_child(row)
-
-	_remove_log = _log_box(root)
 
 func _build_push_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Push All", tabs)
@@ -191,8 +183,6 @@ func _refresh_addons() -> void:
 	for child in _addon_list.get_children():
 		child.queue_free()
 
-	_remove_option.clear()
-
 	var root := ProjectSettings.globalize_path("res://").rstrip("/")
 	var addons := Ops.list_addons(root)
 
@@ -205,13 +195,37 @@ func _refresh_addons() -> void:
 	for folder: String in addons:
 		var cfg := Ops.parse_cfg(root + "/addons/" + folder + "/plugin.cfg")
 		var row := HBoxContainer.new()
-		var lbl := Label.new()
-		lbl.text = "📦 %s  v%s  — %s" % [cfg.get("name", folder), cfg.get("version", "?"), cfg.get("description", "")]
-		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		lbl.clip_text = true
-		row.add_child(lbl)
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var info := VBoxContainer.new()
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var name_lbl := Label.new()
+		name_lbl.text = "📦 %s  v%s" % [cfg.get("name", folder), cfg.get("version", "?")]
+		var desc_lbl := Label.new()
+		desc_lbl.text = cfg.get("description", "")
+		desc_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+		desc_lbl.clip_text = true
+		info.add_child(name_lbl)
+		info.add_child(desc_lbl)
+		row.add_child(info)
+
+		var rm_btn := Button.new()
+		rm_btn.text = "🗑️"
+		rm_btn.tooltip_text = "Remove " + folder
+		var captured_folder := folder
+		rm_btn.pressed.connect(func():
+			_installed_log.text = ""
+			_run_op(rm_btn, _installed_log, func():
+				Ops.remove_addon(
+					ProjectSettings.globalize_path("res://").rstrip("/"),
+					captured_folder,
+					func(msg): call_deferred("_append_log", _installed_log, msg)
+				)
+				call_deferred("_refresh_addons")
+			)
+		)
+		row.add_child(rm_btn)
 		_addon_list.add_child(row)
-		_remove_option.add_item(folder)
 
 # ─── Operation launchers ─────────────────────────────────────────────────────
 
@@ -246,20 +260,6 @@ func _start_clone() -> void:
 		call_deferred("_refresh_addons")
 	)
 
-func _start_remove() -> void:
-	if _remove_option.item_count == 0:
-		_append_log(_remove_log, "❌ No addons to remove.")
-		return
-	var addon_name := _remove_option.get_item_text(_remove_option.selected)
-	_run_op(_remove_btn, _remove_log, func():
-		Ops.remove_addon(
-			ProjectSettings.globalize_path("res://").rstrip("/"),
-			addon_name,
-			func(msg): call_deferred("_append_log", _remove_log, msg)
-		)
-		call_deferred("_refresh_addons")
-	)
-
 func _start_push() -> void:
 	_run_op(_push_btn, _push_log, func():
 		Ops.push_all(
@@ -289,3 +289,144 @@ func _finish_op(btn: Button) -> void:
 func _append_log(control: TextEdit, msg: String) -> void:
 	control.text += msg + "\n"
 	control.scroll_vertical = control.get_line_count()
+
+# ─── Browse tab ───────────────────────────────────────────────────────────────
+
+func _build_browse_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Browse", tabs)
+
+	var toolbar := HBoxContainer.new()
+	var title := Label.new()
+	title.text = "ChillCube Addon Registry"
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_registry_status = Label.new()
+	_registry_status.text = "Loading..."
+	_registry_status.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	var refresh_btn := Button.new()
+	refresh_btn.text = "↺ Refresh"
+	refresh_btn.pressed.connect(_fetch_registry)
+	toolbar.add_child(title)
+	toolbar.add_child(_registry_status)
+	toolbar.add_child(refresh_btn)
+	root.add_child(toolbar)
+	root.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.custom_minimum_size = Vector2(0, 120)
+	_registry_list = VBoxContainer.new()
+	_registry_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_registry_list)
+	root.add_child(scroll)
+
+	_browse_log = _log_box(root)
+	_browse_log.custom_minimum_size = Vector2(0, 70)
+
+	_fetch_registry()
+
+func _fetch_registry() -> void:
+	if _http.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED:
+		return
+	_registry_status.text = "Fetching..."
+	for child in _registry_list.get_children():
+		child.queue_free()
+	var err := _http.request(
+		"https://raw.githubusercontent.com/ChillCube/.github/main/ADDONS.md"
+	)
+	if err != OK:
+		_registry_status.text = "Request error."
+
+func _on_registry_fetched(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+		_registry_status.text = "Failed (HTTP %d)" % response_code
+		return
+	var entries := _parse_registry(body.get_string_from_utf8())
+	_build_installed_url_map()
+	_populate_registry(entries)
+	_registry_status.text = "%d addon(s) listed" % entries.size()
+
+func _parse_registry(content: String) -> Array:
+	var result := []
+	var category := "Uncategorized"
+	var in_tree := false
+	for line: String in content.split("\n"):
+		if "<!-- DEPENDENCY-TREE-START -->" in line:
+			in_tree = true
+		if in_tree:
+			if "<!-- DEPENDENCY-TREE-END -->" in line:
+				in_tree = false
+			continue
+		if line.begins_with("## "):
+			category = line.substr(3).strip_edges()
+		elif line.begins_with("* ["):
+			var cb := line.find("](")
+			if cb == -1:
+				continue
+			var name := line.substr(3, cb - 3)
+			var rest := line.substr(cb + 2)
+			var cp := rest.find(")")
+			if cp == -1:
+				continue
+			var url := rest.substr(0, cp)
+			var desc := rest.substr(cp + 1).strip_edges().lstrip("-").strip_edges()
+			result.append({"category": category, "name": name, "url": url, "desc": desc})
+	return result
+
+func _build_installed_url_map() -> void:
+	_registry_installed = {}
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+	for folder: String in Ops.list_addons(root):
+		var url := Ops.git_remote(root + "/addons/" + folder)
+		if not url.is_empty():
+			_registry_installed[url] = folder
+
+func _populate_registry(entries: Array) -> void:
+	for child in _registry_list.get_children():
+		child.queue_free()
+
+	var current_cat := ""
+	for entry: Dictionary in entries:
+		var cat: String = entry.get("category", "Uncategorized")
+		if cat != current_cat:
+			current_cat = cat
+			var sep := HSeparator.new()
+			_registry_list.add_child(sep)
+			var cat_lbl := Label.new()
+			cat_lbl.text = cat
+			cat_lbl.add_theme_font_size_override("font_size", 13)
+			_registry_list.add_child(cat_lbl)
+
+		var row := HBoxContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var info := VBoxContainer.new()
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var name_lbl := Label.new()
+		name_lbl.text = entry.get("name", "")
+		var desc_lbl := Label.new()
+		desc_lbl.text = entry.get("desc", "")
+		desc_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+		desc_lbl.clip_text = true
+		info.add_child(name_lbl)
+		info.add_child(desc_lbl)
+		row.add_child(info)
+
+		var url: String = entry.get("url", "")
+		var installed := url in _registry_installed
+		var btn := Button.new()
+		btn.text = "↺ Sync" if installed else "⬇ Install"
+		btn.tooltip_text = url
+		btn.pressed.connect(_install_from_registry.bind(url, btn))
+		row.add_child(btn)
+		_registry_list.add_child(row)
+
+func _install_from_registry(url: String, btn: Button) -> void:
+	_run_op(btn, _browse_log, func():
+		var root := ProjectSettings.globalize_path("res://").rstrip("/")
+		var log_fn := func(msg: String): call_deferred("_append_log", _browse_log, msg)
+		Ops.sync_addon(root, url, log_fn)
+		call_deferred("_refresh_addons")
+		call_deferred("_build_installed_url_map")
+		call_deferred("_fetch_registry")
+	)
