@@ -254,11 +254,17 @@ func _refresh_addons() -> void:
 		desc_lbl.clip_text = true
 		info.add_child(name_lbl)
 		info.add_child(desc_lbl)
+		var dependers: Array = dependents.get(folder, [])
+		if not dependers.is_empty():
+			var dep_lbl := Label.new()
+			dep_lbl.text = "dependency of: " + ", ".join(PackedStringArray(dependers))
+			dep_lbl.add_theme_color_override("font_color", Color(0.5, 0.7, 1.0))
+			dep_lbl.clip_text = true
+			info.add_child(dep_lbl)
 		row.add_child(info)
 
 		var rm_btn := Button.new()
 		rm_btn.text = "🗑️"
-		var dependers: Array = dependents.get(folder, [])
 		if dependers.is_empty():
 			rm_btn.tooltip_text = "Remove " + folder
 			var captured_folder := folder
@@ -275,7 +281,7 @@ func _refresh_addons() -> void:
 			)
 		else:
 			rm_btn.disabled = true
-			rm_btn.tooltip_text = folder + " is required by: " + ", ".join(PackedStringArray(dependers))
+			rm_btn.tooltip_text = "Cannot remove — required by: " + ", ".join(PackedStringArray(dependers))
 		row.add_child(rm_btn)
 		_addon_list.add_child(row)
 
