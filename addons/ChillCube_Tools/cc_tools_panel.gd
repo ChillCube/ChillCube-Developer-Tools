@@ -237,6 +237,8 @@ func _refresh_addons() -> void:
 		_addon_list.add_child(lbl)
 		return
 
+	var dependents: Dictionary = Ops.get_dependents(root)
+
 	for folder: String in addons:
 		var cfg := Ops.parse_cfg(root + "/addons/" + folder + "/plugin.cfg")
 		var row := HBoxContainer.new()
@@ -256,19 +258,24 @@ func _refresh_addons() -> void:
 
 		var rm_btn := Button.new()
 		rm_btn.text = "🗑️"
-		rm_btn.tooltip_text = "Remove " + folder
-		var captured_folder := folder
-		rm_btn.pressed.connect(func():
-			_installed_log.text = ""
-			_run_op(rm_btn, _installed_log, func():
-				Ops.remove_addon(
-					ProjectSettings.globalize_path("res://").rstrip("/"),
-					captured_folder,
-					func(msg): call_deferred("_append_log", _installed_log, msg)
+		var dependers: Array = dependents.get(folder, [])
+		if dependers.is_empty():
+			rm_btn.tooltip_text = "Remove " + folder
+			var captured_folder := folder
+			rm_btn.pressed.connect(func():
+				_installed_log.text = ""
+				_run_op(rm_btn, _installed_log, func():
+					Ops.remove_addon(
+						ProjectSettings.globalize_path("res://").rstrip("/"),
+						captured_folder,
+						func(msg): call_deferred("_append_log", _installed_log, msg)
+					)
+					call_deferred("_refresh_addons")
 				)
-				call_deferred("_refresh_addons")
 			)
-		)
+		else:
+			rm_btn.disabled = true
+			rm_btn.tooltip_text = folder + " is required by: " + ", ".join(PackedStringArray(dependers))
 		row.add_child(rm_btn)
 		_addon_list.add_child(row)
 

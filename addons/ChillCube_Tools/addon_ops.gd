@@ -355,6 +355,42 @@ static func _enable_plugin(root: String, cfg_rel: String, log: Callable) -> void
 	_write(pfile, content)
 	log.call("⚡ Enabled: " + cfg_rel)
 
+static func get_dependents(root: String) -> Dictionary:
+	var addons_dir := root + "/addons"
+	# Build url -> folder map for all installed addons
+	var url_to_folder := {}
+	var dir := DirAccess.open(addons_dir)
+	if dir:
+		dir.list_dir_begin()
+		var name := dir.get_next()
+		while name != "":
+			if dir.current_is_dir() and not name.begins_with("."):
+				var url := git_remote(addons_dir + "/" + name)
+				if not url.is_empty():
+					url_to_folder[url] = name
+			name = dir.get_next()
+		dir.list_dir_end()
+	# Walk every DEPENDENCIES.txt and record who depends on whom
+	var result := {}  # dep_folder -> [depender_folder, ...]
+	var dir2 := DirAccess.open(addons_dir)
+	if dir2:
+		dir2.list_dir_begin()
+		var name2 := dir2.get_next()
+		while name2 != "":
+			if dir2.current_is_dir() and not name2.begins_with("."):
+				for line: String in _read(addons_dir + "/" + name2 + "/DEPENDENCIES.txt").split("\n"):
+					var l := line.strip_edges()
+					if l.begins_with("http"):
+						var clean := l.replace(".git", "").replace("git@github.com:", "https://github.com/")
+						if clean in url_to_folder:
+							var dep: String = url_to_folder[clean]
+							if dep not in result:
+								result[dep] = []
+							(result[dep] as Array).append(name2)
+			name2 = dir2.get_next()
+		dir2.list_dir_end()
+	return result
+
 # ─── REMOVE ADDON ────────────────────────────────────────────────────────────
 
 static func remove_addon(root: String, addon_name: String, log: Callable) -> bool:
