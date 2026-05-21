@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# --- Chillcube Universal Bootstrapper (v2.3 - Auto-Detect Deps) ---
+# --- Chillcube Universal Bootstrapper (v2.4 - Smart Sync) ---
 REPO_URL=$1
 
 if [ -z "$REPO_URL" ]; then
@@ -10,6 +10,37 @@ fi
 
 AUTO_MARKER="# --- Automated Dependencies (Managed by Script) ---"
 MANUAL_MARKER="# --- Manually Add Dependencies Here  ---"
+
+# 0. Sync if already installed — match by git remote URL, pull --rebase instead of re-cloning
+REQUESTED_URL="${REPO_URL%.git}"
+REQUESTED_URL="${REQUESTED_URL/git@github.com:/https://github.com/}"
+if [ -d "addons" ]; then
+    for _existing in addons/*/; do
+        [ -d "${_existing}.git" ] || continue
+        _remote=$(git -C "$_existing" remote get-url origin 2>/dev/null \
+            | sed 's/\.git$//; s|git@github\.com:|https://github.com/|')
+        [ "$_remote" = "$REQUESTED_URL" ] || continue
+
+        _name=$(basename "$_existing")
+        echo "🔄 Already installed: $_name — syncing..."
+        _stashed=false
+        if [[ -n $(git -C "$_existing" status --porcelain) ]]; then
+            echo "📦 Stashing local changes..."
+            git -C "$_existing" stash push -q -m "pre-sync by clone-gd-addon"
+            _stashed=true
+        fi
+        if git -C "$_existing" pull --rebase origin main; then
+            echo "✅ Synced: $_name"
+        else
+            echo "⚠️  Conflicts detected in $_name — resolve them manually."
+            git -C "$_existing" rebase --abort 2>/dev/null || true
+        fi
+        if $_stashed; then
+            git -C "$_existing" stash pop -q || echo "⚠️  Stash pop failed — check addons/$_name manually."
+        fi
+        exit 0
+    done
+fi
 
 # 1. Setup Environment
 mkdir -p addons
