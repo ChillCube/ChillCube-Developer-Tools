@@ -247,7 +247,7 @@ func _refresh_addons() -> void:
 		var info := VBoxContainer.new()
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		var name_lbl := Label.new()
-		name_lbl.text = "📦 %s  v%s" % [cfg.get("name", folder), cfg.get("version", "?")]
+		name_lbl.text = "📦 %s" % cfg.get("name", folder)
 		var desc_lbl := Label.new()
 		desc_lbl.text = cfg.get("description", "")
 		desc_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
