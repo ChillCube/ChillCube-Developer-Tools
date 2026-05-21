@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
+# Usage: create-gd-addon [<name> <description> <author>]
+# All three args optional — script falls back to interactive prompts for any omitted.
+
 echo "🧊 ChillCube Addon Initializer"
 echo "--------------------------------------------------"
 
@@ -13,10 +16,20 @@ else
     BASE_DIR="."
 fi
 
-# 2. Collect Addon Info
-read -p "🏷️  Addon Name (e.g., MyCoolAddon): " ADDON_NAME
-read -p "📝 Description: " ADDON_DESC
-read -p "👤 Author Name: " AUTHOR_NAME
+# 2. Collect Addon Info (accept positional args for non-interactive use)
+ADDON_NAME="${1:-}"
+ADDON_DESC="${2:-}"
+AUTHOR_NAME="${3:-}"
+
+if [ -z "$ADDON_NAME" ]; then
+    read -p "🏷️  Addon Name (e.g., MyCoolAddon): " ADDON_NAME
+fi
+if [ -z "$ADDON_DESC" ]; then
+    read -p "📝 Description: " ADDON_DESC
+fi
+if [ -z "$AUTHOR_NAME" ]; then
+    read -p "👤 Author Name: " AUTHOR_NAME
+fi
 YEAR=$(date +%Y)
 
 # --- THE CAPITALIZATION FIX ---

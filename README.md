@@ -3,8 +3,17 @@ This repository provides tools that will be needed to work with ChillCube's proj
 People who would like to contribute or use our libraries may also need to install these, even if they are not ChillCube Developers.
 Depending on your needs, it may be recommended to fork this library, as this library is first and foremost made for ChillCube's own development pipeline.
 
-## Installation 
-### Linux/MacOS
+## Installation
+
+### Godot Editor Plugin (Recommended for most team members)
+No terminal required! Install the plugin once per project using the CLI tool:
+```bash
+clone-gd-addon https://github.com/ChillCube/ChillCube-Developer-Tools.git
+```
+Then enable **ChillCube Tools** in *Project → Project Settings → Plugins*.  
+A **🧊 CC Tools** panel will appear at the bottom of the editor with tabs for all operations.
+
+### Linux/MacOS (CLI Tools)
 Simply copy paste this into terminal to install the tools:
 ```Bash
 git clone https://github.com/ChillCube/ChillCube-Developer-Tools.git && cd ChillCube-Developer-Tools && chmod +x install.sh && bash ./install.sh && cd .. && rm -rf ChillCube-Developer-Tools && exec $SHELL
@@ -51,9 +60,9 @@ Super git push handles a lot of the git commands you normally have to type manua
 ```Bash
 clone-gd-addon https://github.com/ChillCube/[ADDON NAME].git
 ```
-This clones addons created by ChillCube and ensures the necessary dependencies are cloned as well.
+This clones addons created by ChillCube and ensures the necessary dependencies are cloned as well. The plugin auto-enables addons in project.godot; the CLI tool does the same.
 > [!IMPORTANT]
-> Make sure to enable the addon in the project settings!
+> If using the CLI tool, you may need to reload the project for the plugin to become active.
 
 #### Removing a godot addon made by ChillCube
 ```Bash
@@ -65,8 +74,8 @@ This removes addons and its dependencies from your godot project.
 ```Bash
 create-gd-addon
 ```
-> [!WARNING]
-> Make sure to not use spaces in the name of the addon you are creating, as this will mess with the file system!
+> [!NOTE]
+> Spaces in addon names are converted to underscores automatically (e.g. "My Addon" → `My_Addon`).
 
 Use this to create a new addon within your project. It will push it into ChillCube's repositories automatically and initiate everything, including the LICENSE and a default README.
 > [!IMPORTANT]

@@ -2,6 +2,16 @@
 
 # --- Chillcube Universal Doc & Registry Engine (v6.8.0) ---
 
+# Usage: push-all-addons [--non-interactive|-n]
+#   --non-interactive  Skip the registry category prompt; new addons go to "Uncategorized".
+
+NON_INTERACTIVE=false
+for _arg in "$@"; do
+    [[ "$_arg" == "--non-interactive" || "$_arg" == "-n" ]] && NON_INTERACTIVE=true
+done
+# Also treat a non-TTY stdin as non-interactive (e.g. piped or Claude Code subprocess)
+[ ! -t 0 ] && NON_INTERACTIVE=true
+
 if [ "$EUID" -eq 0 ]; then
     echo "❌ Do not run push-all-addons with sudo." >&2
     exit 1
@@ -84,19 +94,23 @@ for addon_path in addons/*; do
     YEAR=$(date +%Y)
     CURRENT_REPO_URL=$(git -C "$addon_path" remote get-url origin 2>/dev/null | sed 's/\.git$//' | sed 's|git@github\.com:|https://github.com/|')
 
-    # --- 3. REGISTRY SYNC (Interactive) ---
+    # --- 3. REGISTRY SYNC ---
     TEMP_REGISTRY_DIR=$(mktemp -d)
     if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR" > /dev/null 2>&1; then
         cd "$TEMP_REGISTRY_DIR"
         [ ! -f "$REGISTRY_FILE" ] && { echo "# 🧊 ChillCube Addon Registry" > "$REGISTRY_FILE"; echo -e "\n## Uncategorized" >> "$REGISTRY_FILE"; }
         if ! grep -q "$CURRENT_REPO_URL" "$REGISTRY_FILE"; then
-            mapfile -t CATEGORIES < <(grep "^## " "$REGISTRY_FILE" | sed 's/## //')
-            for i in "${!CATEGORIES[@]}"; do printf "  [%d] %s\n" "$((i+1))" "${CATEGORIES[$i]}"; done
-            read -p "📁 Category # for $A_NAME: " CAT_INPUT
-            if [[ "$CAT_INPUT" =~ ^[0-9]+$ ]] && [ "$CAT_INPUT" -gt 0 ] && [ "$CAT_INPUT" -le "${#CATEGORIES[@]}" ]; then
-                SELECTED_CAT="${CATEGORIES[$((CAT_INPUT-1))]}"
+            if $NON_INTERACTIVE; then
+                SELECTED_CAT="Uncategorized"
             else
-                [ "$CAT_INPUT" == "0" ] && read -p "Name: " SELECTED_CAT || SELECTED_CAT="$CAT_INPUT"
+                mapfile -t CATEGORIES < <(grep "^## " "$REGISTRY_FILE" | sed 's/## //')
+                for i in "${!CATEGORIES[@]}"; do printf "  [%d] %s\n" "$((i+1))" "${CATEGORIES[$i]}"; done
+                read -p "📁 Category # for $A_NAME: " CAT_INPUT
+                if [[ "$CAT_INPUT" =~ ^[0-9]+$ ]] && [ "$CAT_INPUT" -gt 0 ] && [ "$CAT_INPUT" -le "${#CATEGORIES[@]}" ]; then
+                    SELECTED_CAT="${CATEGORIES[$((CAT_INPUT-1))]}"
+                else
+                    [ "$CAT_INPUT" == "0" ] && read -p "Name: " SELECTED_CAT || SELECTED_CAT="$CAT_INPUT"
+                fi
             fi
             ENTRY="* [$A_NAME]($CURRENT_REPO_URL) - $A_DESC"
             if ! grep -q "## $SELECTED_CAT" "$REGISTRY_FILE"; then echo -e "\n## $SELECTED_CAT\n$ENTRY" >> "$REGISTRY_FILE"; else sed -i "/## $SELECTED_CAT/a $ENTRY" "$REGISTRY_FILE"; fi
@@ -394,6 +408,7 @@ if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR2" > /dev/null 2>&1; then
             dep_url_clean="${dep_url%.git}"
             dep_repo=$(basename "$dep_url_clean")
             to_id=$(_make_id "$dep_repo")
+            [ -z "$from_id" ] || [ -z "$to_id" ] && continue
             T_LABEL["$to_id"]="${T_LABEL[$to_id]:-$(_clean_label "$dep_repo")}"
             T_URL["$to_id"]="${T_URL[$to_id]:-$dep_url_clean}"
             T_INDEGREE["$to_id"]=$(( ${T_INDEGREE[$to_id]:-0} + 1 ))
@@ -502,7 +517,9 @@ if git clone --depth 1 "$ORG_REPO" "$TEMP_REGISTRY_DIR2" > /dev/null 2>&1; then
 
         # Edges
         for edge in "${T_EDGES[@]}"; do
-            echo "    ${edge##*|} --> ${edge%%|*}"
+            _f="${edge%%|*}"; _t="${edge##*|}"
+            [ -z "$_f" ] || [ -z "$_t" ] && continue
+            echo "    $_t --> $_f"
         done
         echo ''
 
