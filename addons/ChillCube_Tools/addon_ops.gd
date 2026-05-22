@@ -118,7 +118,7 @@ static func list_addons(project_root: String) -> Array[String]:
 	return result
 
 static func parse_cfg(path: String) -> Dictionary:
-	var out := {"name": "", "description": "", "author": "", "version": "0.1.0"}
+	var out := {"name": "", "description": "", "author": "", "version": "0.1.0", "category": "Uncategorized"}
 	for line: String in _read(path).split("\n"):
 		for key in out.keys():
 			if line.begins_with(key + "="):
@@ -140,7 +140,7 @@ static func git_remote(addon_path: String) -> String:
 
 # ─── CREATE ADDON ────────────────────────────────────────────────────────────
 
-static func create_addon(root: String, addon_name: String, desc: String, author: String, create_gh: bool, log: Callable) -> bool:
+static func create_addon(root: String, addon_name: String, desc: String, author: String, category: String, create_gh: bool, log: Callable) -> bool:
 	var safe := addon_name.replace(" ", "_")
 	var target := root + "/addons/" + safe
 	log.call("📂 Creating: " + target)
@@ -160,8 +160,8 @@ static func create_addon(root: String, addon_name: String, desc: String, author:
 	_write(target + "/.gitignore", ".godot/\n*.import/\n*.tmp\n")
 	_write(target + "/DEPENDENCIES.txt", AUTO_MARKER + "\n\n" + MANUAL_MARKER + "\n")
 
-	var cfg := "[plugin]\nname=\"%s\"\ndescription=\"%s\"\nauthor=\"%s\"\nversion=\"0.1.0\"\nscript=\"\"\n" \
-		% [addon_name, desc, author]
+	var cfg := "[plugin]\nname=\"%s\"\ndescription=\"%s\"\nauthor=\"%s\"\nversion=\"0.1.0\"\ncategory=\"%s\"\nscript=\"\"\n" \
+		% [addon_name, desc, author, category]
 	_write(target + "/plugin.cfg", cfg)
 
 	log.call("⚖️  Writing LICENSE...")
@@ -186,6 +186,27 @@ static func create_addon(root: String, addon_name: String, desc: String, author:
 	return true
 
 # ─── SYNC ADDON ──────────────────────────────────────────────────────────────
+static func has_changes(addon_path: String) -> bool:
+	if not DirAccess.dir_exists_absolute(addon_path + "/.git"):
+		return false
+	# Uncommitted local changes
+	var local_out: Array = []
+	OS.execute("git", PackedStringArray(["-C", addon_path, "status", "--porcelain"]), local_out, true)
+	if not local_out.is_empty() and not (local_out[0] as String).strip_edges().is_empty():
+		return true
+	# Local commits not yet pushed
+	var ahead_out: Array = []
+	OS.execute("git", PackedStringArray(["-C", addon_path, "rev-list", "--count", "origin/main..HEAD"]), ahead_out, true)
+	if not ahead_out.is_empty() and (ahead_out[0] as String).strip_edges().to_int() > 0:
+		return true
+	# Remote commits not yet pulled (uses cached remote refs)
+	var behind_out: Array = []
+	OS.execute("git", PackedStringArray(["-C", addon_path, "rev-list", "--count", "HEAD..origin/main"]), behind_out, true)
+	if not behind_out.is_empty() and (behind_out[0] as String).strip_edges().to_int() > 0:
+		return true
+	return false
+
+
 
 static func sync_addon(root: String, url: String, log: Callable) -> bool:
 	var addons_dir := root + "/addons"
@@ -200,17 +221,26 @@ static func sync_addon(root: String, url: String, log: Callable) -> bool:
 				var remote := git_remote(apath)
 				if remote == clean_url:
 					log.call("🔄 Syncing: " + name)
+					# 1. Commit any local changes so they survive the rebase
 					var status_out: Array = []
 					OS.execute("git", PackedStringArray(["-C", apath, "status", "--porcelain"]), status_out, true)
 					var dirty := not status_out.is_empty() and not (status_out[0] as String).strip_edges().is_empty()
 					if dirty:
-						log.call("📦 Stashing local changes...")
-						_git(["stash", "push", "-q", "-m", "pre-sync"], apath, Callable())
-					var ok := _git(["pull", "--rebase", "origin", "main"], apath, log) == OK
-					if dirty:
-						_git(["stash", "pop", "-q"], apath, Callable())
-					log.call("✅ Synced!" if ok else "⚠️  Conflicts — resolve manually in addons/" + name)
-					return ok
+						log.call("📝 Committing local changes...")
+						_git(["add", "."], apath, log)
+						_git(["commit", "-m", "sync: local changes"], apath, log)
+					# 2. Pull remote changes, rebasing local commits on top
+					log.call("⬇️  Pulling from remote...")
+					var pull_ok := _git(["pull", "--rebase", "origin", "main"], apath, log) == OK
+					if not pull_ok:
+						log.call("⚠️  Merge conflict — resolve manually in addons/" + name)
+						_git(["rebase", "--abort"], apath, Callable())
+						return false
+					# 3. Push merged result back to remote
+					log.call("⬆️  Pushing to remote...")
+					var push_ok := _git(["push", "origin", "main"], apath, log) == OK
+					log.call("✅ Synced!" if push_ok else "⚠️  Push failed — check your remote access.")
+					return push_ok
 			name = dir.get_next()
 		dir.list_dir_end()
 	return clone_addon(root, url, log)
@@ -436,6 +466,18 @@ static func remove_addon(root: String, addon_name: String, log: Callable) -> boo
 	log.call("✅ Cleanup complete.")
 	return true
 
+# ─── UPDATE PLUGIN ───────────────────────────────────────────────────────────
+
+static func update_plugin(root: String, log: Callable) -> bool:
+	log.call("⬆️  Pulling latest ChillCube Tools...")
+	var code := _git(["pull", "--rebase", "origin", "main"], root, log)
+	if code != OK:
+		log.call("⚠️  Pull failed — resolve conflicts manually.")
+		_git(["rebase", "--abort"], root, Callable())
+		return false
+	log.call("✅ Plugin updated! Restart Godot to apply changes.")
+	return true
+
 # ─── PUSH ALL ADDONS ─────────────────────────────────────────────────────────
 
 static func push_all(root: String, log: Callable) -> bool:
@@ -532,6 +574,7 @@ static func _process_one(root: String, folder: String, c2r: Dictionary, c2a: Dic
 	var a_name: String = info.get("name", folder)
 	var a_desc: String = info.get("description", "")
 	var a_author: String = info.get("author", "")
+	var a_category: String = info.get("category", "Uncategorized")
 	var year := str(Time.get_datetime_dict_from_system()["year"])
 	var cur_url := git_remote(apath)
 
@@ -557,10 +600,23 @@ static func _process_one(root: String, folder: String, c2r: Dictionary, c2a: Dic
 						queue.append(target_a)
 						processed.append(target_a)
 
+	# Write auto deps back to DEPENDENCIES.txt so cloners can install them
+	var dep_file := apath + "/DEPENDENCIES.txt"
+	var dep_content := _read(dep_file)
+	if dep_content.is_empty():
+		dep_content = AUTO_MARKER + "\n\n" + MANUAL_MARKER + "\n"
+	var manual_start := dep_content.find(MANUAL_MARKER)
+	var auto_section := AUTO_MARKER + "\n"
+	for u: String in auto_deps:
+		auto_section += u + "\n"
+	auto_section += "\n"
+	dep_content = auto_section + (dep_content.substr(manual_start) if manual_start != -1 else MANUAL_MARKER + "\n")
+	_write(dep_file, dep_content)
+
 	# Manual deps
 	var manual_deps: Array[String] = []
 	var in_manual := false
-	for line: String in _read(apath + "/DEPENDENCIES.txt").split("\n"):
+	for line: String in _read(dep_file).split("\n"):
 		if MANUAL_MARKER in line:
 			in_manual = true
 			continue
@@ -588,7 +644,7 @@ static func _process_one(root: String, folder: String, c2r: Dictionary, c2a: Dic
 
 	# Registry sync
 	if not cur_url.is_empty():
-		_sync_registry(a_name, a_desc, cur_url, log)
+		_sync_registry(a_name, a_desc, a_category, cur_url, log)
 
 	# Git commit & push
 	var status_out := []
@@ -798,7 +854,7 @@ static func _parse_methods(lines: PackedStringArray) -> Array:
 
 # ─── Registry ────────────────────────────────────────────────────────────────
 
-static func _sync_registry(addon_name: String, addon_desc: String, addon_url: String, log: Callable) -> void:
+static func _sync_registry(addon_name: String, addon_desc: String, addon_category: String, addon_url: String, log: Callable) -> void:
 	var tmp := OS.get_temp_dir() + "/.cc_reg_" + str(int(Time.get_unix_time_from_system()))
 	if _exec("git", ["clone", "--depth", "1", ORG_REPO, tmp], Callable()) != OK:
 		log.call("⚠️  Registry clone failed (skipping).")
@@ -811,10 +867,11 @@ static func _sync_registry(addon_name: String, addon_desc: String, addon_url: St
 
 	if addon_url not in content:
 		var entry := "* [%s](%s) - %s" % [addon_name, addon_url, addon_desc]
-		if "## Uncategorized" in content:
-			content = content.replace("## Uncategorized\n", "## Uncategorized\n" + entry + "\n")
+		var section := "## " + addon_category
+		if section in content:
+			content = content.replace(section + "\n", section + "\n" + entry + "\n")
 		else:
-			content += "\n## Uncategorized\n" + entry + "\n"
+			content += "\n" + section + "\n" + entry + "\n"
 		_write(rfile, content)
 		_exec("git", ["-C", tmp, "add", "ADDONS.md"], Callable())
 		_exec("git", ["-C", tmp, "commit", "-m", "registry: add " + addon_name], Callable())

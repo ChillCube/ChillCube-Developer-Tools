@@ -10,6 +10,7 @@ var _installed_log: TextEdit
 var _create_name: LineEdit
 var _create_desc: LineEdit
 var _create_author: LineEdit
+var _create_category: LineEdit
 var _create_gh: CheckBox
 var _create_btn: Button
 var _create_log: TextEdit
@@ -17,7 +18,7 @@ var _clone_url: LineEdit
 var _clone_btn: Button
 var _clone_log: TextEdit
 var _push_btn: Button
-var _push_log: TextEdit
+var _update_plugin_btn: Button
 
 var _http: HTTPRequest
 var _registry_list: VBoxContainer
@@ -45,7 +46,6 @@ func _ready() -> void:
 	_build_addons_tab(tabs)
 	_build_create_tab(tabs)
 	_build_clone_tab(tabs)
-	_build_push_tab(tabs)
 
 	_refresh_addons()
 
@@ -66,8 +66,18 @@ func _build_addons_tab(tabs: TabContainer) -> void:
 	var refresh_btn := Button.new()
 	refresh_btn.text = "↺ Refresh"
 	refresh_btn.pressed.connect(_refresh_addons)
+	_push_btn = Button.new()
+	_push_btn.text = "🚀 Push All"
+	_push_btn.tooltip_text = "Scans all addons, generates README + DOCUMENTATION, commits, pushes to GitHub, and updates the ChillCube registry."
+	_push_btn.pressed.connect(_start_push)
+	_update_plugin_btn = Button.new()
+	_update_plugin_btn.text = "⬆ Update Plugin"
+	_update_plugin_btn.tooltip_text = "Pull the latest version of ChillCube Tools from GitHub."
+	_update_plugin_btn.pressed.connect(_start_update_plugin)
 	header.add_child(lbl)
 	header.add_child(refresh_btn)
+	header.add_child(_push_btn)
+	header.add_child(_update_plugin_btn)
 	root.add_child(header)
 
 	var split := HBoxContainer.new()
@@ -105,6 +115,7 @@ func _build_create_tab(tabs: TabContainer) -> void:
 	_create_name = _field(grid, "Addon Name")
 	_create_desc = _field(grid, "Description")
 	_create_author = _field(grid, "Author")
+	_create_category = _field(grid, "Category")
 	left.add_child(grid)
 
 	_create_gh = CheckBox.new()
@@ -157,33 +168,6 @@ func _build_clone_tab(tabs: TabContainer) -> void:
 	split.add_child(_clone_log)
 	root.add_child(split)
 
-func _build_push_tab(tabs: TabContainer) -> void:
-	var root := _vbox("Push All", tabs)
-
-	var split := HBoxContainer.new()
-	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-
-	var left := VBoxContainer.new()
-	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
-
-	var info := Label.new()
-	info.text = "Scans all addons, generates README + DOCUMENTATION, commits, pushes to GitHub, and updates the ChillCube registry."
-	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	left.add_child(info)
-
-	_push_btn = Button.new()
-	_push_btn.text = "🚀 Push All Addons"
-	_push_btn.pressed.connect(_start_push)
-	left.add_child(_push_btn)
-
-	split.add_child(left)
-	split.add_child(VSeparator.new())
-
-	_push_log = _side_log()
-	split.add_child(_push_log)
-	root.add_child(split)
 
 # ─── UI helpers ───────────────────────────────────────────────────────────────
 
@@ -292,12 +276,17 @@ func _start_create() -> void:
 	if name.is_empty():
 		_append_log(_create_log, "❌ Name is required.")
 		return
+	var category := _create_category.text.strip_edges()
+	if category.is_empty():
+		_append_log(_create_log, "❌ Category is required.")
+		return
 	_run_op(_create_btn, _create_log, func():
 		Ops.create_addon(
 			ProjectSettings.globalize_path("res://").rstrip("/"),
 			name,
 			_create_desc.text.strip_edges(),
 			_create_author.text.strip_edges(),
+			category,
 			_create_gh.button_pressed,
 			func(msg): call_deferred("_append_log", _create_log, msg)
 		)
@@ -318,11 +307,21 @@ func _start_clone() -> void:
 		call_deferred("_refresh_addons")
 	)
 
+func _start_update_plugin() -> void:
+	_installed_log.text = ""
+	_run_op(_update_plugin_btn, _installed_log, func():
+		Ops.update_plugin(
+			ProjectSettings.globalize_path("res://").rstrip("/"),
+			func(msg): call_deferred("_append_log", _installed_log, msg)
+		)
+	)
+
 func _start_push() -> void:
-	_run_op(_push_btn, _push_log, func():
+	_installed_log.text = ""
+	_run_op(_push_btn, _installed_log, func():
 		Ops.push_all(
 			ProjectSettings.globalize_path("res://").rstrip("/"),
-			func(msg): call_deferred("_append_log", _push_log, msg)
+			func(msg): call_deferred("_append_log", _installed_log, msg)
 		)
 	)
 
@@ -343,6 +342,7 @@ func _finish_op(btn: Button) -> void:
 		_thread.wait_to_finish()
 	_thread = null
 	btn.disabled = false
+	EditorInterface.get_resource_filesystem().scan()
 
 func _append_log(control: TextEdit, msg: String) -> void:
 	control.text += msg + "\n"
