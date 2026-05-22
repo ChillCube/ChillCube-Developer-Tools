@@ -27,7 +27,12 @@ var _dep_selected: String = ""
 var _dep_side_content: VBoxContainer
 var _dep_url_input: LineEdit
 var _dep_show_all_btn: CheckButton
+var _dep_status_lbl: Label
+var _dep_fetch_thread: Thread = null
+var _registry_dep_cache: Dictionary = {}  # cleaned url -> Array[String] of dep urls
 var _registry_entries: Array = []
+
+var _bug_list: VBoxContainer
 
 var _term_output: TextEdit
 var _term_input: LineEdit
@@ -64,6 +69,7 @@ func _ready() -> void:
 	_build_addons_tab(tabs)
 	_build_add_addon_tab(tabs)
 	_build_deps_tab(tabs)
+	_build_bugs_tab(tabs)
 	_build_terminal_tab(tabs)
 
 	_refresh_addons()
@@ -73,6 +79,8 @@ func _exit_tree() -> void:
 		_thread.wait_to_finish()
 	if _term_thread and _term_thread.is_started():
 		_term_thread.wait_to_finish()
+	if _dep_fetch_thread and _dep_fetch_thread.is_started():
+		_dep_fetch_thread.wait_to_finish()
 
 # ─── Tab builders ─────────────────────────────────────────────────────────────
 
@@ -205,12 +213,18 @@ func _build_deps_tab(tabs: TabContainer) -> void:
 	var toolbar := HBoxContainer.new()
 	var refresh_btn := Button.new()
 	refresh_btn.text = "↺ Refresh"
-	refresh_btn.pressed.connect(_refresh_deps)
+	refresh_btn.pressed.connect(func():
+		_registry_dep_cache.clear()
+		_refresh_deps()
+	)
 	_dep_show_all_btn = CheckButton.new()
 	_dep_show_all_btn.text = "Show all registry addons"
 	_dep_show_all_btn.toggled.connect(func(_v): _refresh_deps())
+	_dep_status_lbl = Label.new()
+	_dep_status_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 	toolbar.add_child(refresh_btn)
 	toolbar.add_child(_dep_show_all_btn)
+	toolbar.add_child(_dep_status_lbl)
 	root.add_child(toolbar)
 
 	var split := HBoxContainer.new()
@@ -231,7 +245,7 @@ func _build_deps_tab(tabs: TabContainer) -> void:
 	side.custom_minimum_size = Vector2(220, 0)
 
 	var hint := Label.new()
-	hint.text = "Click a node to edit its dependencies.\nDrag from the green ● to add a dependency."
+	hint.text = "Click a node to edit its dependencies.\nOrange ● = existing dep slot. Drag from the green ● (bottom of a node) to connect a new dependency."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 	side.add_child(hint)
@@ -267,6 +281,7 @@ func _refresh_deps() -> void:
 	_dep_graph.clear_connections()
 	for node in _dep_nodes.values():
 		if is_instance_valid(node):
+			_dep_graph.remove_child(node)
 			node.queue_free()
 	_dep_nodes = {}
 	_dep_node_folders = {}
@@ -292,13 +307,17 @@ func _refresh_deps() -> void:
 		if not clean_url.is_empty():
 			seen_urls.append(clean_url)
 
+	var needs_fetch: Array[String] = []
 	if _dep_show_all_btn.button_pressed:
 		for e: Dictionary in _registry_entries:
 			var raw_url: String = e.get("url", "")
 			var clean := raw_url.replace(".git", "").replace("git@github.com:", "https://github.com/")
 			if clean not in seen_urls and not clean.is_empty():
+				var cached_deps: Array = _registry_dep_cache.get(clean, [])
 				all_entries.append({"name": e.get("name", clean.get_file()),
-					"folder": "", "url": clean, "installed": false, "deps": []})
+					"folder": "", "url": clean, "installed": false, "deps": cached_deps})
+				if not _registry_dep_cache.has(clean):
+					needs_fetch.append(clean)
 
 	# url -> eid map for connection drawing
 	var url_to_eid: Dictionary = {}
@@ -391,6 +410,11 @@ func _refresh_deps() -> void:
 				var dep_eid: String = url_to_eid[dep_url]
 				if (eid in _dep_nodes) and (dep_eid in _dep_nodes):
 					_dep_graph.connect_node(eid, i + 1, dep_eid, 0)
+
+	if not needs_fetch.is_empty() and (not _dep_fetch_thread or not _dep_fetch_thread.is_started()):
+		_dep_status_lbl.text = "Fetching registry deps…"
+		_dep_fetch_thread = Thread.new()
+		_dep_fetch_thread.start(_fetch_uninstalled_deps.bind(needs_fetch))
 
 func _dep_on_connect(from_node: StringName, from_port: int, to_node: StringName, to_port: int) -> void:
 	var from_str := str(from_node)
@@ -492,6 +516,171 @@ func _dep_add_external() -> void:
 	Ops.add_dep(ProjectSettings.globalize_path("res://").rstrip("/") + "/addons/" + folder, clean)
 	_dep_url_input.text = ""
 	_refresh_deps()
+
+func _fetch_uninstalled_deps(urls: Array[String]) -> void:
+	var result: Dictionary = {}
+	for url: String in urls:
+		var raw := url.replace("https://github.com/", "https://raw.githubusercontent.com/") \
+			+ "/main/DEPENDENCIES.txt"
+		var output: Array = []
+		OS.execute("curl", ["-sf", "--max-time", "10", raw], output, true)
+		var deps: Array[String] = []
+		if not output.is_empty():
+			for line: String in (output[0] as String).split("\n"):
+				var t := line.strip_edges()
+				if t.begins_with("http"):
+					var clean := t.replace(".git", "").replace("git@github.com:", "https://github.com/")
+					if clean not in deps:
+						deps.append(clean)
+		result[url] = deps
+	call_deferred("_on_uninstalled_deps_fetched", result)
+
+func _on_uninstalled_deps_fetched(result: Dictionary) -> void:
+	if _dep_fetch_thread and _dep_fetch_thread.is_started():
+		_dep_fetch_thread.wait_to_finish()
+	_dep_fetch_thread = null
+	_dep_status_lbl.text = ""
+	for url: String in result:
+		_registry_dep_cache[url] = result[url]
+	_refresh_deps()
+
+func _build_bugs_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Bugs", tabs)
+
+	var toolbar := HBoxContainer.new()
+	var title := Label.new()
+	title.text = "Add  #bug <description>  at the end of any line in a .gd file to track it here."
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	title.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	var refresh_btn := Button.new()
+	refresh_btn.text = "↺ Refresh"
+	refresh_btn.pressed.connect(_refresh_bugs)
+	toolbar.add_child(title)
+	toolbar.add_child(refresh_btn)
+	root.add_child(toolbar)
+	root.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_bug_list = VBoxContainer.new()
+	_bug_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_bug_list)
+	root.add_child(scroll)
+
+	_refresh_bugs()
+
+# ─── Bug tracker logic ────────────────────────────────────────────────────────
+
+func _refresh_bugs() -> void:
+	for child in _bug_list.get_children():
+		child.queue_free()
+
+	var project_root := ProjectSettings.globalize_path("res://").rstrip("/")
+	var bugs := _scan_bugs(project_root)
+
+	if bugs.is_empty():
+		var lbl := Label.new()
+		lbl.text = "No bugs found."
+		lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_bug_list.add_child(lbl)
+		return
+
+	for bug: Dictionary in bugs:
+		var row := HBoxContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var check := CheckBox.new()
+		row.add_child(check)
+
+		var info := VBoxContainer.new()
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var desc_lbl := Label.new()
+		desc_lbl.text = bug.get("desc", "")
+		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		info.add_child(desc_lbl)
+
+		var loc_lbl := Label.new()
+		var rel_path: String = (bug.get("path", "") as String).replace(project_root + "/", "")
+		loc_lbl.text = rel_path + ":" + str(int(bug.get("line", 0)) + 1)
+		loc_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+		loc_lbl.clip_text = true
+		info.add_child(loc_lbl)
+
+		row.add_child(info)
+
+		var cap := bug
+		check.toggled.connect(func(pressed: bool):
+			if pressed:
+				_resolve_bug(cap)
+		)
+
+		_bug_list.add_child(row)
+		_bug_list.add_child(HSeparator.new())
+
+func _scan_bugs(path: String) -> Array:
+	var result := []
+	var dir := DirAccess.open(path)
+	if not dir:
+		return result
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "":
+		if not entry.begins_with("."):
+			var full := path + "/" + entry
+			if dir.current_is_dir():
+				if entry != ".godot" and entry != ".git":
+					result.append_array(_scan_bugs(full))
+			elif entry.ends_with(".gd"):
+				var f := FileAccess.open(full, FileAccess.READ)
+				if f:
+					var text := f.get_as_text()
+					f.close()
+					var line_num := 0
+					for line: String in text.split("\n"):
+						var idx := line.to_lower().find("#bug ")
+						if idx != -1:
+							var desc := line.substr(idx + 5).strip_edges()
+							if not desc.is_empty():
+								result.append({"path": full, "line": line_num, "desc": desc, "full_line": line})
+						line_num += 1
+		entry = dir.get_next()
+	dir.list_dir_end()
+	return result
+
+func _resolve_bug(bug: Dictionary) -> void:
+	var path: String = bug.get("path", "")
+	var line_num: int = bug.get("line", -1)
+	if path.is_empty() or line_num < 0:
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if not f:
+		return
+	var lines := f.get_as_text().split("\n")
+	f.close()
+	if line_num >= lines.size():
+		return
+	var current := lines[line_num]
+	var idx := current.to_lower().find("#bug ")
+	if idx == -1:
+		return
+	var stripped := current.substr(0, idx).rstrip(" \t")
+	var new_lines: PackedStringArray = []
+	for i in range(lines.size()):
+		if i == line_num:
+			if not stripped.is_empty():
+				new_lines.append(stripped)
+		else:
+			new_lines.append(lines[i])
+	var fw := FileAccess.open(path, FileAccess.WRITE)
+	if not fw:
+		return
+	fw.store_string("\n".join(new_lines))
+	fw.close()
+	EditorInterface.get_resource_filesystem().scan()
+	call_deferred("_refresh_bugs")
 
 func _build_terminal_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Terminal", tabs)
