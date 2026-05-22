@@ -65,10 +65,7 @@ func _ready() -> void:
 	tabs.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(tabs)
 
-	_build_browse_tab(tabs)
-	_build_addons_tab(tabs)
-	_build_add_addon_tab(tabs)
-	_build_deps_tab(tabs)
+	_build_addons_supertab(tabs)
 	_build_planning_tab(tabs)
 	_build_terminal_tab(tabs)
 
@@ -83,6 +80,17 @@ func _exit_tree() -> void:
 		_todo_thread.wait_to_finish()
 
 # ─── Tab builders ─────────────────────────────────────────────────────────────
+
+func _build_addons_supertab(tabs: TabContainer) -> void:
+	var outer := _vbox("Addons", tabs)
+	var inner_tabs := TabContainer.new()
+	inner_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	inner_tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	outer.add_child(inner_tabs)
+	_build_browse_tab(inner_tabs)
+	_build_addons_tab(inner_tabs)
+	_build_add_addon_tab(inner_tabs)
+	_build_deps_tab(inner_tabs)
 
 func _build_addons_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Installed Addons", tabs)
