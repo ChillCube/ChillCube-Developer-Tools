@@ -25,6 +25,18 @@ var _dep_selected_folder: String = ""
 var _dep_add_picker: OptionButton
 var _registry_entries: Array = []
 
+var _plan_list: VBoxContainer
+var _plan_editor: VBoxContainer
+var _plan_selected: int = -1
+var _planned_addons: Array = []
+var _plan_name_edit: LineEdit
+var _plan_desc_edit: LineEdit
+var _plan_author_edit: LineEdit
+var _plan_cat_edit: OptionButton
+var _plan_dep_picker: OptionButton
+var _plan_status_lbl: Label
+var _plan_thread: Thread = null
+
 var _bug_list: VBoxContainer
 
 var _todo_list: VBoxContainer
@@ -78,6 +90,8 @@ func _exit_tree() -> void:
 		_term_thread.wait_to_finish()
 	if _todo_thread and _todo_thread.is_started():
 		_todo_thread.wait_to_finish()
+	if _plan_thread and _plan_thread.is_started():
+		_plan_thread.wait_to_finish()
 
 # ─── Tab builders ─────────────────────────────────────────────────────────────
 
@@ -420,8 +434,483 @@ func _build_planning_tab(tabs: TabContainer) -> void:
 	inner_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	inner_tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	outer.add_child(inner_tabs)
+	_build_planned_subtab(inner_tabs)
 	_build_bugs_subtab(inner_tabs)
 	_build_todo_subtab(inner_tabs)
+
+func _build_planned_subtab(tabs: TabContainer) -> void:
+	var root := _vbox("Planned", tabs)
+
+	var toolbar := HBoxContainer.new()
+	var new_btn := Button.new()
+	new_btn.text = "➕ New"
+	new_btn.pressed.connect(_plan_new)
+	var push_btn := Button.new()
+	push_btn.text = "⬆ Push"
+	push_btn.tooltip_text = "Commit and push PLANNED_ADDONS.json to the project's GitHub repo."
+	push_btn.pressed.connect(_plan_push)
+	_plan_status_lbl = Label.new()
+	_plan_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_plan_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+	toolbar.add_child(new_btn)
+	toolbar.add_child(push_btn)
+	toolbar.add_child(_plan_status_lbl)
+	root.add_child(toolbar)
+
+	var split := HBoxContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var left_scroll := ScrollContainer.new()
+	left_scroll.custom_minimum_size = Vector2(210, 0)
+	left_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_plan_list = VBoxContainer.new()
+	_plan_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_scroll.add_child(_plan_list)
+	split.add_child(left_scroll)
+
+	split.add_child(VSeparator.new())
+
+	var right_scroll := ScrollContainer.new()
+	right_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	right_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_plan_editor = VBoxContainer.new()
+	_plan_editor.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_scroll.add_child(_plan_editor)
+	split.add_child(right_scroll)
+
+	root.add_child(split)
+
+	_load_planned()
+	_refresh_plan_list()
+
+# ─── Planned addons logic ─────────────────────────────────────────────────────
+
+func _plan_file() -> String:
+	return ProjectSettings.globalize_path("res://").rstrip("/") + "/PLANNED_ADDONS.json"
+
+func _load_planned() -> void:
+	_planned_addons = []
+	var path := _plan_file()
+	if not FileAccess.file_exists(path):
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f:
+		var parsed := JSON.parse_string(f.get_as_text())
+		f.close()
+		if parsed is Array:
+			_planned_addons = parsed
+
+func _save_planned() -> void:
+	var fw := FileAccess.open(_plan_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(_planned_addons, "\t"))
+		fw.close()
+
+func _get_in_dev_folders() -> Array[String]:
+	var result: Array[String] = []
+	for pa: Dictionary in _planned_addons:
+		if pa.get("created", false):
+			result.append((pa.get("name", "") as String).replace(" ", "_"))
+	return result
+
+func _plan_new() -> void:
+	_planned_addons.append({
+		"name": "NewAddon", "desc": "", "author": "", "category": "Uncategorized",
+		"deps": [], "exports": [], "funcs": [], "created": false
+	})
+	_plan_selected = _planned_addons.size() - 1
+	_save_planned()
+	_refresh_plan_list()
+
+func _plan_push() -> void:
+	if _plan_thread and _plan_thread.is_started():
+		return
+	_plan_status_lbl.text = "Pushing…"
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+	_plan_thread = Thread.new()
+	_plan_thread.start(func():
+		OS.execute("git", PackedStringArray(["-C", root, "add", "PLANNED_ADDONS.json"]), [], true)
+		OS.execute("git", PackedStringArray(["-C", root, "commit", "-m", "plan: update planned addons"]), [], true)
+		OS.execute("git", PackedStringArray(["-C", root, "push", "origin", "main"]), [], true)
+		call_deferred("_plan_on_pushed")
+	)
+
+func _plan_on_pushed() -> void:
+	if _plan_thread and _plan_thread.is_started():
+		_plan_thread.wait_to_finish()
+	_plan_thread = null
+	_plan_status_lbl.text = "Pushed!"
+	get_tree().create_timer(2.5).timeout.connect(func():
+		if is_instance_valid(_plan_status_lbl): _plan_status_lbl.text = ""
+	)
+
+func _plan_create_repo(idx: int) -> void:
+	if _thread and _thread.is_started():
+		_plan_status_lbl.text = "⚠ Another operation is running."
+		return
+	var pa: Dictionary = _planned_addons[idx]
+	var name: String = (pa.get("name", "") as String).strip_edges()
+	if name.is_empty():
+		return
+	_plan_status_lbl.text = "Creating repo…"
+	var cap_idx := idx
+	_thread = Thread.new()
+	_thread.start(func():
+		var root := ProjectSettings.globalize_path("res://").rstrip("/")
+		Ops.create_addon(root, name, pa.get("desc", ""), pa.get("author", ""),
+			pa.get("category", "Uncategorized"), true, func(_msg): pass)
+		call_deferred("_plan_on_created", cap_idx)
+	)
+
+func _plan_on_created(idx: int) -> void:
+	if _thread and _thread.is_started():
+		_thread.wait_to_finish()
+	_thread = null
+	if idx < _planned_addons.size():
+		_planned_addons[idx]["created"] = true
+		_save_planned()
+	_refresh_plan_list()
+	_refresh_addons()
+	EditorInterface.get_resource_filesystem().scan()
+	_plan_status_lbl.text = "✅ Repo created!"
+	get_tree().create_timer(3.0).timeout.connect(func():
+		if is_instance_valid(_plan_status_lbl): _plan_status_lbl.text = ""
+	)
+
+func _plan_declare_finished(idx: int) -> void:
+	_planned_addons.remove_at(idx)
+	_save_planned()
+	_plan_selected = clampi(_plan_selected, 0, max(0, _planned_addons.size() - 1))
+	if _planned_addons.is_empty():
+		_plan_selected = -1
+	_refresh_plan_list()
+	_refresh_addons()
+
+func _plan_save_basic() -> void:
+	if _plan_selected < 0 or _plan_selected >= _planned_addons.size():
+		return
+	_planned_addons[_plan_selected]["name"] = _plan_name_edit.text.strip_edges()
+	_planned_addons[_plan_selected]["desc"] = _plan_desc_edit.text.strip_edges()
+	_planned_addons[_plan_selected]["author"] = _plan_author_edit.text.strip_edges()
+	if is_instance_valid(_plan_cat_edit) and _plan_cat_edit.selected >= 0:
+		_planned_addons[_plan_selected]["category"] = _plan_cat_edit.get_item_text(_plan_cat_edit.selected)
+	_save_planned()
+	_refresh_plan_list()
+
+func _plan_add_dep() -> void:
+	if not is_instance_valid(_plan_dep_picker) or _plan_dep_picker.item_count == 0:
+		return
+	var url: String = _plan_dep_picker.get_item_metadata(_plan_dep_picker.selected)
+	if url.is_empty() or _plan_selected < 0:
+		return
+	if not _planned_addons[_plan_selected].has("deps"):
+		_planned_addons[_plan_selected]["deps"] = []
+	var deps := _planned_addons[_plan_selected]["deps"] as Array
+	if url not in deps:
+		deps.append(url)
+		_save_planned()
+		_refresh_plan_editor()
+
+func _refresh_plan_list() -> void:
+	for child in _plan_list.get_children():
+		child.queue_free()
+
+	if _planned_addons.is_empty():
+		var lbl := Label.new()
+		lbl.text = "No planned addons yet.\nClick ➕ to start planning one."
+		lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_plan_list.add_child(lbl)
+		_plan_selected = -1
+		_refresh_plan_editor()
+		return
+
+	_plan_selected = clampi(_plan_selected, 0, _planned_addons.size() - 1)
+
+	for i in range(_planned_addons.size()):
+		var pa: Dictionary = _planned_addons[i]
+		var item := VBoxContainer.new()
+		item.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var name_btn := Button.new()
+		name_btn.text = ("🔨 " if pa.get("created", false) else "📋 ") + pa.get("name", "Unnamed")
+		name_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		name_btn.flat = true
+		if i == _plan_selected:
+			name_btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+		var cap_i := i
+		name_btn.pressed.connect(func():
+			_plan_selected = cap_i
+			_refresh_plan_list()
+		)
+		item.add_child(name_btn)
+
+		var actions := HBoxContainer.new()
+		var create_btn := Button.new()
+		create_btn.text = "🚀 Create Repo"
+		create_btn.disabled = pa.get("created", false)
+		create_btn.tooltip_text = "Initialize git repo and addon files" if not pa.get("created", false) else "Already created"
+		create_btn.pressed.connect(func(): _plan_create_repo(cap_i))
+		actions.add_child(create_btn)
+
+		var finish_btn := Button.new()
+		finish_btn.text = "✅ Done"
+		finish_btn.tooltip_text = "Declare finished — addon moves to Installed Addons"
+		finish_btn.pressed.connect(func(): _plan_declare_finished(cap_i))
+		actions.add_child(finish_btn)
+		item.add_child(actions)
+
+		item.add_child(HSeparator.new())
+		_plan_list.add_child(item)
+
+	_refresh_plan_editor()
+
+func _refresh_plan_editor() -> void:
+	for child in _plan_editor.get_children():
+		child.queue_free()
+
+	if _plan_selected < 0 or _plan_selected >= _planned_addons.size():
+		var hint := Label.new()
+		hint.text = "Select a planned addon on the left to edit it."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_plan_editor.add_child(hint)
+		return
+
+	var pa: Dictionary = _planned_addons[_plan_selected]
+
+	# ── Basic info ──
+	var basic_hdr := Label.new()
+	basic_hdr.text = "Basic Info"
+	basic_hdr.add_theme_font_size_override("font_size", 13)
+	_plan_editor.add_child(basic_hdr)
+
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	_plan_name_edit = _field(grid, "Name")
+	_plan_name_edit.text = pa.get("name", "")
+	_plan_desc_edit = _field(grid, "Description")
+	_plan_desc_edit.text = pa.get("desc", "")
+	_plan_author_edit = _field(grid, "Author")
+	_plan_author_edit.text = pa.get("author", "")
+
+	var cat_lbl := Label.new()
+	cat_lbl.text = "Category:"
+	grid.add_child(cat_lbl)
+	_plan_cat_edit = OptionButton.new()
+	_plan_cat_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var seen_cats: Array[String] = []
+	for entry: Dictionary in _registry_entries:
+		var cat: String = entry.get("category", "")
+		if not cat.is_empty() and cat not in seen_cats:
+			seen_cats.append(cat)
+			_plan_cat_edit.add_item(cat)
+	if _plan_cat_edit.item_count == 0:
+		_plan_cat_edit.add_item("Uncategorized")
+	var cur_cat: String = pa.get("category", "")
+	for i in range(_plan_cat_edit.item_count):
+		if _plan_cat_edit.get_item_text(i) == cur_cat:
+			_plan_cat_edit.selected = i
+			break
+	grid.add_child(_plan_cat_edit)
+	_plan_editor.add_child(grid)
+
+	var save_btn := Button.new()
+	save_btn.text = "💾 Save Basic Info"
+	save_btn.pressed.connect(_plan_save_basic)
+	_plan_editor.add_child(save_btn)
+
+	_plan_editor.add_child(HSeparator.new())
+
+	# ── Dependencies ──
+	var dep_hdr := Label.new()
+	dep_hdr.text = "Dependencies"
+	dep_hdr.add_theme_font_size_override("font_size", 13)
+	_plan_editor.add_child(dep_hdr)
+
+	var deps: Array = pa.get("deps", [])
+	if deps.is_empty():
+		var none_lbl := Label.new()
+		none_lbl.text = "(none)"
+		none_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_plan_editor.add_child(none_lbl)
+	for dep_url: String in deps:
+		var row := HBoxContainer.new()
+		var dl := Label.new()
+		dl.text = _url_to_display_name(dep_url)
+		dl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		dl.tooltip_text = dep_url
+		var rm := Button.new()
+		rm.text = "✕"
+		var cap_url := dep_url
+		rm.pressed.connect(func():
+			(_planned_addons[_plan_selected]["deps"] as Array).erase(cap_url)
+			_save_planned()
+			_refresh_plan_editor()
+		)
+		row.add_child(dl)
+		row.add_child(rm)
+		_plan_editor.add_child(row)
+
+	var dep_row := HBoxContainer.new()
+	_plan_dep_picker = OptionButton.new()
+	_plan_dep_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_plan_dep_picker.clip_text = true
+	dep_row.add_child(_plan_dep_picker)
+	# Populate picker
+	_plan_dep_picker.clear()
+	var root_path := ProjectSettings.globalize_path("res://").rstrip("/")
+	for folder: String in Ops.list_addons(root_path):
+		var url := Ops.git_remote(root_path + "/addons/" + folder)
+		if url.is_empty() or url in deps:
+			continue
+		var cfg := Ops.parse_cfg(root_path + "/addons/" + folder + "/plugin.cfg")
+		_plan_dep_picker.add_item("📦 " + cfg.get("name", folder))
+		_plan_dep_picker.set_item_metadata(_plan_dep_picker.item_count - 1, url)
+	for entry: Dictionary in _registry_entries:
+		var raw: String = entry.get("url", "")
+		var clean := raw.replace(".git", "").replace("git@github.com:", "https://github.com/")
+		if clean.is_empty() or clean in deps:
+			continue
+		_plan_dep_picker.add_item("🌐 " + entry.get("name", clean.get_file()))
+		_plan_dep_picker.set_item_metadata(_plan_dep_picker.item_count - 1, clean)
+	if _plan_dep_picker.item_count == 0:
+		_plan_dep_picker.add_item("(none available)")
+		_plan_dep_picker.set_item_metadata(0, "")
+	var dep_add_btn := Button.new()
+	dep_add_btn.text = "➕"
+	dep_add_btn.pressed.connect(_plan_add_dep)
+	dep_row.add_child(dep_add_btn)
+	_plan_editor.add_child(dep_row)
+
+	_plan_editor.add_child(HSeparator.new())
+
+	# ── Export variables ──
+	var ev_hdr := Label.new()
+	ev_hdr.text = "Export Variables"
+	ev_hdr.add_theme_font_size_override("font_size", 13)
+	_plan_editor.add_child(ev_hdr)
+
+	var exports: Array = pa.get("exports", [])
+	for i in range(exports.size()):
+		var ev: Dictionary = exports[i]
+		var row := HBoxContainer.new()
+		var ev_lbl := Label.new()
+		ev_lbl.text = "@export var %s: %s = %s  # %s" % [ev.get("name","?"), ev.get("type","Variant"), ev.get("default","-"), ev.get("desc","")]
+		ev_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		ev_lbl.clip_text = true
+		ev_lbl.tooltip_text = ev_lbl.text
+		var rm := Button.new()
+		rm.text = "✕"
+		var cap_i := i
+		rm.pressed.connect(func():
+			(_planned_addons[_plan_selected]["exports"] as Array).remove_at(cap_i)
+			_save_planned()
+			_refresh_plan_editor()
+		)
+		row.add_child(ev_lbl)
+		row.add_child(rm)
+		_plan_editor.add_child(row)
+
+	var ev_form := HBoxContainer.new()
+	var ev_name := LineEdit.new()
+	ev_name.placeholder_text = "name"
+	ev_name.custom_minimum_size = Vector2(80, 0)
+	var ev_type := LineEdit.new()
+	ev_type.placeholder_text = "type"
+	ev_type.text = "float"
+	ev_type.custom_minimum_size = Vector2(70, 0)
+	var ev_def := LineEdit.new()
+	ev_def.placeholder_text = "default"
+	ev_def.custom_minimum_size = Vector2(60, 0)
+	var ev_desc := LineEdit.new()
+	ev_desc.placeholder_text = "description"
+	ev_desc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var ev_add := Button.new()
+	ev_add.text = "➕"
+	ev_add.pressed.connect(func():
+		var n := ev_name.text.strip_edges()
+		if n.is_empty(): return
+		if not _planned_addons[_plan_selected].has("exports"):
+			_planned_addons[_plan_selected]["exports"] = []
+		(_planned_addons[_plan_selected]["exports"] as Array).append({
+			"name": n,
+			"type": ev_type.text.strip_edges() if not ev_type.text.strip_edges().is_empty() else "Variant",
+			"default": ev_def.text.strip_edges() if not ev_def.text.strip_edges().is_empty() else "null",
+			"desc": ev_desc.text.strip_edges()
+		})
+		_save_planned()
+		_refresh_plan_editor()
+	)
+	for c in [ev_name, ev_type, ev_def, ev_desc, ev_add]:
+		ev_form.add_child(c)
+	_plan_editor.add_child(ev_form)
+
+	_plan_editor.add_child(HSeparator.new())
+
+	# ── Functions ──
+	var fn_hdr := Label.new()
+	fn_hdr.text = "Functions"
+	fn_hdr.add_theme_font_size_override("font_size", 13)
+	_plan_editor.add_child(fn_hdr)
+
+	var funcs: Array = pa.get("funcs", [])
+	for i in range(funcs.size()):
+		var fn: Dictionary = funcs[i]
+		var row := HBoxContainer.new()
+		var fn_lbl := Label.new()
+		fn_lbl.text = "func %s(%s) → %s  # %s" % [fn.get("name","?"), fn.get("params",""), fn.get("return_type","void"), fn.get("desc","")]
+		fn_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		fn_lbl.clip_text = true
+		fn_lbl.tooltip_text = fn_lbl.text
+		var rm := Button.new()
+		rm.text = "✕"
+		var cap_i := i
+		rm.pressed.connect(func():
+			(_planned_addons[_plan_selected]["funcs"] as Array).remove_at(cap_i)
+			_save_planned()
+			_refresh_plan_editor()
+		)
+		row.add_child(fn_lbl)
+		row.add_child(rm)
+		_plan_editor.add_child(row)
+
+	var fn_form := HBoxContainer.new()
+	var fn_name := LineEdit.new()
+	fn_name.placeholder_text = "name"
+	fn_name.custom_minimum_size = Vector2(90, 0)
+	var fn_params := LineEdit.new()
+	fn_params.placeholder_text = "params"
+	fn_params.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var fn_ret := LineEdit.new()
+	fn_ret.placeholder_text = "return"
+	fn_ret.text = "void"
+	fn_ret.custom_minimum_size = Vector2(60, 0)
+	var fn_desc := LineEdit.new()
+	fn_desc.placeholder_text = "description"
+	fn_desc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var fn_add := Button.new()
+	fn_add.text = "➕"
+	fn_add.pressed.connect(func():
+		var n := fn_name.text.strip_edges()
+		if n.is_empty(): return
+		if not _planned_addons[_plan_selected].has("funcs"):
+			_planned_addons[_plan_selected]["funcs"] = []
+		(_planned_addons[_plan_selected]["funcs"] as Array).append({
+			"name": n,
+			"params": fn_params.text.strip_edges(),
+			"return_type": fn_ret.text.strip_edges() if not fn_ret.text.strip_edges().is_empty() else "void",
+			"desc": fn_desc.text.strip_edges()
+		})
+		_save_planned()
+		_refresh_plan_editor()
+	)
+	for c in [fn_name, fn_params, fn_ret, fn_desc, fn_add]:
+		fn_form.add_child(c)
+	_plan_editor.add_child(fn_form)
 
 func _build_bugs_subtab(tabs: TabContainer) -> void:
 	var root := _vbox("Bugs", tabs)
@@ -939,8 +1428,11 @@ func _refresh_addons() -> void:
 		return
 
 	var dependents: Dictionary = Ops.get_dependents(root)
+	var in_dev := _get_in_dev_folders()
 
 	for folder: String in addons:
+		if folder in in_dev:
+			continue
 		var cfg := Ops.parse_cfg(root + "/addons/" + folder + "/plugin.cfg")
 		var row := HBoxContainer.new()
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
