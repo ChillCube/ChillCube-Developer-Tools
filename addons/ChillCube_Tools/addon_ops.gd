@@ -138,6 +138,9 @@ static func git_remote(addon_path: String) -> String:
 	url = url.replace("git@github.com:", "https://github.com/")
 	return url
 
+static func is_chillcube(url: String) -> bool:
+	return url.to_lower().contains("github.com/chillcube/")
+
 # ─── CREATE ADDON ────────────────────────────────────────────────────────────
 
 static func create_addon(root: String, addon_name: String, desc: String, author: String, category: String, create_gh: bool, log: Callable) -> bool:
@@ -236,11 +239,15 @@ static func sync_addon(root: String, url: String, log: Callable) -> bool:
 						log.call("⚠️  Merge conflict — resolve manually in addons/" + name)
 						_git(["rebase", "--abort"], apath, Callable())
 						return false
-					# 3. Push merged result back to remote
-					log.call("⬆️  Pushing to remote...")
-					var push_ok := _git(["push", "origin", "main"], apath, log) == OK
-					log.call("✅ Synced!" if push_ok else "⚠️  Push failed — check your remote access.")
-					return push_ok
+					# 3. Push back — only for ChillCube-owned repos
+					if is_chillcube(clean_url):
+						log.call("⬆️  Pushing to remote...")
+						var push_ok := _git(["push", "origin", "main"], apath, log) == OK
+						log.call("✅ Synced!" if push_ok else "⚠️  Push failed — check your remote access.")
+						return push_ok
+					else:
+						log.call("✅ Pulled latest. (Push skipped — not a ChillCube addon.)")
+						return true
 			name = dir.get_next()
 		dir.list_dir_end()
 	return clone_addon(root, url, log)
@@ -680,6 +687,10 @@ static func _process_one(root: String, folder: String, c2r: Dictionary, c2a: Dic
 	if od.size() > 1: od.remove_at(1)
 	if "\n".join(PackedStringArray(nd)) != "\n".join(PackedStringArray(od)):
 		_write(doc_path, new_doc)
+
+	if not is_chillcube(cur_url):
+		log.call("⏭️  Skipping push & registry — not a ChillCube addon.")
+		return false
 
 	# Registry sync
 	if not cur_url.is_empty():

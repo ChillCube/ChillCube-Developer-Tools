@@ -1528,13 +1528,15 @@ func _refresh_addons() -> void:
 		row.add_child(info)
 
 		var url := Ops.git_remote(root + "/addons/" + folder)
+		var owned := Ops.is_chillcube(url)
+
 		var copy_btn := Button.new()
 		copy_btn.text = "🔗"
 		if url.is_empty():
 			copy_btn.disabled = true
 			copy_btn.tooltip_text = "No GitHub remote found"
 		else:
-			copy_btn.tooltip_text = url
+			copy_btn.tooltip_text = (("🧊 ChillCube addon\n") if owned else ("⚠️ Third-party — push disabled\n")) + url
 			var captured_url := url
 			copy_btn.pressed.connect(func():
 				DisplayServer.clipboard_set(captured_url)
@@ -1550,7 +1552,10 @@ func _refresh_addons() -> void:
 			sync_btn.tooltip_text = "No GitHub remote — cannot sync"
 		else:
 			var captured_url := url
-			sync_btn.tooltip_text = "Pull latest from " + url
+			sync_btn.tooltip_text = (
+				"Sync (pull + push) with " + url if owned
+				else "Pull only — push disabled for third-party addons\n" + url
+			)
 			sync_btn.pressed.connect(func():
 				_installed_log.text = ""
 				_run_op(sync_btn, _installed_log, func():
