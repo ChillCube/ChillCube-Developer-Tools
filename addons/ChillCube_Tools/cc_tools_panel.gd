@@ -20,6 +20,15 @@ var _clone_log: TextEdit
 var _push_btn: Button
 var _update_plugin_btn: Button
 
+var _term_output: TextEdit
+var _term_input: LineEdit
+var _term_cwd_label: Label
+var _term_run_btn: Button
+var _term_cwd: String = ""
+var _term_history: Array[String] = []
+var _term_hist_idx: int = -1
+var _term_thread: Thread = null
+
 var _http: HTTPRequest
 var _registry_list: VBoxContainer
 var _registry_status: Label
@@ -46,12 +55,15 @@ func _ready() -> void:
 	_build_addons_tab(tabs)
 	_build_create_tab(tabs)
 	_build_clone_tab(tabs)
+	_build_terminal_tab(tabs)
 
 	_refresh_addons()
 
 func _exit_tree() -> void:
 	if _thread and _thread.is_started():
 		_thread.wait_to_finish()
+	if _term_thread and _term_thread.is_started():
+		_term_thread.wait_to_finish()
 
 # ─── Tab builders ─────────────────────────────────────────────────────────────
 
@@ -174,6 +186,161 @@ func _build_clone_tab(tabs: TabContainer) -> void:
 	split.add_child(_clone_log)
 	root.add_child(split)
 
+func _build_terminal_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Terminal", tabs)
+
+	var header := HBoxContainer.new()
+	_term_cwd_label = Label.new()
+	_term_cwd_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_term_cwd_label.clip_text = true
+	_term_cwd_label.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+	var ext_btn := Button.new()
+	ext_btn.text = "↗ Open in Terminal"
+	ext_btn.tooltip_text = "Open an external terminal in the current directory (needed for interactive apps like Claude Code)."
+	ext_btn.pressed.connect(_term_open_external)
+	var clear_btn := Button.new()
+	clear_btn.text = "Clear"
+	clear_btn.pressed.connect(func(): _term_output.text = "")
+	header.add_child(_term_cwd_label)
+	header.add_child(ext_btn)
+	header.add_child(clear_btn)
+	root.add_child(header)
+
+	_term_output = TextEdit.new()
+	_term_output.editable = false
+	_term_output.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_term_output.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_term_output.wrap_mode = TextEdit.LINE_WRAPPING_NONE
+	var code_font: Font = EditorInterface.get_editor_theme().get_font("source", "EditorFonts")
+	if code_font:
+		_term_output.add_theme_font_override("font", code_font)
+	root.add_child(_term_output)
+
+	var input_row := HBoxContainer.new()
+	_term_input = LineEdit.new()
+	_term_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_term_input.placeholder_text = "Enter command…"
+	_term_input.text_submitted.connect(func(_t): _term_run())
+	_term_input.gui_input.connect(_term_history_key)
+	_term_run_btn = Button.new()
+	_term_run_btn.text = "▶ Run"
+	_term_run_btn.pressed.connect(_term_run)
+	input_row.add_child(_term_input)
+	input_row.add_child(_term_run_btn)
+	root.add_child(input_row)
+
+	_term_cwd = ProjectSettings.globalize_path("res://").rstrip("/")
+	_term_update_prompt()
+	_term_append("ChillCube Terminal — " + OS.get_name() + "\n")
+
+# ─── Terminal logic ───────────────────────────────────────────────────────────
+
+func _term_update_prompt() -> void:
+	_term_cwd_label.text = _term_cwd + " $"
+
+func _term_history_key(event: InputEvent) -> void:
+	if not (event is InputEventKey) or not event.pressed:
+		return
+	if event.keycode == KEY_UP:
+		if _term_hist_idx < _term_history.size() - 1:
+			_term_hist_idx += 1
+			_term_input.text = _term_history[_term_hist_idx]
+			_term_input.caret_column = _term_input.text.length()
+		get_viewport().set_input_as_handled()
+	elif event.keycode == KEY_DOWN:
+		if _term_hist_idx > 0:
+			_term_hist_idx -= 1
+			_term_input.text = _term_history[_term_hist_idx]
+			_term_input.caret_column = _term_input.text.length()
+		elif _term_hist_idx == 0:
+			_term_hist_idx = -1
+			_term_input.text = ""
+		get_viewport().set_input_as_handled()
+
+func _term_run() -> void:
+	var cmd := _term_input.text.strip_edges()
+	if cmd.is_empty():
+		return
+	if _term_thread and _term_thread.is_started():
+		_term_append("⚠ A command is already running.")
+		return
+
+	_term_history.insert(0, cmd)
+	_term_hist_idx = -1
+	_term_input.text = ""
+	_term_append(_term_cwd + " $ " + cmd)
+
+	# Handle cd locally so directory state persists across commands
+	if cmd == "cd" or cmd == "cd ~":
+		_term_cwd = OS.get_environment("HOME")
+		_term_update_prompt()
+		return
+	if cmd.begins_with("cd "):
+		var arg := cmd.substr(3).strip_edges()
+		if arg.begins_with("~/"):
+			arg = OS.get_environment("HOME") + "/" + arg.substr(2)
+		elif arg == "~":
+			arg = OS.get_environment("HOME")
+		elif not arg.begins_with("/"):
+			arg = _term_cwd + "/" + arg
+		if DirAccess.dir_exists_absolute(arg):
+			_term_cwd = arg
+			_term_update_prompt()
+		else:
+			_term_append("cd: " + arg + ": No such file or directory")
+		return
+
+	_term_run_btn.disabled = true
+	_term_input.editable = false
+	var cwd_snapshot := _term_cwd
+	_term_thread = Thread.new()
+	_term_thread.start(func():
+		var output: Array = []
+		var safe_cwd := cwd_snapshot.replace("'", "'\\''")
+		OS.execute("bash", ["-c", "cd '" + safe_cwd + "' && " + cmd + " 2>&1"], output, true)
+		var out: String = output[0] if not output.is_empty() else ""
+		call_deferred("_term_on_done", out)
+	)
+
+func _term_on_done(raw: String) -> void:
+	if _term_thread:
+		_term_thread.wait_to_finish()
+	_term_thread = null
+	var cleaned := _strip_ansi(raw).rstrip("\n")
+	if not cleaned.is_empty():
+		_term_append(cleaned)
+	_term_run_btn.disabled = false
+	_term_input.editable = true
+	_term_input.grab_focus()
+
+func _term_open_external() -> void:
+	var candidates := ["xterm", "kitty", "alacritty", "konsole", "gnome-terminal", "xfce4-terminal", "lxterminal", "mate-terminal"]
+	var found := ""
+	for t in candidates:
+		var which: Array = []
+		if OS.execute("which", [t], which, true) == 0 and not (which[0] as String).strip_edges().is_empty():
+			found = t
+			break
+	if found.is_empty():
+		_term_append("⚠ No terminal emulator found. Install xterm, kitty, or konsole.")
+		return
+	var safe_cwd := _term_cwd.replace("'", "'\\''")
+	match found:
+		"gnome-terminal":
+			OS.create_process("gnome-terminal", ["--working-directory=" + _term_cwd])
+		"konsole":
+			OS.create_process("konsole", ["--workdir", _term_cwd])
+		_:
+			OS.create_process(found, ["-e", "bash -c \"cd '" + safe_cwd + "' && exec bash\""])
+
+func _term_append(text: String) -> void:
+	_term_output.text += text + "\n"
+	_term_output.scroll_vertical = _term_output.get_line_count()
+
+func _strip_ansi(text: String) -> String:
+	var re := RegEx.new()
+	re.compile("\\x1b(\\[[0-9;?]*[A-Za-z]|\\][^\\x07]*\\x07|[()][A-Z0-9=]|[ABCDEFGHJKSTM])")
+	return re.sub(text, "", true)
 
 # ─── UI helpers ───────────────────────────────────────────────────────────────
 
