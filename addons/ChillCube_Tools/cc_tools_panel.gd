@@ -19,17 +19,10 @@ var _clone_btn: Button
 var _push_btn: Button
 var _update_plugin_btn: Button
 
-var _dep_graph: GraphEdit
-var _dep_nodes: Dictionary       # eid -> GraphNode
-var _dep_node_folders: Dictionary  # eid -> folder  (installed addons only)
-var _dep_node_urls: Dictionary   # eid -> cleaned url
-var _dep_selected: String = ""
-var _dep_side_content: VBoxContainer
-var _dep_url_input: LineEdit
-var _dep_show_all_btn: CheckButton
-var _dep_status_lbl: Label
-var _dep_fetch_thread: Thread = null
-var _registry_dep_cache: Dictionary = {}  # cleaned url -> Array[String] of dep urls
+var _dep_addon_list: VBoxContainer
+var _dep_details: VBoxContainer
+var _dep_selected_folder: String = ""
+var _dep_add_picker: OptionButton
 var _registry_entries: Array = []
 
 var _bug_list: VBoxContainer
@@ -79,8 +72,6 @@ func _exit_tree() -> void:
 		_thread.wait_to_finish()
 	if _term_thread and _term_thread.is_started():
 		_term_thread.wait_to_finish()
-	if _dep_fetch_thread and _dep_fetch_thread.is_started():
-		_dep_fetch_thread.wait_to_finish()
 
 # ─── Tab builders ─────────────────────────────────────────────────────────────
 
@@ -213,336 +204,198 @@ func _build_deps_tab(tabs: TabContainer) -> void:
 	var toolbar := HBoxContainer.new()
 	var refresh_btn := Button.new()
 	refresh_btn.text = "↺ Refresh"
-	refresh_btn.pressed.connect(func():
-		_registry_dep_cache.clear()
-		_refresh_deps()
-	)
-	_dep_show_all_btn = CheckButton.new()
-	_dep_show_all_btn.text = "Show all registry addons"
-	_dep_show_all_btn.toggled.connect(func(_v): _refresh_deps())
-	_dep_status_lbl = Label.new()
-	_dep_status_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	refresh_btn.pressed.connect(_refresh_dep_list)
 	toolbar.add_child(refresh_btn)
-	toolbar.add_child(_dep_show_all_btn)
-	toolbar.add_child(_dep_status_lbl)
 	root.add_child(toolbar)
 
 	var split := HBoxContainer.new()
 	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
-	_dep_graph = GraphEdit.new()
-	_dep_graph.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_dep_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_dep_graph.connection_request.connect(_dep_on_connect)
-	_dep_graph.disconnection_request.connect(_dep_on_disconnect)
-	_dep_graph.node_selected.connect(_dep_on_node_selected)
-	split.add_child(_dep_graph)
+	var left_scroll := ScrollContainer.new()
+	left_scroll.custom_minimum_size = Vector2(180, 0)
+	left_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_dep_addon_list = VBoxContainer.new()
+	_dep_addon_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_scroll.add_child(_dep_addon_list)
+	split.add_child(left_scroll)
 
 	split.add_child(VSeparator.new())
 
-	var side := VBoxContainer.new()
-	side.custom_minimum_size = Vector2(220, 0)
+	var right_scroll := ScrollContainer.new()
+	right_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	right_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_dep_details = VBoxContainer.new()
+	_dep_details.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_scroll.add_child(_dep_details)
+	split.add_child(right_scroll)
 
-	var hint := Label.new()
-	hint.text = "Click a node to edit its dependencies.\nOrange ● = existing dep slot. Drag from the green ● (bottom of a node) to connect a new dependency."
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-	side.add_child(hint)
-	side.add_child(HSeparator.new())
-
-	_dep_side_content = VBoxContainer.new()
-	_dep_side_content.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	side.add_child(_dep_side_content)
-
-	side.add_child(HSeparator.new())
-	var ext_lbl := Label.new()
-	ext_lbl.text = "Add external dependency URL:"
-	side.add_child(ext_lbl)
-	_dep_url_input = LineEdit.new()
-	_dep_url_input.placeholder_text = "https://github.com/ChillCube/…"
-	side.add_child(_dep_url_input)
-	var add_ext_btn := Button.new()
-	add_ext_btn.text = "➕ Add to Selected"
-	add_ext_btn.pressed.connect(_dep_add_external)
-	side.add_child(add_ext_btn)
-
-	split.add_child(side)
 	root.add_child(split)
 
-	_refresh_deps()
+	_refresh_dep_list()
 
-# ─── Dependency graph logic ───────────────────────────────────────────────────
+# ─── Dependency list logic ────────────────────────────────────────────────────
 
-func _dep_eid(folder: String, url: String) -> String:
-	return folder if not folder.is_empty() else "_r_" + url.get_file()
-
-func _refresh_deps() -> void:
-	_dep_graph.clear_connections()
-	for node in _dep_nodes.values():
-		if is_instance_valid(node):
-			_dep_graph.remove_child(node)
-			node.queue_free()
-	_dep_nodes = {}
-	_dep_node_folders = {}
-	_dep_node_urls = {}
-	_dep_selected = ""
-	for child in _dep_side_content.get_children():
+func _refresh_dep_list() -> void:
+	for child in _dep_addon_list.get_children():
 		child.queue_free()
 
 	var root := ProjectSettings.globalize_path("res://").rstrip("/")
-	var installed_folders := Ops.list_addons(root)
+	var folders := Ops.list_addons(root)
 
-	# Build all entries: installed + optionally registry-only
-	var all_entries: Array = []
-	var seen_urls: Array[String] = []
+	if folders.is_empty():
+		var lbl := Label.new()
+		lbl.text = "No addons installed."
+		lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_dep_addon_list.add_child(lbl)
+		_dep_selected_folder = ""
+		_refresh_dep_details()
+		return
 
-	for folder: String in installed_folders:
+	if _dep_selected_folder not in folders:
+		_dep_selected_folder = folders[0]
+
+	for folder: String in folders:
 		var cfg := Ops.parse_cfg(root + "/addons/" + folder + "/plugin.cfg")
-		var url := Ops.git_remote(root + "/addons/" + folder)
-		var clean_url := url.replace(".git", "").replace("git@github.com:", "https://github.com/")
-		var deps := Ops.read_dep_urls(root + "/addons/" + folder)
-		all_entries.append({"name": cfg.get("name", folder), "folder": folder,
-			"url": clean_url, "installed": true, "deps": deps})
-		if not clean_url.is_empty():
-			seen_urls.append(clean_url)
+		var btn := Button.new()
+		btn.text = cfg.get("name", folder)
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.flat = true
+		if folder == _dep_selected_folder:
+			btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+		var cap := folder
+		btn.pressed.connect(func():
+			_dep_selected_folder = cap
+			_refresh_dep_list()
+		)
+		_dep_addon_list.add_child(btn)
 
-	var needs_fetch: Array[String] = []
-	if _dep_show_all_btn.button_pressed:
-		for e: Dictionary in _registry_entries:
-			var raw_url: String = e.get("url", "")
-			var clean := raw_url.replace(".git", "").replace("git@github.com:", "https://github.com/")
-			if clean not in seen_urls and not clean.is_empty():
-				var cached_deps: Array = _registry_dep_cache.get(clean, [])
-				all_entries.append({"name": e.get("name", clean.get_file()),
-					"folder": "", "url": clean, "installed": false, "deps": cached_deps})
-				if not _registry_dep_cache.has(clean):
-					needs_fetch.append(clean)
+	_refresh_dep_details()
 
-	# url -> eid map for connection drawing
-	var url_to_eid: Dictionary = {}
-	for e: Dictionary in all_entries:
-		var url: String = e.get("url", "")
-		if not url.is_empty():
-			url_to_eid[url] = _dep_eid(e.get("folder", ""), url)
-
-	# Compute layout depth
-	var depths: Dictionary = {}
-	for e: Dictionary in all_entries:
-		depths[_dep_eid(e.get("folder", ""), e.get("url", ""))] = 0
-	for _i in range(all_entries.size()):
-		var changed := false
-		for e: Dictionary in all_entries:
-			var eid := _dep_eid(e.get("folder", ""), e.get("url", ""))
-			for dep_url: String in e.get("deps", []):
-				if dep_url in url_to_eid:
-					var dep_eid: String = url_to_eid[dep_url]
-					if int(depths.get(eid, 0)) <= int(depths.get(dep_eid, 0)):
-						depths[eid] = int(depths[dep_eid]) + 1
-						changed = true
-		if not changed:
-			break
-
-	var max_depth := 0
-	for eid_key: String in depths:
-		if int(depths[eid_key]) > max_depth:
-			max_depth = int(depths[eid_key])
-
-	# Create graph nodes — dependents on the left, dependencies on the right
-	var col_row: Dictionary = {}
-	for e: Dictionary in all_entries:
-		var folder: String = e.get("folder", "")
-		var url: String = e.get("url", "")
-		var eid := _dep_eid(folder, url)
-		var is_installed: bool = e.get("installed", false)
-		var deps: Array = e.get("deps", [])
-
-		var node := GraphNode.new()
-		node.title = e.get("name", eid)
-		node.name = eid
-		if not is_installed:
-			node.modulate = Color(0.75, 0.75, 0.75)
-
-		var depth := int(depths.get(eid, 0))
-		var col := max_depth - depth  # flip: depth-0 foundations go to the right
-		var row := int(col_row.get(col, 0))
-		col_row[col] = row + 1
-		node.position_offset = Vector2(col * 260, row * (130 + deps.size() * 22))
-
-		# Slot 0: input only — "can be depended on by others"
-		var in_lbl := Label.new()
-		in_lbl.text = e.get("name", eid)
-		in_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
-		node.add_child(in_lbl)
-		node.set_slot(0, true, 0, Color(0.4, 0.7, 1.0), false, 0, Color.WHITE)
-
-		if is_installed:
-			# Slots 1..N: one output per existing dep
-			for i in range(deps.size()):
-				var dep_lbl := Label.new()
-				dep_lbl.text = (deps[i] as String).get_file()
-				dep_lbl.add_theme_color_override("font_color", Color(1.0, 0.75, 0.3))
-				node.add_child(dep_lbl)
-				node.set_slot(i + 1, false, 0, Color.WHITE, true, 0, Color(1.0, 0.75, 0.3))
-
-			# Last slot: green "+" to drag new connections
-			var add_lbl := Label.new()
-			add_lbl.text = "+ add dependency"
-			add_lbl.add_theme_color_override("font_color", Color(0.4, 0.9, 0.4))
-			node.add_child(add_lbl)
-			node.set_slot(deps.size() + 1, false, 0, Color.WHITE, true, 0, Color(0.4, 0.9, 0.4))
-
-		_dep_graph.add_child(node)
-		_dep_nodes[eid] = node
-		_dep_node_urls[eid] = url
-		if is_installed:
-			_dep_node_folders[eid] = folder
-
-	# Draw connections using unique from_port per dep
-	for e: Dictionary in all_entries:
-		var folder: String = e.get("folder", "")
-		var url: String = e.get("url", "")
-		var eid := _dep_eid(folder, url)
-		var deps: Array = e.get("deps", [])
-		for i in range(deps.size()):
-			var dep_url: String = deps[i]
-			if dep_url in url_to_eid:
-				var dep_eid: String = url_to_eid[dep_url]
-				if (eid in _dep_nodes) and (dep_eid in _dep_nodes):
-					_dep_graph.connect_node(eid, i + 1, dep_eid, 0)
-
-	if not needs_fetch.is_empty() and (not _dep_fetch_thread or not _dep_fetch_thread.is_started()):
-		_dep_status_lbl.text = "Fetching registry deps…"
-		_dep_fetch_thread = Thread.new()
-		_dep_fetch_thread.start(_fetch_uninstalled_deps.bind(needs_fetch))
-
-func _dep_on_connect(from_node: StringName, from_port: int, to_node: StringName, to_port: int) -> void:
-	var from_str := str(from_node)
-	var to_str := str(to_node)
-	if from_str == to_str or from_str not in _dep_node_folders:
-		return
-	# Only accept connections from the green "+" slot (last slot)
-	var gn: GraphNode = _dep_nodes.get(from_str)
-	if not is_instance_valid(gn):
-		return
-	if from_port != gn.get_child_count() - 1:
-		return
-	var to_url: String = _dep_node_urls.get(to_str, "")
-	if to_url.is_empty():
-		return
-	var from_folder: String = _dep_node_folders[from_str]
-	Ops.add_dep(ProjectSettings.globalize_path("res://").rstrip("/") + "/addons/" + from_folder, to_url)
-	_dep_selected = from_str
-	_refresh_deps()
-
-func _dep_on_disconnect(from_node: StringName, from_port: int, _to_node: StringName, _to_port: int) -> void:
-	var from_str := str(from_node)
-	if from_str not in _dep_node_folders:
-		return
-	var from_folder: String = _dep_node_folders[from_str]
-	var root := ProjectSettings.globalize_path("res://").rstrip("/")
-	var deps := Ops.read_dep_urls(root + "/addons/" + from_folder)
-	var dep_idx := int(from_port) - 1  # slot 1 = dep[0], slot 2 = dep[1], …
-	if dep_idx >= 0 and dep_idx < deps.size():
-		Ops.remove_dep(root + "/addons/" + from_folder, deps[dep_idx])
-		_dep_selected = from_str
-		_refresh_deps()
-
-func _dep_on_node_selected(node: Node) -> void:
-	_dep_selected = node.name
-	_dep_show_side(node.name)
-
-func _dep_show_side(eid: String) -> void:
-	for child in _dep_side_content.get_children():
+func _refresh_dep_details() -> void:
+	for child in _dep_details.get_children():
 		child.queue_free()
-	if eid.is_empty():
-		return
-	var root := ProjectSettings.globalize_path("res://").rstrip("/")
-	var is_installed := eid in _dep_node_folders
 
-	var name_lbl := Label.new()
-	name_lbl.text = ((_dep_nodes.get(eid) as GraphNode).title if eid in _dep_nodes else eid)
-	name_lbl.add_theme_font_size_override("font_size", 13)
-	_dep_side_content.add_child(name_lbl)
-
-	if not is_installed:
+	if _dep_selected_folder.is_empty():
 		var hint := Label.new()
-		hint.text = "Not installed — install via Browse or Clone tab to edit dependencies."
-		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-		_dep_side_content.add_child(hint)
+		hint.text = "Select an addon on the left."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_dep_details.add_child(hint)
 		return
 
-	var folder: String = _dep_node_folders[eid]
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+	var folder := _dep_selected_folder
+	var cfg := Ops.parse_cfg(root + "/addons/" + folder + "/plugin.cfg")
+
+	var title_lbl := Label.new()
+	title_lbl.text = cfg.get("name", folder)
+	title_lbl.add_theme_font_size_override("font_size", 14)
+	_dep_details.add_child(title_lbl)
+	_dep_details.add_child(HSeparator.new())
+
 	var dep_heading := Label.new()
 	dep_heading.text = "Dependencies:"
-	_dep_side_content.add_child(dep_heading)
+	_dep_details.add_child(dep_heading)
 
 	var deps := Ops.read_dep_urls(root + "/addons/" + folder)
 	if deps.is_empty():
 		var none_lbl := Label.new()
 		none_lbl.text = "(none)"
 		none_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
-		_dep_side_content.add_child(none_lbl)
+		_dep_details.add_child(none_lbl)
 	else:
 		for dep_url: String in deps:
 			var row := HBoxContainer.new()
+			row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			var dep_lbl := Label.new()
-			dep_lbl.text = dep_url.get_file()
+			dep_lbl.text = _url_to_display_name(dep_url)
 			dep_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			dep_lbl.clip_text = true
 			dep_lbl.tooltip_text = dep_url
 			var rm_btn := Button.new()
 			rm_btn.text = "✕"
-			var cap_folder := folder
 			var cap_url := dep_url
 			rm_btn.pressed.connect(func():
-				Ops.remove_dep(root + "/addons/" + cap_folder, cap_url)
-				_dep_selected = eid
-				_refresh_deps()
+				Ops.remove_dep(root + "/addons/" + folder, cap_url)
+				_refresh_dep_details()
 			)
 			row.add_child(dep_lbl)
 			row.add_child(rm_btn)
-			_dep_side_content.add_child(row)
+			_dep_details.add_child(row)
 
-func _dep_add_external() -> void:
-	if _dep_selected.is_empty() or _dep_selected not in _dep_node_folders:
+	_dep_details.add_child(HSeparator.new())
+
+	var add_lbl := Label.new()
+	add_lbl.text = "Add dependency:"
+	_dep_details.add_child(add_lbl)
+
+	_dep_add_picker = OptionButton.new()
+	_dep_add_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_dep_add_picker.clip_text = true
+	_dep_details.add_child(_dep_add_picker)
+	_dep_populate_picker(folder, deps)
+
+	var add_btn := Button.new()
+	add_btn.text = "➕ Add"
+	add_btn.pressed.connect(_dep_do_add.bind(folder))
+	_dep_details.add_child(add_btn)
+
+func _dep_populate_picker(current_folder: String, current_deps: Array[String]) -> void:
+	_dep_add_picker.clear()
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+
+	var installed_urls: Array[String] = []
+	for folder: String in Ops.list_addons(root):
+		var u := Ops.git_remote(root + "/addons/" + folder)
+		if not u.is_empty():
+			installed_urls.append(u)
+
+	# Installed addons (not self, not already a dep)
+	for folder: String in Ops.list_addons(root):
+		if folder == current_folder:
+			continue
+		var url := Ops.git_remote(root + "/addons/" + folder)
+		if url.is_empty() or url in current_deps:
+			continue
+		var c := Ops.parse_cfg(root + "/addons/" + folder + "/plugin.cfg")
+		_dep_add_picker.add_item("📦 " + c.get("name", folder))
+		_dep_add_picker.set_item_metadata(_dep_add_picker.item_count - 1, url)
+
+	# Registry addons not installed and not already a dep
+	var self_url := Ops.git_remote(root + "/addons/" + current_folder)
+	for entry: Dictionary in _registry_entries:
+		var raw_url: String = entry.get("url", "")
+		var clean := raw_url.replace(".git", "").replace("git@github.com:", "https://github.com/")
+		if clean.is_empty() or clean == self_url or clean in current_deps or clean in installed_urls:
+			continue
+		_dep_add_picker.add_item("🌐 " + entry.get("name", clean.get_file()))
+		_dep_add_picker.set_item_metadata(_dep_add_picker.item_count - 1, clean)
+
+	if _dep_add_picker.item_count == 0:
+		_dep_add_picker.add_item("(no other addons available)")
+		_dep_add_picker.set_item_metadata(0, "")
+
+func _dep_do_add(folder: String) -> void:
+	if not is_instance_valid(_dep_add_picker) or _dep_add_picker.item_count == 0:
 		return
-	var url := _dep_url_input.text.strip_edges()
+	var url: String = _dep_add_picker.get_item_metadata(_dep_add_picker.selected)
 	if url.is_empty():
 		return
-	var folder: String = _dep_node_folders[_dep_selected]
-	var clean := url.replace(".git", "").replace("git@github.com:", "https://github.com/")
-	Ops.add_dep(ProjectSettings.globalize_path("res://").rstrip("/") + "/addons/" + folder, clean)
-	_dep_url_input.text = ""
-	_refresh_deps()
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+	Ops.add_dep(root + "/addons/" + folder, url)
+	_refresh_dep_details()
 
-func _fetch_uninstalled_deps(urls: Array[String]) -> void:
-	var result: Dictionary = {}
-	for url: String in urls:
-		var raw := url.replace("https://github.com/", "https://raw.githubusercontent.com/") \
-			+ "/main/DEPENDENCIES.txt"
-		var output: Array = []
-		OS.execute("curl", ["-sf", "--max-time", "10", raw], output, true)
-		var deps: Array[String] = []
-		if not output.is_empty():
-			for line: String in (output[0] as String).split("\n"):
-				var t := line.strip_edges()
-				if t.begins_with("http"):
-					var clean := t.replace(".git", "").replace("git@github.com:", "https://github.com/")
-					if clean not in deps:
-						deps.append(clean)
-		result[url] = deps
-	call_deferred("_on_uninstalled_deps_fetched", result)
-
-func _on_uninstalled_deps_fetched(result: Dictionary) -> void:
-	if _dep_fetch_thread and _dep_fetch_thread.is_started():
-		_dep_fetch_thread.wait_to_finish()
-	_dep_fetch_thread = null
-	_dep_status_lbl.text = ""
-	for url: String in result:
-		_registry_dep_cache[url] = result[url]
-	_refresh_deps()
+func _url_to_display_name(url: String) -> String:
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+	for folder: String in Ops.list_addons(root):
+		if Ops.git_remote(root + "/addons/" + folder) == url:
+			return Ops.parse_cfg(root + "/addons/" + folder + "/plugin.cfg").get("name", folder)
+	for entry: Dictionary in _registry_entries:
+		var raw: String = entry.get("url", "")
+		var clean := raw.replace(".git", "").replace("git@github.com:", "https://github.com/")
+		if clean == url:
+			return entry.get("name", url.get_file())
+	return url.get_file()
 
 func _build_bugs_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Bugs", tabs)
