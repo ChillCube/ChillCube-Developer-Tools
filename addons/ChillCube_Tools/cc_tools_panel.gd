@@ -441,6 +441,22 @@ func _refresh_addons() -> void:
 			info.add_child(dep_lbl)
 		row.add_child(info)
 
+		var url := Ops.git_remote(root + "/addons/" + folder)
+		var copy_btn := Button.new()
+		copy_btn.text = "🔗"
+		if url.is_empty():
+			copy_btn.disabled = true
+			copy_btn.tooltip_text = "No GitHub remote found"
+		else:
+			copy_btn.tooltip_text = url
+			var captured_url := url
+			copy_btn.pressed.connect(func():
+				DisplayServer.clipboard_set(captured_url)
+				copy_btn.text = "✓"
+				get_tree().create_timer(1.5).timeout.connect(func(): copy_btn.text = "🔗")
+			)
+		row.add_child(copy_btn)
+
 		var rm_btn := Button.new()
 		rm_btn.text = "🗑️"
 		if dependers.is_empty():
