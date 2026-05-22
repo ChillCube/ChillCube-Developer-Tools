@@ -8,7 +8,7 @@ const Ops = preload("res://addons/ChillCube_Tools/addon_ops.gd")
 var _addon_list: VBoxContainer
 var _installed_log: TextEdit
 var _create_name: LineEdit
-var _create_desc: LineEdit
+var _create_desc: TextEdit
 var _create_author: LineEdit
 var _create_category: OptionButton
 var _create_gh: CheckBox
@@ -22,7 +22,6 @@ var _update_plugin_btn: Button
 var _dep_addon_list: VBoxContainer
 var _dep_details: VBoxContainer
 var _dep_selected_folder: String = ""
-var _dep_add_picker: OptionButton
 var _registry_entries: Array = []
 
 var _plan_list: VBoxContainer
@@ -30,10 +29,11 @@ var _plan_editor: VBoxContainer
 var _plan_selected: int = -1
 var _planned_addons: Array = []
 var _plan_name_edit: LineEdit
-var _plan_desc_edit: LineEdit
+var _plan_class_edit: LineEdit
+var _plan_extends_edit: LineEdit
+var _plan_desc_edit: TextEdit
 var _plan_author_edit: LineEdit
 var _plan_cat_edit: OptionButton
-var _plan_dep_picker: OptionButton
 var _plan_status_lbl: Label
 var _plan_thread: Thread = null
 
@@ -170,7 +170,6 @@ func _build_add_addon_tab(tabs: TabContainer) -> void:
 	grid.columns = 2
 	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_create_name = _field(grid, "Addon Name")
-	_create_desc = _field(grid, "Description")
 	_create_author = _field(grid, "Author")
 	var cat_lbl := Label.new()
 	cat_lbl.text = "Category:"
@@ -180,6 +179,16 @@ func _build_add_addon_tab(tabs: TabContainer) -> void:
 	_create_category.add_item("Loading…")
 	grid.add_child(_create_category)
 	left.add_child(grid)
+
+	var desc_lbl2 := Label.new()
+	desc_lbl2.text = "Description:"
+	left.add_child(desc_lbl2)
+	_create_desc = TextEdit.new()
+	_create_desc.placeholder_text = "What does this addon do?"
+	_create_desc.custom_minimum_size = Vector2(0, 70)
+	_create_desc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_create_desc.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	left.add_child(_create_desc)
 
 	_create_gh = CheckBox.new()
 	_create_gh.text = "Create GitHub repo (requires gh CLI)"
@@ -360,61 +369,77 @@ func _refresh_dep_details() -> void:
 	add_lbl.text = "Add dependency:"
 	_dep_details.add_child(add_lbl)
 
-	_dep_add_picker = OptionButton.new()
-	_dep_add_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_dep_add_picker.clip_text = true
-	_dep_details.add_child(_dep_add_picker)
-	_dep_populate_picker(folder, deps)
+	_dep_search_widget(_dep_details, _build_dep_candidates(folder, deps), func(url: String):
+		Ops.add_dep(root + "/addons/" + folder, url)
+		_refresh_dep_details()
+	)
 
-	var add_btn := Button.new()
-	add_btn.text = "➕ Add"
-	add_btn.pressed.connect(_dep_do_add.bind(folder))
-	_dep_details.add_child(add_btn)
-
-func _dep_populate_picker(current_folder: String, current_deps: Array[String]) -> void:
-	_dep_add_picker.clear()
+func _build_dep_candidates(current_folder: String, current_deps: Array) -> Array:
+	var result := []
 	var root := ProjectSettings.globalize_path("res://").rstrip("/")
-
 	var installed_urls: Array[String] = []
 	for folder: String in Ops.list_addons(root):
 		var u := Ops.git_remote(root + "/addons/" + folder)
 		if not u.is_empty():
 			installed_urls.append(u)
-
-	# Installed addons (not self, not already a dep)
 	for folder: String in Ops.list_addons(root):
-		if folder == current_folder:
+		if not current_folder.is_empty() and folder == current_folder:
 			continue
 		var url := Ops.git_remote(root + "/addons/" + folder)
 		if url.is_empty() or url in current_deps:
 			continue
-		var c := Ops.parse_cfg(root + "/addons/" + folder + "/plugin.cfg")
-		_dep_add_picker.add_item("📦 " + c.get("name", folder))
-		_dep_add_picker.set_item_metadata(_dep_add_picker.item_count - 1, url)
-
-	# Registry addons not installed and not already a dep
-	var self_url := Ops.git_remote(root + "/addons/" + current_folder)
+		var cfg := Ops.parse_cfg(root + "/addons/" + folder + "/plugin.cfg")
+		var n: String = cfg.get("name", folder)
+		result.append({"name": n.to_lower(), "label": "📦 " + n, "url": url})
+	var self_url := ""
+	if not current_folder.is_empty():
+		self_url = Ops.git_remote(root + "/addons/" + current_folder)
 	for entry: Dictionary in _registry_entries:
-		var raw_url: String = entry.get("url", "")
-		var clean := raw_url.replace(".git", "").replace("git@github.com:", "https://github.com/")
+		var raw: String = entry.get("url", "")
+		var clean := raw.replace(".git", "").replace("git@github.com:", "https://github.com/")
 		if clean.is_empty() or clean == self_url or clean in current_deps or clean in installed_urls:
 			continue
-		_dep_add_picker.add_item("🌐 " + entry.get("name", clean.get_file()))
-		_dep_add_picker.set_item_metadata(_dep_add_picker.item_count - 1, clean)
+		var n: String = entry.get("name", clean.get_file())
+		result.append({"name": n.to_lower(), "label": "🌐 " + n, "url": clean})
+	return result
 
-	if _dep_add_picker.item_count == 0:
-		_dep_add_picker.add_item("(no other addons available)")
-		_dep_add_picker.set_item_metadata(0, "")
-
-func _dep_do_add(folder: String) -> void:
-	if not is_instance_valid(_dep_add_picker) or _dep_add_picker.item_count == 0:
-		return
-	var url: String = _dep_add_picker.get_item_metadata(_dep_add_picker.selected)
-	if url.is_empty():
-		return
-	var root := ProjectSettings.globalize_path("res://").rstrip("/")
-	Ops.add_dep(root + "/addons/" + folder, url)
-	_refresh_dep_details()
+func _dep_search_widget(parent: VBoxContainer, candidates: Array, on_add: Callable) -> void:
+	var search := LineEdit.new()
+	search.placeholder_text = "Search to add…"
+	search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	parent.add_child(search)
+	var results := VBoxContainer.new()
+	results.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	parent.add_child(results)
+	var populate := func(query: String):
+		for child in results.get_children():
+			child.queue_free()
+		var q := query.to_lower().strip_edges()
+		var count := 0
+		for c: Dictionary in candidates:
+			if not q.is_empty() and not (c.get("name","") as String).contains(q):
+				continue
+			var btn := Button.new()
+			btn.text = c.get("label", "")
+			btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			var cap_url: String = c.get("url", "")
+			btn.pressed.connect(func(): on_add.call(cap_url))
+			results.add_child(btn)
+			count += 1
+			if count >= 7:
+				var more := Label.new()
+				more.text = "… type to filter"
+				more.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+				results.add_child(more)
+				break
+		if count == 0 and not q.is_empty():
+			var none := Label.new()
+			none.text = "(no matches)"
+			none.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+			results.add_child(none)
+	search.text_changed.connect(populate)
+	populate.call("")
 
 func _url_to_display_name(url: String) -> String:
 	var root := ProjectSettings.globalize_path("res://").rstrip("/")
@@ -517,6 +542,7 @@ func _get_in_dev_folders() -> Array[String]:
 func _plan_new() -> void:
 	_planned_addons.append({
 		"name": "NewAddon", "desc": "", "author": "", "category": "Uncategorized",
+		"class_name": "", "extends": "Node",
 		"deps": [], "exports": [], "funcs": [], "created": false
 	})
 	_plan_selected = _planned_addons.size() - 1
@@ -570,6 +596,14 @@ func _plan_on_created(idx: int) -> void:
 	if idx < _planned_addons.size():
 		_planned_addons[idx]["created"] = true
 		_save_planned()
+		var pa: Dictionary = _planned_addons[idx]
+		var addon_name: String = (pa.get("name","") as String).strip_edges().replace(" ","_")
+		var root := ProjectSettings.globalize_path("res://").rstrip("/")
+		var script_path := root + "/addons/" + addon_name + "/" + addon_name.to_lower() + ".gd"
+		var fw := FileAccess.open(script_path, FileAccess.WRITE)
+		if fw:
+			fw.store_string(_plan_generate_script(pa))
+			fw.close()
 	_refresh_plan_list()
 	_refresh_addons()
 	EditorInterface.get_resource_filesystem().scan()
@@ -591,26 +625,48 @@ func _plan_save_basic() -> void:
 	if _plan_selected < 0 or _plan_selected >= _planned_addons.size():
 		return
 	_planned_addons[_plan_selected]["name"] = _plan_name_edit.text.strip_edges()
-	_planned_addons[_plan_selected]["desc"] = _plan_desc_edit.text.strip_edges()
 	_planned_addons[_plan_selected]["author"] = _plan_author_edit.text.strip_edges()
+	_planned_addons[_plan_selected]["class_name"] = _plan_class_edit.text.strip_edges()
+	_planned_addons[_plan_selected]["extends"] = _plan_extends_edit.text.strip_edges() if not _plan_extends_edit.text.strip_edges().is_empty() else "Node"
+	_planned_addons[_plan_selected]["desc"] = _plan_desc_edit.text.strip_edges()
 	if is_instance_valid(_plan_cat_edit) and _plan_cat_edit.selected >= 0:
 		_planned_addons[_plan_selected]["category"] = _plan_cat_edit.get_item_text(_plan_cat_edit.selected)
 	_save_planned()
 	_refresh_plan_list()
 
-func _plan_add_dep() -> void:
-	if not is_instance_valid(_plan_dep_picker) or _plan_dep_picker.item_count == 0:
-		return
-	var url: String = _plan_dep_picker.get_item_metadata(_plan_dep_picker.selected)
-	if url.is_empty() or _plan_selected < 0:
-		return
-	if not _planned_addons[_plan_selected].has("deps"):
-		_planned_addons[_plan_selected]["deps"] = []
-	var deps := _planned_addons[_plan_selected]["deps"] as Array
-	if url not in deps:
-		deps.append(url)
-		_save_planned()
-		_refresh_plan_editor()
+func _plan_generate_script(pa: Dictionary) -> String:
+	var lines: PackedStringArray = []
+	var cname: String = pa.get("class_name", "")
+	var ext: String = pa.get("extends", "Node")
+	var desc: String = pa.get("desc", "")
+	if not cname.is_empty():
+		lines.append("class_name " + cname)
+	lines.append("extends " + (ext if not ext.is_empty() else "Node"))
+	lines.append("")
+	if not desc.is_empty():
+		for line in desc.split("\n"):
+			lines.append("## " + line)
+		lines.append("")
+	var exports: Array = pa.get("exports", [])
+	for ev: Dictionary in exports:
+		var d: String = ev.get("desc", "")
+		if not d.is_empty():
+			for dl in d.split("\n"):
+				lines.append("## " + dl)
+		lines.append("@export var %s: %s = %s" % [ev.get("name","var_name"), ev.get("type","Variant"), ev.get("default","null")])
+	if not exports.is_empty():
+		lines.append("")
+	for fn: Dictionary in pa.get("funcs", []):
+		var d: String = fn.get("desc", "")
+		if not d.is_empty():
+			for dl in d.split("\n"):
+				lines.append("## " + dl)
+		var ret: String = fn.get("return_type", "void")
+		var sig := "func %s(%s)" % [fn.get("name","_fn"), fn.get("params","")]
+		lines.append((sig + " -> " + ret + ":") if ret != "void" else (sig + ":"))
+		lines.append("\tpass")
+		lines.append("")
+	return "\n".join(lines)
 
 func _refresh_plan_list() -> void:
 	for child in _plan_list.get_children():
@@ -660,6 +716,18 @@ func _refresh_plan_list() -> void:
 		finish_btn.tooltip_text = "Declare finished — addon moves to Installed Addons"
 		finish_btn.pressed.connect(func(): _plan_declare_finished(cap_i))
 		actions.add_child(finish_btn)
+
+		var del_btn := Button.new()
+		del_btn.text = "🗑"
+		del_btn.tooltip_text = "Delete this planned addon entry"
+		del_btn.pressed.connect(func():
+			_planned_addons.remove_at(cap_i)
+			_save_planned()
+			_plan_selected = clampi(_plan_selected, 0, max(0, _planned_addons.size() - 1))
+			if _planned_addons.is_empty(): _plan_selected = -1
+			_refresh_plan_list()
+		)
+		actions.add_child(del_btn)
 		item.add_child(actions)
 
 		item.add_child(HSeparator.new())
@@ -692,10 +760,13 @@ func _refresh_plan_editor() -> void:
 
 	_plan_name_edit = _field(grid, "Name")
 	_plan_name_edit.text = pa.get("name", "")
-	_plan_desc_edit = _field(grid, "Description")
-	_plan_desc_edit.text = pa.get("desc", "")
 	_plan_author_edit = _field(grid, "Author")
 	_plan_author_edit.text = pa.get("author", "")
+	_plan_class_edit = _field(grid, "Class name")
+	_plan_class_edit.text = pa.get("class_name", "")
+	_plan_class_edit.placeholder_text = "(optional)"
+	_plan_extends_edit = _field(grid, "Extends")
+	_plan_extends_edit.text = pa.get("extends", "Node")
 
 	var cat_lbl := Label.new()
 	cat_lbl.text = "Category:"
@@ -717,6 +788,17 @@ func _refresh_plan_editor() -> void:
 			break
 	grid.add_child(_plan_cat_edit)
 	_plan_editor.add_child(grid)
+
+	var desc_lbl := Label.new()
+	desc_lbl.text = "Description:"
+	_plan_editor.add_child(desc_lbl)
+	_plan_desc_edit = TextEdit.new()
+	_plan_desc_edit.text = pa.get("desc", "")
+	_plan_desc_edit.placeholder_text = "What does this addon do?"
+	_plan_desc_edit.custom_minimum_size = Vector2(0, 80)
+	_plan_desc_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_plan_desc_edit.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	_plan_editor.add_child(_plan_desc_edit)
 
 	var save_btn := Button.new()
 	save_btn.text = "💾 Save Basic Info"
@@ -755,36 +837,11 @@ func _refresh_plan_editor() -> void:
 		row.add_child(rm)
 		_plan_editor.add_child(row)
 
-	var dep_row := HBoxContainer.new()
-	_plan_dep_picker = OptionButton.new()
-	_plan_dep_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_plan_dep_picker.clip_text = true
-	dep_row.add_child(_plan_dep_picker)
-	# Populate picker
-	_plan_dep_picker.clear()
-	var root_path := ProjectSettings.globalize_path("res://").rstrip("/")
-	for folder: String in Ops.list_addons(root_path):
-		var url := Ops.git_remote(root_path + "/addons/" + folder)
-		if url.is_empty() or url in deps:
-			continue
-		var cfg := Ops.parse_cfg(root_path + "/addons/" + folder + "/plugin.cfg")
-		_plan_dep_picker.add_item("📦 " + cfg.get("name", folder))
-		_plan_dep_picker.set_item_metadata(_plan_dep_picker.item_count - 1, url)
-	for entry: Dictionary in _registry_entries:
-		var raw: String = entry.get("url", "")
-		var clean := raw.replace(".git", "").replace("git@github.com:", "https://github.com/")
-		if clean.is_empty() or clean in deps:
-			continue
-		_plan_dep_picker.add_item("🌐 " + entry.get("name", clean.get_file()))
-		_plan_dep_picker.set_item_metadata(_plan_dep_picker.item_count - 1, clean)
-	if _plan_dep_picker.item_count == 0:
-		_plan_dep_picker.add_item("(none available)")
-		_plan_dep_picker.set_item_metadata(0, "")
-	var dep_add_btn := Button.new()
-	dep_add_btn.text = "➕"
-	dep_add_btn.pressed.connect(_plan_add_dep)
-	dep_row.add_child(dep_add_btn)
-	_plan_editor.add_child(dep_row)
+	_dep_search_widget(_plan_editor, _build_dep_candidates("", deps), func(url: String):
+		(_planned_addons[_plan_selected]["deps"] as Array).append(url)
+		_save_planned()
+		_refresh_plan_editor()
+	)
 
 	_plan_editor.add_child(HSeparator.new())
 
@@ -815,22 +872,28 @@ func _refresh_plan_editor() -> void:
 		row.add_child(rm)
 		_plan_editor.add_child(row)
 
-	var ev_form := HBoxContainer.new()
+	var ev_top := HBoxContainer.new()
 	var ev_name := LineEdit.new()
 	ev_name.placeholder_text = "name"
-	ev_name.custom_minimum_size = Vector2(80, 0)
+	ev_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var ev_type := LineEdit.new()
 	ev_type.placeholder_text = "type"
 	ev_type.text = "float"
 	ev_type.custom_minimum_size = Vector2(70, 0)
 	var ev_def := LineEdit.new()
 	ev_def.placeholder_text = "default"
-	ev_def.custom_minimum_size = Vector2(60, 0)
-	var ev_desc := LineEdit.new()
-	ev_desc.placeholder_text = "description"
+	ev_def.custom_minimum_size = Vector2(70, 0)
+	for c in [ev_name, ev_type, ev_def]:
+		ev_top.add_child(c)
+	_plan_editor.add_child(ev_top)
+	var ev_desc := TextEdit.new()
+	ev_desc.placeholder_text = "Variable description (becomes a ## comment)"
+	ev_desc.custom_minimum_size = Vector2(0, 50)
 	ev_desc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ev_desc.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	_plan_editor.add_child(ev_desc)
 	var ev_add := Button.new()
-	ev_add.text = "➕"
+	ev_add.text = "➕ Add Variable"
 	ev_add.pressed.connect(func():
 		var n := ev_name.text.strip_edges()
 		if n.is_empty(): return
@@ -845,9 +908,7 @@ func _refresh_plan_editor() -> void:
 		_save_planned()
 		_refresh_plan_editor()
 	)
-	for c in [ev_name, ev_type, ev_def, ev_desc, ev_add]:
-		ev_form.add_child(c)
-	_plan_editor.add_child(ev_form)
+	_plan_editor.add_child(ev_add)
 
 	_plan_editor.add_child(HSeparator.new())
 
@@ -878,10 +939,10 @@ func _refresh_plan_editor() -> void:
 		row.add_child(rm)
 		_plan_editor.add_child(row)
 
-	var fn_form := HBoxContainer.new()
+	var fn_top := HBoxContainer.new()
 	var fn_name := LineEdit.new()
 	fn_name.placeholder_text = "name"
-	fn_name.custom_minimum_size = Vector2(90, 0)
+	fn_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var fn_params := LineEdit.new()
 	fn_params.placeholder_text = "params"
 	fn_params.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -889,11 +950,17 @@ func _refresh_plan_editor() -> void:
 	fn_ret.placeholder_text = "return"
 	fn_ret.text = "void"
 	fn_ret.custom_minimum_size = Vector2(60, 0)
-	var fn_desc := LineEdit.new()
-	fn_desc.placeholder_text = "description"
+	for c in [fn_name, fn_params, fn_ret]:
+		fn_top.add_child(c)
+	_plan_editor.add_child(fn_top)
+	var fn_desc := TextEdit.new()
+	fn_desc.placeholder_text = "Function description (becomes a ## comment)"
+	fn_desc.custom_minimum_size = Vector2(0, 50)
 	fn_desc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	fn_desc.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	_plan_editor.add_child(fn_desc)
 	var fn_add := Button.new()
-	fn_add.text = "➕"
+	fn_add.text = "➕ Add Function"
 	fn_add.pressed.connect(func():
 		var n := fn_name.text.strip_edges()
 		if n.is_empty(): return
@@ -908,9 +975,7 @@ func _refresh_plan_editor() -> void:
 		_save_planned()
 		_refresh_plan_editor()
 	)
-	for c in [fn_name, fn_params, fn_ret, fn_desc, fn_add]:
-		fn_form.add_child(c)
-	_plan_editor.add_child(fn_form)
+	_plan_editor.add_child(fn_add)
 
 func _build_bugs_subtab(tabs: TabContainer) -> void:
 	var root := _vbox("Bugs", tabs)
