@@ -324,7 +324,12 @@ func _refresh_deps() -> void:
 		if not changed:
 			break
 
-	# Create graph nodes
+	var max_depth := 0
+	for eid_key: String in depths:
+		if int(depths[eid_key]) > max_depth:
+			max_depth = int(depths[eid_key])
+
+	# Create graph nodes — dependents on the left, dependencies on the right
 	var col_row: Dictionary = {}
 	for e: Dictionary in all_entries:
 		var folder: String = e.get("folder", "")
@@ -340,9 +345,10 @@ func _refresh_deps() -> void:
 			node.modulate = Color(0.75, 0.75, 0.75)
 
 		var depth := int(depths.get(eid, 0))
-		var row := int(col_row.get(depth, 0))
-		col_row[depth] = row + 1
-		node.position_offset = Vector2(depth * 260, row * (130 + deps.size() * 22))
+		var col := max_depth - depth  # flip: depth-0 foundations go to the right
+		var row := int(col_row.get(col, 0))
+		col_row[col] = row + 1
+		node.position_offset = Vector2(col * 260, row * (130 + deps.size() * 22))
 
 		# Slot 0: input only — "can be depended on by others"
 		var in_lbl := Label.new()
