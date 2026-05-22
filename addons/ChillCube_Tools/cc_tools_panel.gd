@@ -457,6 +457,27 @@ func _refresh_addons() -> void:
 			)
 		row.add_child(copy_btn)
 
+		var sync_btn := Button.new()
+		sync_btn.text = "↺ Sync"
+		if url.is_empty():
+			sync_btn.disabled = true
+			sync_btn.tooltip_text = "No GitHub remote — cannot sync"
+		else:
+			var captured_url := url
+			sync_btn.tooltip_text = "Pull latest from " + url
+			sync_btn.pressed.connect(func():
+				_installed_log.text = ""
+				_run_op(sync_btn, _installed_log, func():
+					Ops.sync_addon(
+						ProjectSettings.globalize_path("res://").rstrip("/"),
+						captured_url,
+						func(msg): call_deferred("_append_log", _installed_log, msg)
+					)
+					call_deferred("_refresh_addons")
+				)
+			)
+		row.add_child(sync_btn)
+
 		var rm_btn := Button.new()
 		rm_btn.text = "🗑️"
 		if dependers.is_empty():
@@ -688,9 +709,10 @@ func _populate_registry(entries: Array) -> void:
 		row.add_child(info)
 
 		var url: String = entry.get("url", "")
-		var installed := url in _registry_installed
+		if url in _registry_installed:
+			continue
 		var btn := Button.new()
-		btn.text = "↺ Sync" if installed else "⬇ Install"
+		btn.text = "⬇ Install"
 		btn.tooltip_text = url
 		btn.pressed.connect(_install_from_registry.bind(url, btn))
 		row.add_child(btn)
