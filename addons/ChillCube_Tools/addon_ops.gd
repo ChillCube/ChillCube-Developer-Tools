@@ -421,6 +421,45 @@ static func get_dependents(root: String) -> Dictionary:
 		dir2.list_dir_end()
 	return result
 
+# ─── DEPENDENCY EDITING ──────────────────────────────────────────────────────
+
+static func read_dep_urls(addon_path: String) -> Array[String]:
+	var result: Array[String] = []
+	for line: String in _read(addon_path + "/DEPENDENCIES.txt").split("\n"):
+		line = line.strip_edges()
+		if line.begins_with("http"):
+			var clean := line.replace(".git", "").replace("git@github.com:", "https://github.com/")
+			if clean not in result:
+				result.append(clean)
+	return result
+
+static func add_dep(addon_path: String, dep_url: String) -> void:
+	var dep_file := addon_path + "/DEPENDENCIES.txt"
+	var content := _read(dep_file)
+	if content.is_empty():
+		content = AUTO_MARKER + "\n\n" + MANUAL_MARKER + "\n"
+	var clean := dep_url.replace(".git", "").replace("git@github.com:", "https://github.com/")
+	if clean in content or dep_url in content:
+		return
+	if MANUAL_MARKER in content:
+		content = content.replace(MANUAL_MARKER + "\n", MANUAL_MARKER + "\n" + clean + "\n")
+	else:
+		content += "\n" + MANUAL_MARKER + "\n" + clean + "\n"
+	_write(dep_file, content)
+
+static func remove_dep(addon_path: String, dep_url: String) -> void:
+	var dep_file := addon_path + "/DEPENDENCIES.txt"
+	var content := _read(dep_file)
+	if content.is_empty():
+		return
+	var clean := dep_url.replace(".git", "").replace("git@github.com:", "https://github.com/")
+	var new_lines: Array[String] = []
+	for line: String in content.split("\n"):
+		var t := line.strip_edges().replace(".git", "").replace("git@github.com:", "https://github.com/")
+		if t != clean:
+			new_lines.append(line)
+	_write(dep_file, "\n".join(PackedStringArray(new_lines)))
+
 # ─── REMOVE ADDON ────────────────────────────────────────────────────────────
 
 static func remove_addon(root: String, addon_name: String, log: Callable) -> bool:

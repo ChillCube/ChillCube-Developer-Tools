@@ -19,6 +19,12 @@ var _clone_btn: Button
 var _push_btn: Button
 var _update_plugin_btn: Button
 
+var _dep_graph: GraphEdit
+var _dep_nodes: Dictionary  # folder -> GraphNode
+var _dep_selected: String = ""
+var _dep_side_content: VBoxContainer
+var _dep_url_input: LineEdit
+
 var _term_output: TextEdit
 var _term_input: LineEdit
 var _term_cwd_label: Label
@@ -53,6 +59,7 @@ func _ready() -> void:
 	_build_browse_tab(tabs)
 	_build_addons_tab(tabs)
 	_build_add_addon_tab(tabs)
+	_build_deps_tab(tabs)
 	_build_terminal_tab(tabs)
 
 	_refresh_addons()
@@ -187,6 +194,218 @@ func _build_add_addon_tab(tabs: TabContainer) -> void:
 	_create_log = _side_log()
 	split.add_child(_create_log)
 	root.add_child(split)
+
+func _build_deps_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Dependencies", tabs)
+
+	var toolbar := HBoxContainer.new()
+	var refresh_btn := Button.new()
+	refresh_btn.text = "↺ Refresh"
+	refresh_btn.pressed.connect(_refresh_deps)
+	toolbar.add_child(refresh_btn)
+	root.add_child(toolbar)
+
+	var split := HBoxContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	_dep_graph = GraphEdit.new()
+	_dep_graph.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_dep_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_dep_graph.connection_request.connect(_dep_on_connect)
+	_dep_graph.disconnection_request.connect(_dep_on_disconnect)
+	_dep_graph.node_selected.connect(_dep_on_node_selected)
+	split.add_child(_dep_graph)
+
+	split.add_child(VSeparator.new())
+
+	var side := VBoxContainer.new()
+	side.custom_minimum_size = Vector2(220, 0)
+
+	var hint := Label.new()
+	hint.text = "Click a node to edit its dependencies.\nDrag between ports to connect addons."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	side.add_child(hint)
+	side.add_child(HSeparator.new())
+
+	_dep_side_content = VBoxContainer.new()
+	_dep_side_content.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	side.add_child(_dep_side_content)
+
+	side.add_child(HSeparator.new())
+	var ext_lbl := Label.new()
+	ext_lbl.text = "Add external dependency URL:"
+	side.add_child(ext_lbl)
+	_dep_url_input = LineEdit.new()
+	_dep_url_input.placeholder_text = "https://github.com/ChillCube/…"
+	side.add_child(_dep_url_input)
+	var add_ext_btn := Button.new()
+	add_ext_btn.text = "➕ Add to Selected"
+	add_ext_btn.pressed.connect(_dep_add_external)
+	side.add_child(add_ext_btn)
+
+	split.add_child(side)
+	root.add_child(split)
+
+	_refresh_deps()
+
+# ─── Dependency graph logic ───────────────────────────────────────────────────
+
+func _refresh_deps() -> void:
+	_dep_graph.clear_connections()
+	for node in _dep_nodes.values():
+		if is_instance_valid(node):
+			node.queue_free()
+	_dep_nodes = {}
+	_dep_selected = ""
+	for child in _dep_side_content.get_children():
+		child.queue_free()
+
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+	var addons := Ops.list_addons(root)
+	if addons.is_empty():
+		return
+
+	var url_to_folder: Dictionary = {}
+	for folder: String in addons:
+		var url := Ops.git_remote(root + "/addons/" + folder)
+		if not url.is_empty():
+			url_to_folder[url] = folder
+
+	# Compute layout depth (foundations = depth 0, dependents = deeper)
+	var depths: Dictionary = {}
+	for folder: String in addons:
+		depths[folder] = 0
+	for _i in range(addons.size()):
+		var changed := false
+		for folder: String in addons:
+			for dep_url: String in Ops.read_dep_urls(root + "/addons/" + folder):
+				if dep_url in url_to_folder:
+					var dep_folder: String = url_to_folder[dep_url]
+					if int(depths.get(folder, 0)) <= int(depths.get(dep_folder, 0)):
+						depths[folder] = int(depths[dep_folder]) + 1
+						changed = true
+		if not changed:
+			break
+
+	var col_row: Dictionary = {}
+	for folder: String in addons:
+		var cfg := Ops.parse_cfg(root + "/addons/" + folder + "/plugin.cfg")
+		var node := GraphNode.new()
+		node.title = cfg.get("name", folder)
+		node.name = folder
+		var depth := int(depths.get(folder, 0))
+		var row := int(col_row.get(depth, 0))
+		col_row[depth] = row + 1
+		node.position_offset = Vector2(depth * 250, row * 110)
+		node.set_slot(0, true, 0, Color(0.4, 0.7, 1.0), true, 0, Color(1.0, 0.75, 0.3))
+		var desc := Label.new()
+		desc.text = cfg.get("description", "")
+		desc.clip_text = true
+		desc.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+		node.add_child(desc)
+		_dep_graph.add_child(node)
+		_dep_nodes[folder] = node
+
+	for folder: String in addons:
+		for dep_url: String in Ops.read_dep_urls(root + "/addons/" + folder):
+			if dep_url in url_to_folder:
+				var dep_folder: String = url_to_folder[dep_url]
+				if (folder in _dep_nodes) and (dep_folder in _dep_nodes):
+					_dep_graph.connect_node(folder, 0, dep_folder, 0)
+
+func _dep_on_connect(from_node: StringName, from_port: int, to_node: StringName, to_port: int) -> void:
+	if from_node == to_node:
+		return
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+	var to_url := Ops.git_remote(root + "/addons/" + to_node)
+	if to_url.is_empty():
+		return
+	Ops.add_dep(root + "/addons/" + from_node, to_url)
+	_dep_graph.connect_node(from_node, from_port, to_node, to_port)
+	if _dep_selected == str(from_node):
+		_dep_show_side(str(from_node))
+
+func _dep_on_disconnect(from_node: StringName, from_port: int, to_node: StringName, to_port: int) -> void:
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+	var to_url := Ops.git_remote(root + "/addons/" + to_node)
+	if not to_url.is_empty():
+		Ops.remove_dep(root + "/addons/" + from_node, to_url)
+	_dep_graph.disconnect_node(from_node, from_port, to_node, to_port)
+	if _dep_selected == str(from_node):
+		_dep_show_side(str(from_node))
+
+func _dep_on_node_selected(node: Node) -> void:
+	_dep_selected = node.name
+	_dep_show_side(node.name)
+
+func _dep_show_side(folder: String) -> void:
+	for child in _dep_side_content.get_children():
+		child.queue_free()
+	if folder.is_empty():
+		return
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+	var cfg := Ops.parse_cfg(root + "/addons/" + folder + "/plugin.cfg")
+
+	var name_lbl := Label.new()
+	name_lbl.text = cfg.get("name", folder)
+	name_lbl.add_theme_font_size_override("font_size", 13)
+	_dep_side_content.add_child(name_lbl)
+
+	var dep_heading := Label.new()
+	dep_heading.text = "Dependencies:"
+	_dep_side_content.add_child(dep_heading)
+
+	var deps := Ops.read_dep_urls(root + "/addons/" + folder)
+	if deps.is_empty():
+		var none_lbl := Label.new()
+		none_lbl.text = "(none)"
+		none_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_dep_side_content.add_child(none_lbl)
+	else:
+		for dep_url: String in deps:
+			var row := HBoxContainer.new()
+			var dep_lbl := Label.new()
+			dep_lbl.text = dep_url.get_file()
+			dep_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			dep_lbl.clip_text = true
+			dep_lbl.tooltip_text = dep_url
+			var rm_btn := Button.new()
+			rm_btn.text = "✕"
+			var captured_folder := folder
+			var captured_url := dep_url
+			rm_btn.pressed.connect(func():
+				Ops.remove_dep(root + "/addons/" + captured_folder, captured_url)
+				var url_to_folder: Dictionary = {}
+				for f: String in Ops.list_addons(root):
+					var u := Ops.git_remote(root + "/addons/" + f)
+					if not u.is_empty():
+						url_to_folder[u] = f
+				if captured_url in url_to_folder:
+					var dep_f: String = url_to_folder[captured_url]
+					_dep_graph.disconnect_node(captured_folder, 0, dep_f, 0)
+				_dep_show_side(captured_folder)
+			)
+			row.add_child(dep_lbl)
+			row.add_child(rm_btn)
+			_dep_side_content.add_child(row)
+
+func _dep_add_external() -> void:
+	if _dep_selected.is_empty():
+		return
+	var url := _dep_url_input.text.strip_edges()
+	if url.is_empty():
+		return
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+	var clean := url.replace(".git", "").replace("git@github.com:", "https://github.com/")
+	Ops.add_dep(root + "/addons/" + _dep_selected, clean)
+	_dep_url_input.text = ""
+	for folder: String in _dep_nodes:
+		if Ops.git_remote(root + "/addons/" + folder) == clean:
+			_dep_graph.connect_node(_dep_selected, 0, folder, 0)
+			break
+	_dep_show_side(_dep_selected)
 
 func _build_terminal_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Terminal", tabs)
