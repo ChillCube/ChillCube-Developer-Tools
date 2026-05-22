@@ -1121,10 +1121,24 @@ static func vault_connect(cache_dir: String, full_repo: String, log: Callable) -
 		return true
 	_rm_rf(cache_dir)
 	log.call("📥 Cloning " + full_repo + "...")
-	if _exec("gh", ["repo", "clone", full_repo, cache_dir], log) != OK:
-		log.call("❌ Clone failed. Is gh CLI authenticated and does the repo exist?")
+	if _exec("gh", ["repo", "clone", full_repo, cache_dir], log) == OK:
+		log.call("✅ Connected to " + full_repo)
+		return true
+	# Repo doesn't exist yet — create it as private and initialise
+	log.call("📦 Creating private repo " + full_repo + "...")
+	if _exec("gh", ["repo", "create", full_repo, "--private", "--description", "ChillCube private file vault"], log) != OK:
+		log.call("❌ Could not create repo. Is gh CLI authenticated?")
 		return false
-	log.call("✅ Connected to " + full_repo)
+	DirAccess.make_dir_recursive_absolute(cache_dir)
+	_git(["init", "-q"], cache_dir, log)
+	_git(["branch", "-m", "main"], cache_dir, log)
+	_write(cache_dir + "/README.md", "# ChillCube Vault\nPrivate file storage for ChillCube projects.\n")
+	_git(["add", "."], cache_dir, log)
+	_git(["commit", "-m", "initial: create vault"], cache_dir, log)
+	_exec("gh", ["repo", "set-default", full_repo], log)
+	_git(["remote", "add", "origin", "https://github.com/" + full_repo + ".git"], cache_dir, log)
+	_git(["push", "-u", "origin", "main"], cache_dir, log)
+	log.call("✅ Vault created and ready.")
 	return true
 
 static func vault_upload(cache_dir: String, local_file: String, remote_dir: String, log: Callable) -> bool:

@@ -55,7 +55,6 @@ var _term_history: Array[String] = []
 var _term_hist_idx: int = -1
 var _term_thread: Thread = null
 
-var _vault_repo_input: LineEdit
 var _vault_path_lbl: Label
 var _vault_browser: VBoxContainer
 var _vault_current_dir: String = ""
@@ -99,6 +98,7 @@ func _ready() -> void:
 	_build_terminal_tab(tabs)
 
 	_refresh_addons()
+	_vault_connect()
 
 func _exit_tree() -> void:
 	if _thread and _thread.is_started():
@@ -1291,21 +1291,19 @@ func _todo_on_pushed() -> void:
 func _build_vault_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Vault", tabs)
 
-	# ── Top bar: repo selector ────────────────────────────────────────────────
+	# ── Top bar ───────────────────────────────────────────────────────────────
 	var top := HBoxContainer.new()
-	var org_lbl := Label.new()
-	org_lbl.text = "ChillCube/"
-	_vault_repo_input = LineEdit.new()
-	_vault_repo_input.placeholder_text = "repo-name"
-	_vault_repo_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var repo_lbl := Label.new()
+	repo_lbl.text = "🔒 ChillCube/vault"
+	repo_lbl.add_theme_color_override("font_color", Color(0.5, 0.7, 1.0))
+	repo_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var connect_btn := Button.new()
-	connect_btn.text = "🔄 Connect"
+	connect_btn.text = "🔄 Refresh"
+	connect_btn.tooltip_text = "Pull latest from ChillCube/vault"
 	connect_btn.pressed.connect(_vault_connect)
 	_vault_status_lbl = Label.new()
-	_vault_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_vault_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
-	top.add_child(org_lbl)
-	top.add_child(_vault_repo_input)
+	top.add_child(repo_lbl)
 	top.add_child(connect_btn)
 	top.add_child(_vault_status_lbl)
 	root.add_child(top)
@@ -1420,21 +1418,16 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 # ─── Vault logic ──────────────────────────────────────────────────────────────
 
 func _vault_connect() -> void:
-	var repo := _vault_repo_input.text.strip_edges()
-	if repo.is_empty():
-		_vault_status_lbl.text = "⚠️ Enter a repo name"
-		return
-	_vault_cache = OS.get_user_data_dir() + "/cc_vault_" + repo
+	_vault_cache = OS.get_user_data_dir() + "/cc_vault"
 	_vault_status_lbl.text = "Connecting…"
 	_vault_log.text = ""
 	if _vault_thread and _vault_thread.is_started():
 		_vault_thread.wait_to_finish()
 	_vault_thread = Thread.new()
-	var full_repo := "ChillCube/" + repo
 	var cache := _vault_cache
 	_vault_thread.start(func():
 		var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
-		var ok := Ops.vault_connect(cache, full_repo, log_fn)
+		var ok := Ops.vault_connect(cache, "ChillCube/vault", log_fn)
 		call_deferred("_vault_on_connected", ok)
 	)
 
