@@ -120,6 +120,11 @@ func _build_add_addon_tab(tabs: TabContainer) -> void:
 	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
 	# ── Create section ──
+	var create_heading := Label.new()
+	create_heading.text = "✨ Create New Addon"
+	create_heading.add_theme_font_size_override("font_size", 14)
+	left.add_child(create_heading)
+
 	var grid := GridContainer.new()
 	grid.columns = 2
 	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -145,11 +150,24 @@ func _build_add_addon_tab(tabs: TabContainer) -> void:
 	_create_btn.pressed.connect(_start_create)
 	left.add_child(_create_btn)
 
+	# ── Separator ──
+	var spacer_top := Control.new()
+	spacer_top.custom_minimum_size = Vector2(0, 6)
+	left.add_child(spacer_top)
 	left.add_child(HSeparator.new())
+	var spacer_bot := Control.new()
+	spacer_bot.custom_minimum_size = Vector2(0, 6)
+	left.add_child(spacer_bot)
 
 	# ── Clone section ──
+	var clone_heading := Label.new()
+	clone_heading.text = "📥 Clone Existing Addon"
+	clone_heading.add_theme_font_size_override("font_size", 14)
+	left.add_child(clone_heading)
+
 	var clone_lbl := Label.new()
 	clone_lbl.text = "Paste a Git URL to clone and install a ChillCube addon:"
+	clone_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
 	left.add_child(clone_lbl)
 
 	var clone_row := HBoxContainer.new()
