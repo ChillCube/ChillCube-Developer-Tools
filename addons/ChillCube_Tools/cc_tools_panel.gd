@@ -235,6 +235,9 @@ func _build_terminal_tab(tabs: TabContainer) -> void:
 
 # ─── Terminal logic ───────────────────────────────────────────────────────────
 
+const NEEDS_TTY := ["claude", "vim", "vi", "nvim", "nano", "htop", "top", "btop",
+	"lazygit", "less", "more", "man", "ssh", "python", "python3", "node", "irb", "iex", "bash", "zsh", "sh"]
+
 func _term_update_prompt() -> void:
 	_term_cwd_label.text = _term_cwd + " $"
 
@@ -268,6 +271,15 @@ func _term_run() -> void:
 	_term_history.insert(0, cmd)
 	_term_hist_idx = -1
 	_term_input.text = ""
+
+	# Redirect interactive apps to a real PTY terminal
+	var base_cmd := cmd.split(" ")[0].get_file()
+	if base_cmd in NEEDS_TTY:
+		_term_append(_term_cwd + " $ " + cmd)
+		_term_append("↗ '%s' needs a real TTY — launching in external terminal…" % base_cmd)
+		_term_open_external(cmd)
+		return
+
 	_term_append(_term_cwd + " $ " + cmd)
 
 	# Handle cd locally so directory state persists across commands
@@ -313,7 +325,7 @@ func _term_on_done(raw: String) -> void:
 	_term_input.editable = true
 	_term_input.grab_focus()
 
-func _term_open_external() -> void:
+func _term_open_external(initial_cmd: String = "") -> void:
 	var candidates := ["xterm", "kitty", "alacritty", "konsole", "gnome-terminal", "xfce4-terminal", "lxterminal", "mate-terminal"]
 	var found := ""
 	for t in candidates:
@@ -324,14 +336,23 @@ func _term_open_external() -> void:
 	if found.is_empty():
 		_term_append("⚠ No terminal emulator found. Install xterm, kitty, or konsole.")
 		return
+	# Build a bash script: cd to cwd, optionally run the command, then drop to shell
 	var safe_cwd := _term_cwd.replace("'", "'\\''")
+	var shell_script := "cd '" + safe_cwd + "'"
+	if not initial_cmd.is_empty():
+		shell_script += " && " + initial_cmd
+	shell_script += "; exec bash"
 	match found:
 		"gnome-terminal":
-			OS.create_process("gnome-terminal", ["--working-directory=" + _term_cwd])
+			OS.create_process("gnome-terminal", ["--", "bash", "-c", shell_script])
 		"konsole":
-			OS.create_process("konsole", ["--workdir", _term_cwd])
+			OS.create_process("konsole", ["-e", "bash", "-c", shell_script])
+		"kitty":
+			OS.create_process("kitty", ["bash", "-c", shell_script])
+		"alacritty":
+			OS.create_process("alacritty", ["--", "bash", "-c", shell_script])
 		_:
-			OS.create_process(found, ["-e", "bash -c \"cd '" + safe_cwd + "' && exec bash\""])
+			OS.create_process(found, ["-e", "bash", "-c", shell_script])
 
 func _term_append(text: String) -> void:
 	_term_output.text += text + "\n"
