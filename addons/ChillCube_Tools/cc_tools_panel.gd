@@ -482,6 +482,12 @@ func _build_planned_subtab(tabs: TabContainer) -> void:
 	toolbar.add_child(_plan_status_lbl)
 	root.add_child(toolbar)
 
+	var legend := Label.new()
+	legend.text = "🚀 Create Repo   ✅ Mark Done   🗑 Delete"
+	legend.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+	legend.add_theme_font_size_override("font_size", 11)
+	root.add_child(legend)
+
 	var split := HBoxContainer.new()
 	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -705,15 +711,15 @@ func _refresh_plan_list() -> void:
 
 		var actions := HBoxContainer.new()
 		var create_btn := Button.new()
-		create_btn.text = "🚀 Create Repo"
+		create_btn.text = "🚀"
 		create_btn.disabled = pa.get("created", false)
-		create_btn.tooltip_text = "Initialize git repo and addon files" if not pa.get("created", false) else "Already created"
+		create_btn.tooltip_text = "Create Repo — initialize git repo and addon files" if not pa.get("created", false) else "Already created"
 		create_btn.pressed.connect(func(): _plan_create_repo(cap_i))
 		actions.add_child(create_btn)
 
 		var finish_btn := Button.new()
-		finish_btn.text = "✅ Done"
-		finish_btn.tooltip_text = "Declare finished — addon moves to Installed Addons"
+		finish_btn.text = "✅"
+		finish_btn.tooltip_text = "Mark Done — addon moves to Installed Addons"
 		finish_btn.pressed.connect(func(): _plan_declare_finished(cap_i))
 		actions.add_child(finish_btn)
 
