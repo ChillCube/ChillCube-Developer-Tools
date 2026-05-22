@@ -10,7 +10,7 @@ var _installed_log: TextEdit
 var _create_name: LineEdit
 var _create_desc: LineEdit
 var _create_author: LineEdit
-var _create_category: LineEdit
+var _create_category: OptionButton
 var _create_gh: CheckBox
 var _create_btn: Button
 var _create_log: TextEdit
@@ -115,7 +115,13 @@ func _build_create_tab(tabs: TabContainer) -> void:
 	_create_name = _field(grid, "Addon Name")
 	_create_desc = _field(grid, "Description")
 	_create_author = _field(grid, "Author")
-	_create_category = _field(grid, "Category")
+	var cat_lbl := Label.new()
+	cat_lbl.text = "Category:"
+	grid.add_child(cat_lbl)
+	_create_category = OptionButton.new()
+	_create_category.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_create_category.add_item("Loading…")
+	grid.add_child(_create_category)
 	left.add_child(grid)
 
 	_create_gh = CheckBox.new()
@@ -276,10 +282,11 @@ func _start_create() -> void:
 	if name.is_empty():
 		_append_log(_create_log, "❌ Name is required.")
 		return
-	var category := _create_category.text.strip_edges()
-	if category.is_empty():
-		_append_log(_create_log, "❌ Category is required.")
+	var sel := _create_category.selected
+	if sel == -1 or _create_category.get_item_text(sel) == "Loading…":
+		_append_log(_create_log, "❌ Category list is still loading — try again.")
 		return
+	var category := _create_category.get_item_text(sel)
 	_run_op(_create_btn, _create_log, func():
 		Ops.create_addon(
 			ProjectSettings.globalize_path("res://").rstrip("/"),
@@ -408,6 +415,7 @@ func _on_registry_fetched(result: int, response_code: int, _headers: PackedStrin
 	var entries := _parse_registry(body.get_string_from_utf8())
 	_build_installed_url_map()
 	_populate_registry(entries)
+	_populate_category_dropdown(entries)
 	_registry_status.text = "%d addon(s) listed" % entries.size()
 
 func _parse_registry(content: String) -> Array:
@@ -483,6 +491,18 @@ func _populate_registry(entries: Array) -> void:
 		btn.pressed.connect(_install_from_registry.bind(url, btn))
 		row.add_child(btn)
 		_registry_list.add_child(row)
+
+func _populate_category_dropdown(entries: Array) -> void:
+	var seen: Array[String] = []
+	for entry: Dictionary in entries:
+		var cat: String = entry.get("category", "Uncategorized")
+		if cat not in seen:
+			seen.append(cat)
+	_create_category.clear()
+	for cat in seen:
+		_create_category.add_item(cat)
+	if _create_category.item_count == 0:
+		_create_category.add_item("Uncategorized")
 
 func _install_from_registry(url: String, btn: Button) -> void:
 	_run_op(btn, _browse_log, func():
