@@ -51,19 +51,36 @@ static func _git(args: Array, cwd: String, log: Callable) -> int:
 	return _exec("git", full, log)
 
 static func _gh(args: Array, log: Callable) -> int:
-	# gh is often installed outside Godot's PATH; invoke via login bash shell
+	# gh is often installed outside Godot's PATH.
+	# Try progressively broader shell contexts until one works.
 	var parts: Array[String] = []
 	for a in args:
 		var s := str(a)
 		parts.append("'" + s.replace("'", "'\"'\"'") + "'")
-	var cmd := "gh " + " ".join(PackedStringArray(parts))
-	var output := []
-	var code := OS.execute("bash", PackedStringArray(["-lc", cmd]), output, true)
-	if log.is_valid() and not output.is_empty():
-		for line: String in output[0].split("\n"):
-			if not line.strip_edges().is_empty():
-				log.call(line)
-	return code
+	var inner := "gh " + " ".join(PackedStringArray(parts))
+	# Source all common rc files so PATH is fully populated
+	var preamble := ". ~/.bashrc 2>/dev/null; . ~/.bash_profile 2>/dev/null; . ~/.profile 2>/dev/null; "
+	var attempts: Array = [
+		["bash", ["-lc", inner]],
+		["bash", ["-c", preamble + inner]],
+		["bash", ["-c", "export PATH=\"$PATH:/usr/local/bin:/usr/bin:/snap/bin:/home/linuxbrew/.linuxbrew/bin\"; " + inner]],
+	]
+	for attempt: Array in attempts:
+		var output := []
+		var code := OS.execute(str(attempt[0]), PackedStringArray(attempt[1] as Array[String]), output, true)
+		var out_str: String = output[0] if not output.is_empty() else ""
+		var not_found := out_str.contains("command not found") or out_str.contains("No such file")
+		if log.is_valid() and not out_str.is_empty() and not not_found:
+			for line: String in out_str.split("\n"):
+				if not line.strip_edges().is_empty():
+					log.call(line)
+		if not not_found:
+			return code
+	if log.is_valid():
+		log.call("❌ gh CLI not found.")
+		log.call("   Install: https://cli.github.com")
+		log.call("   Then run:  gh auth login")
+	return FAILED
 
 static func _read(path: String) -> String:
 	if not FileAccess.file_exists(path):
@@ -1128,30 +1145,35 @@ static func _update_tree(root: String, log: Callable) -> void:
 # ─── FILE VAULT ──────────────────────────────────────────────────────────────
 
 static func vault_connect(cache_dir: String, full_repo: String, log: Callable) -> bool:
+	# Pull if already cloned
 	if DirAccess.dir_exists_absolute(cache_dir + "/.git"):
 		log.call("🔄 Pulling latest...")
 		if _git(["pull", "--rebase", "origin", "main"], cache_dir, log) != OK:
 			_git(["rebase", "--abort"], cache_dir, Callable())
 			log.call("⚠️ Pull failed — using cached version.")
 		return true
+	# Clone via SSH (same auth path as every other addon push/pull)
 	_rm_rf(cache_dir)
+	var ssh_url := "git@github.com:" + full_repo + ".git"
 	log.call("📥 Cloning " + full_repo + "...")
-	if _gh(["repo", "clone", full_repo, cache_dir], log) == OK:
+	if _git(["clone", ssh_url, cache_dir], "", log) == OK:
 		log.call("✅ Connected to " + full_repo)
 		return true
-	# Repo doesn't exist yet — create it as private and initialise
-	log.call("📦 Creating private repo " + full_repo + "...")
+	# Repo doesn't exist — try creating it via gh, then clone
+	log.call("📦 Repo not found. Creating private repo " + full_repo + "...")
 	if _gh(["repo", "create", full_repo, "--private", "--description", "ChillCube private file vault"], log) != OK:
-		log.call("❌ Could not create repo. Is gh CLI authenticated?")
+		log.call("❌ Could not create repo.")
+		log.call("   Either create ChillCube/vault manually on GitHub,")
+		log.call("   or install gh CLI (https://cli.github.com) and run: gh auth login")
 		return false
-	DirAccess.make_dir_recursive_absolute(cache_dir)
-	_git(["init", "-q"], cache_dir, log)
-	_git(["branch", "-m", "main"], cache_dir, log)
+	# Clone the freshly created (empty) repo
+	if _git(["clone", ssh_url, cache_dir], "", log) != OK:
+		log.call("❌ Clone failed after creation.")
+		return false
+	# Seed with a README so main branch exists
 	_write(cache_dir + "/README.md", "# ChillCube Vault\nPrivate file storage for ChillCube projects.\n")
 	_git(["add", "."], cache_dir, log)
 	_git(["commit", "-m", "initial: create vault"], cache_dir, log)
-	_gh(["repo", "set-default", full_repo], log)
-	_git(["remote", "add", "origin", "https://github.com/" + full_repo + ".git"], cache_dir, log)
 	_git(["push", "-u", "origin", "main"], cache_dir, log)
 	log.call("✅ Vault created and ready.")
 	return true
