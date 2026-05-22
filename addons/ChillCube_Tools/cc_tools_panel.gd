@@ -16,7 +16,6 @@ var _create_btn: Button
 var _create_log: TextEdit
 var _clone_url: LineEdit
 var _clone_btn: Button
-var _clone_log: TextEdit
 var _push_btn: Button
 var _update_plugin_btn: Button
 
@@ -53,8 +52,7 @@ func _ready() -> void:
 
 	_build_browse_tab(tabs)
 	_build_addons_tab(tabs)
-	_build_create_tab(tabs)
-	_build_clone_tab(tabs)
+	_build_add_addon_tab(tabs)
 	_build_terminal_tab(tabs)
 
 	_refresh_addons()
@@ -110,8 +108,8 @@ func _build_addons_tab(tabs: TabContainer) -> void:
 	split.add_child(_installed_log)
 	root.add_child(split)
 
-func _build_create_tab(tabs: TabContainer) -> void:
-	var root := _vbox("Create Addon", tabs)
+func _build_add_addon_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Add Addon", tabs)
 
 	var split := HBoxContainer.new()
 	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -121,6 +119,7 @@ func _build_create_tab(tabs: TabContainer) -> void:
 	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
+	# ── Create section ──
 	var grid := GridContainer.new()
 	grid.columns = 2
 	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -146,44 +145,29 @@ func _build_create_tab(tabs: TabContainer) -> void:
 	_create_btn.pressed.connect(_start_create)
 	left.add_child(_create_btn)
 
-	split.add_child(left)
-	split.add_child(VSeparator.new())
+	left.add_child(HSeparator.new())
 
-	_create_log = _side_log()
-	split.add_child(_create_log)
-	root.add_child(split)
+	# ── Clone section ──
+	var clone_lbl := Label.new()
+	clone_lbl.text = "Paste a Git URL to clone and install a ChillCube addon:"
+	left.add_child(clone_lbl)
 
-func _build_clone_tab(tabs: TabContainer) -> void:
-	var root := _vbox("Clone Addon", tabs)
-
-	var split := HBoxContainer.new()
-	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-
-	var left := VBoxContainer.new()
-	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
-
-	var lbl := Label.new()
-	lbl.text = "Paste a Git URL to clone and install a ChillCube addon:"
-	left.add_child(lbl)
-
-	var row := HBoxContainer.new()
+	var clone_row := HBoxContainer.new()
 	_clone_url = LineEdit.new()
 	_clone_url.placeholder_text = "https://github.com/ChillCube/MyAddon.git"
 	_clone_url.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_clone_btn = Button.new()
 	_clone_btn.text = "📥 Clone"
 	_clone_btn.pressed.connect(_start_clone)
-	row.add_child(_clone_url)
-	row.add_child(_clone_btn)
-	left.add_child(row)
+	clone_row.add_child(_clone_url)
+	clone_row.add_child(_clone_btn)
+	left.add_child(clone_row)
 
 	split.add_child(left)
 	split.add_child(VSeparator.new())
 
-	_clone_log = _side_log()
-	split.add_child(_clone_log)
+	_create_log = _side_log()
+	split.add_child(_create_log)
 	root.add_child(split)
 
 func _build_terminal_tab(tabs: TabContainer) -> void:
@@ -528,13 +512,14 @@ func _start_create() -> void:
 func _start_clone() -> void:
 	var url := _clone_url.text.strip_edges()
 	if url.is_empty():
-		_append_log(_clone_log, "❌ URL is required.")
+		_append_log(_create_log, "❌ URL is required.")
 		return
-	_run_op(_clone_btn, _clone_log, func():
+	_create_log.text = ""
+	_run_op(_clone_btn, _create_log, func():
 		Ops.clone_addon(
 			ProjectSettings.globalize_path("res://").rstrip("/"),
 			url,
-			func(msg): call_deferred("_append_log", _clone_log, msg)
+			func(msg): call_deferred("_append_log", _create_log, msg)
 		)
 		call_deferred("_refresh_addons")
 	)
