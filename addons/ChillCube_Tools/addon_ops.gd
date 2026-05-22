@@ -50,6 +50,21 @@ static func _git(args: Array, cwd: String, log: Callable) -> int:
 	var full := ["-C", cwd] + args if not cwd.is_empty() else args
 	return _exec("git", full, log)
 
+static func _gh(args: Array, log: Callable) -> int:
+	# gh is often installed outside Godot's PATH; invoke via login bash shell
+	var parts: Array[String] = []
+	for a in args:
+		var s := str(a)
+		parts.append("'" + s.replace("'", "'\"'\"'") + "'")
+	var cmd := "gh " + " ".join(PackedStringArray(parts))
+	var output := []
+	var code := OS.execute("bash", PackedStringArray(["-lc", cmd]), output, true)
+	if log.is_valid() and not output.is_empty():
+		for line: String in output[0].split("\n"):
+			if not line.strip_edges().is_empty():
+				log.call(line)
+	return code
+
 static func _read(path: String) -> String:
 	if not FileAccess.file_exists(path):
 		return ""
@@ -180,7 +195,7 @@ static func create_addon(root: String, addon_name: String, desc: String, author:
 
 	if create_gh:
 		log.call("🌐 Creating GitHub repo: ChillCube/" + safe)
-		var code := _exec("gh", ["repo", "create", "ChillCube/" + safe,
+		var code := _gh(["repo", "create", "ChillCube/" + safe,
 			"--public", "--source=" + target, "--remote=origin", "--push"], log)
 		if code != OK:
 			log.call("⚠️  GitHub creation failed (is gh CLI authenticated?)")
@@ -1121,12 +1136,12 @@ static func vault_connect(cache_dir: String, full_repo: String, log: Callable) -
 		return true
 	_rm_rf(cache_dir)
 	log.call("📥 Cloning " + full_repo + "...")
-	if _exec("gh", ["repo", "clone", full_repo, cache_dir], log) == OK:
+	if _gh(["repo", "clone", full_repo, cache_dir], log) == OK:
 		log.call("✅ Connected to " + full_repo)
 		return true
 	# Repo doesn't exist yet — create it as private and initialise
 	log.call("📦 Creating private repo " + full_repo + "...")
-	if _exec("gh", ["repo", "create", full_repo, "--private", "--description", "ChillCube private file vault"], log) != OK:
+	if _gh(["repo", "create", full_repo, "--private", "--description", "ChillCube private file vault"], log) != OK:
 		log.call("❌ Could not create repo. Is gh CLI authenticated?")
 		return false
 	DirAccess.make_dir_recursive_absolute(cache_dir)
@@ -1135,7 +1150,7 @@ static func vault_connect(cache_dir: String, full_repo: String, log: Callable) -
 	_write(cache_dir + "/README.md", "# ChillCube Vault\nPrivate file storage for ChillCube projects.\n")
 	_git(["add", "."], cache_dir, log)
 	_git(["commit", "-m", "initial: create vault"], cache_dir, log)
-	_exec("gh", ["repo", "set-default", full_repo], log)
+	_gh(["repo", "set-default", full_repo], log)
 	_git(["remote", "add", "origin", "https://github.com/" + full_repo + ".git"], cache_dir, log)
 	_git(["push", "-u", "origin", "main"], cache_dir, log)
 	log.call("✅ Vault created and ready.")
