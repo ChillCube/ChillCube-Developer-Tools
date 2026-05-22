@@ -27,6 +27,13 @@ var _registry_entries: Array = []
 
 var _bug_list: VBoxContainer
 
+var _todo_list: VBoxContainer
+var _todo_input: LineEdit
+var _todo_push_btn: Button
+var _todo_status_lbl: Label
+var _todo_items: Array = []
+var _todo_thread: Thread = null
+
 var _term_output: TextEdit
 var _term_input: LineEdit
 var _term_cwd_label: Label
@@ -62,7 +69,7 @@ func _ready() -> void:
 	_build_addons_tab(tabs)
 	_build_add_addon_tab(tabs)
 	_build_deps_tab(tabs)
-	_build_bugs_tab(tabs)
+	_build_planning_tab(tabs)
 	_build_terminal_tab(tabs)
 
 	_refresh_addons()
@@ -72,6 +79,8 @@ func _exit_tree() -> void:
 		_thread.wait_to_finish()
 	if _term_thread and _term_thread.is_started():
 		_term_thread.wait_to_finish()
+	if _todo_thread and _todo_thread.is_started():
+		_todo_thread.wait_to_finish()
 
 # ─── Tab builders ─────────────────────────────────────────────────────────────
 
@@ -397,7 +406,16 @@ func _url_to_display_name(url: String) -> String:
 			return entry.get("name", url.get_file())
 	return url.get_file()
 
-func _build_bugs_tab(tabs: TabContainer) -> void:
+func _build_planning_tab(tabs: TabContainer) -> void:
+	var outer := _vbox("Planning", tabs)
+	var inner_tabs := TabContainer.new()
+	inner_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	inner_tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	outer.add_child(inner_tabs)
+	_build_bugs_subtab(inner_tabs)
+	_build_todo_subtab(inner_tabs)
+
+func _build_bugs_subtab(tabs: TabContainer) -> void:
 	var root := _vbox("Bugs", tabs)
 
 	var toolbar := HBoxContainer.new()
@@ -423,6 +441,41 @@ func _build_bugs_tab(tabs: TabContainer) -> void:
 	root.add_child(scroll)
 
 	_refresh_bugs()
+
+func _build_todo_subtab(tabs: TabContainer) -> void:
+	var root := _vbox("To-Do", tabs)
+
+	var toolbar := HBoxContainer.new()
+	_todo_input = LineEdit.new()
+	_todo_input.placeholder_text = "New to-do item…"
+	_todo_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_todo_input.text_submitted.connect(func(_t): _todo_add())
+	var add_btn := Button.new()
+	add_btn.text = "➕ Add"
+	add_btn.pressed.connect(_todo_add)
+	_todo_push_btn = Button.new()
+	_todo_push_btn.text = "⬆ Push"
+	_todo_push_btn.tooltip_text = "Commit and push TODO.md to the project's GitHub repo."
+	_todo_push_btn.pressed.connect(_todo_push)
+	_todo_status_lbl = Label.new()
+	_todo_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+	toolbar.add_child(_todo_input)
+	toolbar.add_child(add_btn)
+	toolbar.add_child(_todo_push_btn)
+	toolbar.add_child(_todo_status_lbl)
+	root.add_child(toolbar)
+	root.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_todo_list = VBoxContainer.new()
+	_todo_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_todo_list)
+	root.add_child(scroll)
+
+	_load_todo()
+	_refresh_todo()
 
 # ─── Bug tracker logic ────────────────────────────────────────────────────────
 
@@ -535,6 +588,118 @@ func _resolve_bug(bug: Dictionary) -> void:
 	fw.close()
 	EditorInterface.get_resource_filesystem().scan()
 	call_deferred("_refresh_bugs")
+
+# ─── To-Do logic ─────────────────────────────────────────────────────────────
+
+func _todo_file() -> String:
+	return ProjectSettings.globalize_path("res://").rstrip("/") + "/TODO.md"
+
+func _load_todo() -> void:
+	_todo_items = []
+	var path := _todo_file()
+	if not FileAccess.file_exists(path):
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if not f:
+		return
+	for line: String in f.get_as_text().split("\n"):
+		var t := line.strip_edges()
+		if t.begins_with("- [ ] "):
+			_todo_items.append({"text": t.substr(6).strip_edges(), "done": false})
+		elif t.begins_with("- [x] ") or t.begins_with("- [X] "):
+			_todo_items.append({"text": t.substr(6).strip_edges(), "done": true})
+	f.close()
+
+func _save_todo() -> void:
+	var lines: PackedStringArray = ["# To-Do", ""]
+	for item: Dictionary in _todo_items:
+		var mark := "[x]" if item.get("done", false) else "[ ]"
+		lines.append("- %s %s" % [mark, item.get("text", "")])
+	var fw := FileAccess.open(_todo_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string("\n".join(lines) + "\n")
+		fw.close()
+
+func _refresh_todo() -> void:
+	for child in _todo_list.get_children():
+		child.queue_free()
+
+	if _todo_items.is_empty():
+		var lbl := Label.new()
+		lbl.text = "No items yet."
+		lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_todo_list.add_child(lbl)
+		return
+
+	for i in range(_todo_items.size()):
+		var item: Dictionary = _todo_items[i]
+		var row := HBoxContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var check := CheckBox.new()
+		check.button_pressed = item.get("done", false)
+		var cap_i := i
+		check.toggled.connect(func(pressed: bool):
+			_todo_items[cap_i]["done"] = pressed
+			_save_todo()
+			_refresh_todo()
+		)
+		row.add_child(check)
+
+		var lbl := Label.new()
+		lbl.text = item.get("text", "")
+		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		if item.get("done", false):
+			lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
+		row.add_child(lbl)
+
+		var rm_btn := Button.new()
+		rm_btn.text = "✕"
+		var cap_rm := i
+		rm_btn.pressed.connect(func():
+			_todo_items.remove_at(cap_rm)
+			_save_todo()
+			_refresh_todo()
+		)
+		row.add_child(rm_btn)
+		_todo_list.add_child(row)
+
+func _todo_add() -> void:
+	if not is_instance_valid(_todo_input):
+		return
+	var text := _todo_input.text.strip_edges()
+	if text.is_empty():
+		return
+	_todo_items.insert(0, {"text": text, "done": false})
+	_todo_input.text = ""
+	_save_todo()
+	_refresh_todo()
+
+func _todo_push() -> void:
+	if _todo_thread and _todo_thread.is_started():
+		return
+	_todo_push_btn.disabled = true
+	_todo_status_lbl.text = "Pushing…"
+	var project_root := ProjectSettings.globalize_path("res://").rstrip("/")
+	_todo_thread = Thread.new()
+	_todo_thread.start(func():
+		OS.execute("git", PackedStringArray(["-C", project_root, "add", "TODO.md"]), [], true)
+		OS.execute("git", PackedStringArray(["-C", project_root, "commit", "-m", "todo: update"]), [], true)
+		OS.execute("git", PackedStringArray(["-C", project_root, "push", "origin", "main"]), [], true)
+		call_deferred("_todo_on_pushed")
+	)
+
+func _todo_on_pushed() -> void:
+	if _todo_thread and _todo_thread.is_started():
+		_todo_thread.wait_to_finish()
+	_todo_thread = null
+	_todo_push_btn.disabled = false
+	_todo_status_lbl.text = "Pushed!"
+	get_tree().create_timer(2.5).timeout.connect(func():
+		if is_instance_valid(_todo_status_lbl):
+			_todo_status_lbl.text = ""
+	)
 
 func _build_terminal_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Terminal", tabs)
