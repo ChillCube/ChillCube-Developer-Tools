@@ -578,7 +578,8 @@ func _refresh_bugs() -> void:
 		child.queue_free()
 
 	var project_root := ProjectSettings.globalize_path("res://").rstrip("/")
-	var bugs := _scan_bugs(project_root)
+	var plugin_dir := ProjectSettings.globalize_path(get_script().resource_path.get_base_dir())
+	var bugs := _scan_bugs(project_root, plugin_dir)
 
 	if bugs.is_empty():
 		var lbl := Label.new()
@@ -620,7 +621,7 @@ func _refresh_bugs() -> void:
 		_bug_list.add_child(row)
 		_bug_list.add_child(HSeparator.new())
 
-func _scan_bugs(path: String) -> Array:
+func _scan_bugs(path: String, exclude: String = "") -> Array:
 	var result := []
 	var dir := DirAccess.open(path)
 	if not dir:
@@ -631,8 +632,8 @@ func _scan_bugs(path: String) -> Array:
 		if not entry.begins_with("."):
 			var full := path + "/" + entry
 			if dir.current_is_dir():
-				if entry != ".godot" and entry != ".git":
-					result.append_array(_scan_bugs(full))
+				if entry != ".godot" and entry != ".git" and full != exclude:
+					result.append_array(_scan_bugs(full, exclude))
 			elif entry.ends_with(".gd"):
 				var f := FileAccess.open(full, FileAccess.READ)
 				if f:
