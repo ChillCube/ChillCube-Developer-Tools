@@ -1110,6 +1110,57 @@ static func _update_tree(root: String, log: Callable) -> void:
 	_exec("git", ["-C", tmp, "push", "origin", "main"], Callable())
 	_rm_rf(tmp)
 
+# ─── FILE VAULT ──────────────────────────────────────────────────────────────
+
+static func vault_connect(cache_dir: String, full_repo: String, log: Callable) -> bool:
+	if DirAccess.dir_exists_absolute(cache_dir + "/.git"):
+		log.call("🔄 Pulling latest...")
+		if _git(["pull", "--rebase", "origin", "main"], cache_dir, log) != OK:
+			_git(["rebase", "--abort"], cache_dir, Callable())
+			log.call("⚠️ Pull failed — using cached version.")
+		return true
+	_rm_rf(cache_dir)
+	log.call("📥 Cloning " + full_repo + "...")
+	if _exec("gh", ["repo", "clone", full_repo, cache_dir], log) != OK:
+		log.call("❌ Clone failed. Is gh CLI authenticated and does the repo exist?")
+		return false
+	log.call("✅ Connected to " + full_repo)
+	return true
+
+static func vault_upload(cache_dir: String, local_file: String, remote_dir: String, log: Callable) -> bool:
+	var rdir := remote_dir.strip_edges().lstrip("/").rstrip("/")
+	var dest_folder := cache_dir + ("/" + rdir if not rdir.is_empty() else "")
+	DirAccess.make_dir_recursive_absolute(dest_folder)
+	var filename := local_file.get_file()
+	log.call("📋 Copying %s → /%s" % [filename, rdir])
+	_exec("cp", ["-f", local_file, dest_folder + "/" + filename], log)
+	_git(["add", "."], cache_dir, log)
+	if _git(["commit", "-m", "vault: upload " + filename], cache_dir, log) != OK:
+		log.call("✨ File unchanged — nothing to push.")
+		return true
+	log.call("⬆️ Pushing...")
+	if _git(["push", "origin", "main"], cache_dir, log) != OK:
+		log.call("⚠️ Push failed — check gh auth.")
+		return false
+	log.call("✅ Uploaded " + filename)
+	return true
+
+static func vault_download(cache_dir: String, remote_rel: String, local_dest: String, log: Callable) -> bool:
+	var src := cache_dir + "/" + remote_rel.lstrip("/")
+	if not FileAccess.file_exists(src):
+		log.call("❌ File not found in vault: " + remote_rel)
+		return false
+	var dest_dir: String
+	if local_dest.begins_with("res://") or local_dest.begins_with("user://"):
+		dest_dir = ProjectSettings.globalize_path(local_dest).rstrip("/")
+	else:
+		dest_dir = local_dest.rstrip("/")
+	DirAccess.make_dir_recursive_absolute(dest_dir)
+	var filename := remote_rel.get_file()
+	_exec("cp", ["-f", src, dest_dir + "/" + filename], log)
+	log.call("✅ Downloaded to " + dest_dir + "/" + filename)
+	return true
+
 static func _make_id(s: String) -> String:
 	return s.to_lower().replace(" ", "_").replace("-", "_")
 

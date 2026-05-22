@@ -55,6 +55,22 @@ var _term_history: Array[String] = []
 var _term_hist_idx: int = -1
 var _term_thread: Thread = null
 
+var _vault_repo_input: LineEdit
+var _vault_path_lbl: Label
+var _vault_browser: VBoxContainer
+var _vault_current_dir: String = ""
+var _vault_remote_sel: String = ""
+var _vault_local_sel: String = ""
+var _vault_local_sel_lbl: Label
+var _vault_remote_sel_lbl: Label
+var _vault_upload_dest: LineEdit
+var _vault_download_dest: LineEdit
+var _vault_status_lbl: Label
+var _vault_log: TextEdit
+var _vault_thread: Thread = null
+var _vault_cache: String = ""
+var _vault_file_dialog: EditorFileDialog
+
 var _http: HTTPRequest
 var _registry_list: VBoxContainer
 var _registry_status: Label
@@ -79,6 +95,7 @@ func _ready() -> void:
 
 	_build_addons_supertab(tabs)
 	_build_planning_tab(tabs)
+	_build_vault_tab(tabs)
 	_build_terminal_tab(tabs)
 
 	_refresh_addons()
@@ -92,6 +109,8 @@ func _exit_tree() -> void:
 		_todo_thread.wait_to_finish()
 	if _plan_thread and _plan_thread.is_started():
 		_plan_thread.wait_to_finish()
+	if _vault_thread and _vault_thread.is_started():
+		_vault_thread.wait_to_finish()
 
 # ─── Tab builders ─────────────────────────────────────────────────────────────
 
@@ -464,7 +483,7 @@ func _build_planning_tab(tabs: TabContainer) -> void:
 	_build_todo_subtab(inner_tabs)
 
 func _build_planned_subtab(tabs: TabContainer) -> void:
-	var root := _vbox("Planned", tabs)
+	var root := _vbox("Addons", tabs)
 
 	var toolbar := HBoxContainer.new()
 	var new_btn := Button.new()
@@ -1268,6 +1287,292 @@ func _todo_on_pushed() -> void:
 		if is_instance_valid(_todo_status_lbl):
 			_todo_status_lbl.text = ""
 	)
+
+func _build_vault_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Vault", tabs)
+
+	# ── Top bar: repo selector ────────────────────────────────────────────────
+	var top := HBoxContainer.new()
+	var org_lbl := Label.new()
+	org_lbl.text = "ChillCube/"
+	_vault_repo_input = LineEdit.new()
+	_vault_repo_input.placeholder_text = "repo-name"
+	_vault_repo_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var connect_btn := Button.new()
+	connect_btn.text = "🔄 Connect"
+	connect_btn.pressed.connect(_vault_connect)
+	_vault_status_lbl = Label.new()
+	_vault_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vault_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+	top.add_child(org_lbl)
+	top.add_child(_vault_repo_input)
+	top.add_child(connect_btn)
+	top.add_child(_vault_status_lbl)
+	root.add_child(top)
+
+	# ── Main split ────────────────────────────────────────────────────────────
+	var split := HBoxContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	# Left: browser
+	var left := VBoxContainer.new()
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
+	_vault_path_lbl = Label.new()
+	_vault_path_lbl.text = "/"
+	_vault_path_lbl.add_theme_color_override("font_color", Color(0.5, 0.7, 1.0))
+	left.add_child(_vault_path_lbl)
+
+	var browser_scroll := ScrollContainer.new()
+	browser_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	browser_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vault_browser = VBoxContainer.new()
+	_vault_browser.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	browser_scroll.add_child(_vault_browser)
+	left.add_child(browser_scroll)
+
+	_vault_remote_sel_lbl = Label.new()
+	_vault_remote_sel_lbl.text = "Selected: (none)"
+	_vault_remote_sel_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+	_vault_remote_sel_lbl.clip_text = true
+	left.add_child(_vault_remote_sel_lbl)
+
+	var dl_row := HBoxContainer.new()
+	var dl_lbl := Label.new()
+	dl_lbl.text = "To:"
+	_vault_download_dest = LineEdit.new()
+	_vault_download_dest.text = "res://"
+	_vault_download_dest.placeholder_text = "res://assets/"
+	_vault_download_dest.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var dl_btn := Button.new()
+	dl_btn.text = "⬇ Download"
+	dl_btn.pressed.connect(_vault_download)
+	dl_row.add_child(dl_lbl)
+	dl_row.add_child(_vault_download_dest)
+	dl_row.add_child(dl_btn)
+	left.add_child(dl_row)
+
+	split.add_child(left)
+	split.add_child(VSeparator.new())
+
+	# Right: upload
+	var right := VBoxContainer.new()
+	right.custom_minimum_size = Vector2(200, 0)
+	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
+	var up_title := Label.new()
+	up_title.text = "Upload to Vault"
+	up_title.add_theme_color_override("font_color", Color(0.7, 0.9, 1.0))
+	right.add_child(up_title)
+
+	_vault_local_sel_lbl = Label.new()
+	_vault_local_sel_lbl.text = "No file selected"
+	_vault_local_sel_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+	_vault_local_sel_lbl.clip_text = true
+	right.add_child(_vault_local_sel_lbl)
+
+	var pick_btn := Button.new()
+	pick_btn.text = "📂 Select File…"
+	pick_btn.pressed.connect(_vault_open_picker)
+	right.add_child(pick_btn)
+
+	var up_dest_row := HBoxContainer.new()
+	var up_dest_lbl := Label.new()
+	up_dest_lbl.text = "Folder:"
+	_vault_upload_dest = LineEdit.new()
+	_vault_upload_dest.text = "/"
+	_vault_upload_dest.placeholder_text = "assets/"
+	_vault_upload_dest.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	up_dest_row.add_child(up_dest_lbl)
+	up_dest_row.add_child(_vault_upload_dest)
+	right.add_child(up_dest_row)
+
+	var up_btn := Button.new()
+	up_btn.text = "⬆ Upload"
+	up_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	up_btn.pressed.connect(_vault_upload)
+	right.add_child(up_btn)
+
+	split.add_child(right)
+	root.add_child(split)
+
+	# ── Log ───────────────────────────────────────────────────────────────────
+	_vault_log = TextEdit.new()
+	_vault_log.custom_minimum_size = Vector2(0, 90)
+	_vault_log.editable = false
+	_vault_log.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.add_child(_vault_log)
+
+	# File picker dialog
+	_vault_file_dialog = EditorFileDialog.new()
+	_vault_file_dialog.file_mode = EditorFileDialog.FILE_MODE_OPEN_FILE
+	_vault_file_dialog.access = EditorFileDialog.ACCESS_FILESYSTEM
+	_vault_file_dialog.file_selected.connect(func(path: String):
+		_vault_local_sel = path
+		_vault_local_sel_lbl.text = path.get_file()
+	)
+	add_child(_vault_file_dialog)
+
+	_vault_navigate("")
+
+# ─── Vault logic ──────────────────────────────────────────────────────────────
+
+func _vault_connect() -> void:
+	var repo := _vault_repo_input.text.strip_edges()
+	if repo.is_empty():
+		_vault_status_lbl.text = "⚠️ Enter a repo name"
+		return
+	_vault_cache = OS.get_user_data_dir() + "/cc_vault_" + repo
+	_vault_status_lbl.text = "Connecting…"
+	_vault_log.text = ""
+	if _vault_thread and _vault_thread.is_started():
+		_vault_thread.wait_to_finish()
+	_vault_thread = Thread.new()
+	var full_repo := "ChillCube/" + repo
+	var cache := _vault_cache
+	_vault_thread.start(func():
+		var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
+		var ok := Ops.vault_connect(cache, full_repo, log_fn)
+		call_deferred("_vault_on_connected", ok)
+	)
+
+func _vault_on_connected(ok: bool) -> void:
+	if _vault_thread and _vault_thread.is_started():
+		_vault_thread.wait_to_finish()
+	_vault_thread = null
+	_vault_status_lbl.text = "✅ Connected" if ok else "❌ Failed"
+	if ok:
+		_vault_current_dir = ""
+		_vault_remote_sel = ""
+		_vault_navigate("")
+
+func _vault_navigate(rel: String) -> void:
+	_vault_current_dir = rel
+	_vault_path_lbl.text = "/" + rel
+	for c in _vault_browser.get_children():
+		c.queue_free()
+
+	if _vault_cache.is_empty() or not DirAccess.dir_exists_absolute(_vault_cache):
+		var hint := Label.new()
+		hint.text = "Not connected.\nEnter a repo name and click 🔄 Connect."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_vault_browser.add_child(hint)
+		return
+
+	var abs_dir := _vault_cache + ("/" + rel if not rel.is_empty() else "")
+	var dir := DirAccess.open(abs_dir)
+	if not dir:
+		return
+
+	if not rel.is_empty():
+		var up_btn := Button.new()
+		up_btn.text = "📁 .."
+		up_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		up_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var parent := rel.rstrip("/").get_base_dir()
+		if parent == ".":
+			parent = ""
+		up_btn.pressed.connect(func(): _vault_navigate(parent))
+		_vault_browser.add_child(up_btn)
+
+	var folders: Array[String] = []
+	var files: Array[String] = []
+	dir.list_dir_begin()
+	var n := dir.get_next()
+	while n != "":
+		if not n.begins_with("."):
+			if dir.current_is_dir():
+				folders.append(n)
+			else:
+				files.append(n)
+		n = dir.get_next()
+	dir.list_dir_end()
+	folders.sort()
+	files.sort()
+
+	for folder in folders:
+		var btn := Button.new()
+		btn.text = "📁 " + folder
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var cap := (rel + "/" if not rel.is_empty() else "") + folder
+		btn.pressed.connect(func(): _vault_navigate(cap))
+		_vault_browser.add_child(btn)
+
+	for file in files:
+		var rel_file := (rel + "/" if not rel.is_empty() else "") + file
+		var btn := Button.new()
+		btn.text = "📄 " + file
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.flat = true
+		if rel_file == _vault_remote_sel:
+			btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+		var cap_rel := rel_file
+		btn.pressed.connect(func():
+			_vault_remote_sel = cap_rel
+			_vault_remote_sel_lbl.text = "Selected: " + cap_rel
+			_vault_navigate(_vault_current_dir)
+		)
+		_vault_browser.add_child(btn)
+
+	_vault_upload_dest.text = "/" + (rel + "/" if not rel.is_empty() else "")
+
+func _vault_open_picker() -> void:
+	_vault_file_dialog.popup_centered_ratio(0.7)
+
+func _vault_upload() -> void:
+	if _vault_cache.is_empty() or not DirAccess.dir_exists_absolute(_vault_cache):
+		_vault_log.text = "⚠️ Not connected to a vault repo."
+		return
+	if _vault_local_sel.is_empty():
+		_vault_log.text = "⚠️ No local file selected."
+		return
+	_vault_log.text = ""
+	_vault_status_lbl.text = "Uploading…"
+	if _vault_thread and _vault_thread.is_started():
+		_vault_thread.wait_to_finish()
+	_vault_thread = Thread.new()
+	var cache := _vault_cache
+	var local := _vault_local_sel
+	var dest := _vault_upload_dest.text
+	_vault_thread.start(func():
+		var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
+		Ops.vault_upload(cache, local, dest, log_fn)
+		call_deferred("_vault_after_op", "")
+	)
+
+func _vault_download() -> void:
+	if _vault_cache.is_empty() or not DirAccess.dir_exists_absolute(_vault_cache):
+		_vault_log.text = "⚠️ Not connected to a vault repo."
+		return
+	if _vault_remote_sel.is_empty():
+		_vault_log.text = "⚠️ No file selected in the browser."
+		return
+	_vault_log.text = ""
+	_vault_status_lbl.text = "Downloading…"
+	if _vault_thread and _vault_thread.is_started():
+		_vault_thread.wait_to_finish()
+	_vault_thread = Thread.new()
+	var cache := _vault_cache
+	var remote := _vault_remote_sel
+	var dest := _vault_download_dest.text
+	_vault_thread.start(func():
+		var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
+		Ops.vault_download(cache, remote, dest, log_fn)
+		call_deferred("_vault_after_op", "")
+	)
+
+func _vault_after_op(status: String) -> void:
+	if _vault_thread and _vault_thread.is_started():
+		_vault_thread.wait_to_finish()
+	_vault_thread = null
+	_vault_status_lbl.text = status
+	_vault_navigate(_vault_current_dir)
+	EditorInterface.get_resource_filesystem().scan()
 
 func _build_terminal_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Terminal", tabs)
