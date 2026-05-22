@@ -1435,7 +1435,7 @@ func _vault_on_connected(ok: bool) -> void:
 	if _vault_thread and _vault_thread.is_started():
 		_vault_thread.wait_to_finish()
 	_vault_thread = null
-	_vault_status_lbl.text = "✅ Connected" if ok else "❌ Failed"
+	_vault_status_lbl.text = "✅ Connected" if ok else "❌ Not found — see log"
 	if ok:
 		_vault_current_dir = ""
 		_vault_remote_sel = ""
@@ -1449,7 +1449,7 @@ func _vault_navigate(rel: String) -> void:
 
 	if _vault_cache.is_empty() or not DirAccess.dir_exists_absolute(_vault_cache):
 		var hint := Label.new()
-		hint.text = "Not connected.\nEnter a repo name and click 🔄 Connect."
+		hint.text = "Not connected. Click 🔄 Refresh to connect.\n\nIf ChillCube/vault doesn't exist yet:\n→ github.com/new → Owner: ChillCube, Name: vault, Private ✓"
 		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		_vault_browser.add_child(hint)
