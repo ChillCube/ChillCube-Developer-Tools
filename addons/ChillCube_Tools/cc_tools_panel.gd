@@ -100,6 +100,12 @@ var _registry_status: Label
 var _browse_log: TextEdit
 var _registry_installed: Dictionary  # url -> folder name
 
+var _activity_items: Array = []
+var _activity_list: VBoxContainer
+var _activity_push_btn: Button
+var _activity_status_lbl: Label
+var _activity_thread: Thread = null
+
 var _thread: Thread = null
 
 # ─── Setup ───────────────────────────────────────────────────────────────────
@@ -120,9 +126,11 @@ func _ready() -> void:
 	_build_planning_tab(tabs)
 	_build_vault_tab(tabs)
 	_build_terminal_tab(tabs)
+	_build_activity_tab(tabs)
 
 	_refresh_addons()
 	_vault_connect()
+	_load_activity()
 
 func _exit_tree() -> void:
 	if _thread and _thread.is_started():
@@ -137,6 +145,8 @@ func _exit_tree() -> void:
 		_vault_thread.wait_to_finish()
 	if _vault_preview_thread and _vault_preview_thread.is_started():
 		_vault_preview_thread.wait_to_finish()
+	if _activity_thread and _activity_thread.is_started():
+		_activity_thread.wait_to_finish()
 
 # ─── Tab builders ─────────────────────────────────────────────────────────────
 
@@ -1394,11 +1404,19 @@ func _refresh_todo() -> void:
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
 		var check := CheckBox.new()
-		check.button_pressed = item.get("done", false)
+		check.button_pressed = false
 		var cap_i := i
 		check.toggled.connect(func(pressed: bool):
-			_todo_items[cap_i]["done"] = pressed
+			if not pressed:
+				return
+			var done_text: String = _todo_items[cap_i].get("text", "")
+			_todo_items.remove_at(cap_i)
+			if _todo_editing_idx == cap_i:
+				_todo_editing_idx = -1
+			elif _todo_editing_idx > cap_i:
+				_todo_editing_idx -= 1
 			_save_todo()
+			_log_activity("task_completed", done_text)
 			_refresh_todo()
 		)
 		row.add_child(check)
@@ -1504,6 +1522,7 @@ func _todo_add() -> void:
 	_todo_items.insert(0, {"text": text, "done": false})
 	_todo_input.text = ""
 	_save_todo()
+	_log_activity("todo_added", text)
 	_refresh_todo()
 
 func _todo_push() -> void:
@@ -2466,6 +2485,7 @@ func _refresh_addons() -> void:
 				"Sync (pull + push) with " + url if owned
 				else "Pull only — push disabled for third-party addons\n" + url
 			)
+			var captured_sync_name: String = cfg.get("name", folder)
 			sync_btn.pressed.connect(func():
 				_installed_log.text = ""
 				_run_op(sync_btn, _installed_log, func():
@@ -2475,6 +2495,7 @@ func _refresh_addons() -> void:
 						func(msg): call_deferred("_append_log", _installed_log, msg)
 					)
 					call_deferred("_refresh_addons")
+					call_deferred("_log_activity", "addon_synced", captured_sync_name)
 				)
 			)
 		row.add_child(sync_btn)
@@ -2492,6 +2513,7 @@ func _refresh_addons() -> void:
 		if dependers.is_empty():
 			rm_btn.tooltip_text = "Remove " + folder
 			var captured_folder := folder
+			var captured_rm_name: String = cfg.get("name", folder)
 			rm_btn.pressed.connect(func():
 				_installed_log.text = ""
 				_run_op(rm_btn, _installed_log, func():
@@ -2501,6 +2523,7 @@ func _refresh_addons() -> void:
 						func(msg): call_deferred("_append_log", _installed_log, msg)
 					)
 					call_deferred("_refresh_addons")
+					call_deferred("_log_activity", "addon_removed", captured_rm_name)
 				)
 			)
 		else:
@@ -2532,6 +2555,7 @@ func _start_create() -> void:
 			func(msg): call_deferred("_append_log", _create_log, msg)
 		)
 		call_deferred("_refresh_addons")
+		call_deferred("_log_activity", "addon_created", name)
 	)
 
 func _start_clone() -> void:
@@ -2547,6 +2571,7 @@ func _start_clone() -> void:
 			func(msg): call_deferred("_append_log", _create_log, msg)
 		)
 		call_deferred("_refresh_addons")
+		call_deferred("_log_activity", "addon_cloned", url)
 	)
 
 func _start_update_plugin() -> void:
@@ -2851,3 +2876,172 @@ func _open_script_editor(folder: String, addon_name: String) -> void:
 
 	add_child(win)
 	win.popup_centered(Vector2i(960, 680))
+
+# ─── Activity log ─────────────────────────────────────────────────────────────
+
+func _build_activity_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Activity", tabs)
+
+	var toolbar := HBoxContainer.new()
+	_activity_push_btn = Button.new()
+	_activity_push_btn.text = "⬆ Push"
+	_activity_push_btn.tooltip_text = "Manually commit and push the activity log to GitHub."
+	_activity_push_btn.pressed.connect(_activity_manual_push)
+	_activity_status_lbl = Label.new()
+	_activity_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_activity_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+	toolbar.add_child(_activity_push_btn)
+	toolbar.add_child(_activity_status_lbl)
+	root.add_child(toolbar)
+	root.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_activity_list = VBoxContainer.new()
+	_activity_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_activity_list)
+	root.add_child(scroll)
+
+	_refresh_activity_list()
+
+func _activity_file() -> String:
+	return ProjectSettings.globalize_path("res://").rstrip("/") + "/ACTIVITY_LOG.json"
+
+func _load_activity() -> void:
+	_activity_items = []
+	var path := _activity_file()
+	if not FileAccess.file_exists(path):
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if not f:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if parsed is Array:
+		_activity_items = parsed
+	_refresh_activity_list()
+
+func _save_activity() -> void:
+	var fw := FileAccess.open(_activity_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(_activity_items, "\t") + "\n")
+		fw.close()
+
+func _log_activity(type: String, text: String) -> void:
+	_activity_items.insert(0, {
+		"type": type,
+		"text": text,
+		"timestamp": Time.get_datetime_string_from_system()
+	})
+	_save_activity()
+	_refresh_activity_list()
+	_activity_auto_push()
+
+func _activity_auto_push() -> void:
+	if _activity_thread and _activity_thread.is_started():
+		return
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+	_activity_thread = Thread.new()
+	_activity_thread.start(func():
+		Ops._git(["add", "ACTIVITY_LOG.json"], root, Callable())
+		var code := Ops._git(["commit", "-m", "activity: auto-backup"], root, Callable())
+		if code == OK:
+			Ops._git(["push", "origin", "main"], root, Callable())
+		call_deferred("_activity_on_pushed", code == OK)
+	)
+
+func _activity_manual_push() -> void:
+	if _activity_thread and _activity_thread.is_started():
+		return
+	if is_instance_valid(_activity_push_btn):
+		_activity_push_btn.disabled = true
+	_activity_auto_push()
+
+func _activity_on_pushed(pushed: bool) -> void:
+	if _activity_thread:
+		_activity_thread.wait_to_finish()
+	_activity_thread = null
+	if is_instance_valid(_activity_push_btn):
+		_activity_push_btn.disabled = false
+	if not is_instance_valid(_activity_status_lbl):
+		return
+	_activity_status_lbl.text = "✅ Backed up" if pushed else "✨ Nothing new to push"
+	get_tree().create_timer(3.0).timeout.connect(func():
+		if is_instance_valid(_activity_status_lbl):
+			_activity_status_lbl.text = ""
+	)
+
+func _refresh_activity_list() -> void:
+	if not is_instance_valid(_activity_list):
+		return
+	for child in _activity_list.get_children():
+		child.queue_free()
+
+	if _activity_items.is_empty():
+		var empty_lbl := Label.new()
+		empty_lbl.text = "No activity yet."
+		empty_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_activity_list.add_child(empty_lbl)
+		return
+
+	var last_date := ""
+	for entry: Dictionary in _activity_items:
+		var ts: String = entry.get("timestamp", "")
+		var date := ts.substr(0, 10) if ts.length() >= 10 else ts
+
+		if date != last_date:
+			last_date = date
+			var date_lbl := Label.new()
+			date_lbl.text = date
+			date_lbl.add_theme_font_size_override("font_size", 11)
+			date_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+			_activity_list.add_child(date_lbl)
+			_activity_list.add_child(HSeparator.new())
+
+		var row := HBoxContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var type: String = entry.get("type", "")
+		var icon_lbl := Label.new()
+		icon_lbl.text = _activity_icon(type)
+		icon_lbl.custom_minimum_size = Vector2(26, 0)
+		row.add_child(icon_lbl)
+
+		var text_lbl := RichTextLabel.new()
+		text_lbl.bbcode_enabled = true
+		text_lbl.fit_content = true
+		text_lbl.scroll_active = false
+		text_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		text_lbl.push_color(_activity_color(type))
+		text_lbl.append_text(_todo_bbcode(entry.get("text", "")))
+		text_lbl.pop()
+		row.add_child(text_lbl)
+
+		var time_lbl := Label.new()
+		time_lbl.text = ts.substr(11, 5) if ts.length() >= 16 else ""
+		time_lbl.add_theme_font_size_override("font_size", 11)
+		time_lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
+		row.add_child(time_lbl)
+
+		_activity_list.add_child(row)
+
+func _activity_icon(type: String) -> String:
+	match type:
+		"task_completed": return "✅"
+		"addon_created":  return "✨"
+		"addon_cloned":   return "📥"
+		"addon_removed":  return "🗑"
+		"addon_synced":   return "↺"
+		"todo_added":     return "➕"
+		_:                return "•"
+
+func _activity_color(type: String) -> Color:
+	match type:
+		"task_completed": return Color(0.4, 0.9, 0.4)
+		"addon_created":  return Color(0.4, 0.8, 1.0)
+		"addon_cloned":   return Color(0.6, 0.6, 1.0)
+		"addon_removed":  return Color(1.0, 0.5, 0.4)
+		"addon_synced":   return Color(1.0, 0.85, 0.3)
+		"todo_added":     return Color(0.75, 0.75, 0.75)
+		_:                return Color(0.6, 0.6, 0.6)
