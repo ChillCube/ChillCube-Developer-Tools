@@ -1045,7 +1045,7 @@ func _build_bugs_subtab(tabs: TabContainer) -> void:
 
 	var toolbar := HBoxContainer.new()
 	var title := Label.new()
-	title.text = "Add  #bug <description>  at the end of any line in a .gd file to track it here."
+	title.text = "Add  #bug <description>  in any .gd file, or call  ChillCubeFeedback.report()  from your game."
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	title.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
@@ -1108,13 +1108,45 @@ func _build_todo_subtab(tabs: TabContainer) -> void:
 
 # ─── Bug tracker logic ────────────────────────────────────────────────────────
 
+func _feedback_file() -> String:
+	return ProjectSettings.globalize_path("user://cc_feedback.json")
+
+func _load_feedback() -> Array:
+	var path := _feedback_file()
+	if not FileAccess.file_exists(path):
+		return []
+	var f := FileAccess.open(path, FileAccess.READ)
+	if not f:
+		return []
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	return parsed if parsed is Array else []
+
+func _save_feedback(items: Array) -> void:
+	var fw := FileAccess.open(_feedback_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(items, "\t") + "\n")
+		fw.close()
+
 func _refresh_bugs() -> void:
 	for child in _bug_list.get_children():
 		child.queue_free()
 
 	var project_root := ProjectSettings.globalize_path("res://").rstrip("/")
-	var plugin_dir := ProjectSettings.globalize_path(get_script().resource_path.get_base_dir())
+	var plugin_dir := ProjectSettings.globalize_path((get_script() as Script).resource_path.get_base_dir())
 	_bug_items = _scan_bugs(project_root, plugin_dir)
+
+	# Prepend user feedback entries
+	var feedback := _load_feedback()
+	for fi in range(feedback.size()):
+		var entry: Dictionary = feedback[fi]
+		_bug_items.insert(fi, {
+			"source": "feedback",
+			"desc": entry.get("desc", ""),
+			"timestamp": entry.get("timestamp", ""),
+			"context": entry.get("context", {}),
+			"feedback_idx": fi
+		})
 
 	if _bug_items.is_empty():
 		var lbl := Label.new()
@@ -1141,7 +1173,11 @@ func _refresh_bugs() -> void:
 				_resolve_bug(cap_bug)
 		)
 
+		var is_feedback: bool = bug.get("source", "") == "feedback"
 		var rel_path: String = (bug.get("path", "") as String).replace(project_root + "/", "")
+
+		if is_feedback:
+			check.add_theme_color_override("font_color", Color(1.0, 0.7, 0.3))
 
 		if _bug_editing_idx == i:
 			var edit := LineEdit.new()
@@ -1149,7 +1185,7 @@ func _refresh_bugs() -> void:
 			edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			info.add_child(edit)
 			var loc_lbl := Label.new()
-			loc_lbl.text = rel_path + ":" + str(int(bug.get("line", 0)) + 1)
+			loc_lbl.text = "👤 " + bug.get("timestamp", "") if is_feedback else rel_path + ":" + str(int(bug.get("line", 0)) + 1)
 			loc_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
 			loc_lbl.clip_text = true
 			info.add_child(loc_lbl)
@@ -1166,11 +1202,14 @@ func _refresh_bugs() -> void:
 			row.add_child(confirm_btn)
 		else:
 			var desc_lbl := Label.new()
-			desc_lbl.text = bug.get("desc", "")
+			desc_lbl.text = ("👤 " if is_feedback else "") + bug.get("desc", "")
 			desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			if is_feedback:
+				desc_lbl.add_theme_color_override("font_color", Color(1.0, 0.75, 0.35))
 			info.add_child(desc_lbl)
 			var loc_lbl := Label.new()
-			loc_lbl.text = rel_path + ":" + str(int(bug.get("line", 0)) + 1)
+			loc_lbl.text = "User feedback  " + bug.get("timestamp", "") if is_feedback \
+				else rel_path + ":" + str(int(bug.get("line", 0)) + 1)
 			loc_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
 			loc_lbl.clip_text = true
 			info.add_child(loc_lbl)
@@ -1217,6 +1256,14 @@ func _scan_bugs(path: String, exclude: String = "") -> Array:
 	return result
 
 func _resolve_bug(bug: Dictionary) -> void:
+	if bug.get("source", "") == "feedback":
+		var items := _load_feedback()
+		var idx: int = bug.get("feedback_idx", -1)
+		if idx >= 0 and idx < items.size():
+			items.remove_at(idx)
+			_save_feedback(items)
+		call_deferred("_refresh_bugs")
+		return
 	var path: String = bug.get("path", "")
 	var line_num: int = bug.get("line", -1)
 	if path.is_empty() or line_num < 0:
@@ -1252,6 +1299,15 @@ func _bug_save_edit(idx: int, new_desc: String) -> void:
 	if idx < 0 or idx >= _bug_items.size():
 		return
 	var bug: Dictionary = _bug_items[idx]
+	if bug.get("source", "") == "feedback":
+		var items := _load_feedback()
+		var fi: int = bug.get("feedback_idx", -1)
+		if fi >= 0 and fi < items.size():
+			(items[fi] as Dictionary)["desc"] = new_desc
+			_save_feedback(items)
+		_bug_editing_idx = -1
+		call_deferred("_refresh_bugs")
+		return
 	var path: String = bug.get("path", "")
 	var line_num: int = bug.get("line", -1)
 	if path.is_empty() or line_num < 0:
