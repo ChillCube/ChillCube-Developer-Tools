@@ -558,7 +558,7 @@ static func update_plugin(root: String, log: Callable) -> bool:
 
 # ─── PUSH ALL ADDONS ─────────────────────────────────────────────────────────
 
-static func push_all(root: String, log: Callable) -> bool:
+static func push_all(root: String, log: Callable, exclude: Array[String] = []) -> bool:
 	var addons_dir := root + "/addons"
 	if not DirAccess.dir_exists_absolute(addons_dir):
 		log.call("❌ No addons/ directory.")
@@ -582,6 +582,10 @@ static func push_all(root: String, log: Callable) -> bool:
 	var name := dir.get_next()
 	while name != "":
 		if dir.current_is_dir() and not name.begins_with("."):
+			if name in exclude:
+				log.call("⏭️  Skipping self: " + name)
+				name = dir.get_next()
+				continue
 			var apath := addons_dir + "/" + name
 			if DirAccess.dir_exists_absolute(apath + "/.git") and \
 					FileAccess.file_exists(apath + "/plugin.cfg"):
