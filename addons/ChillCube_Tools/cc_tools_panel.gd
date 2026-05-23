@@ -101,6 +101,9 @@ var _registry_list: VBoxContainer
 var _registry_status: Label
 var _browse_log: TextEdit
 var _registry_installed: Dictionary  # url -> folder name
+var _browse_search_input: LineEdit
+var _browse_tag_bar: HBoxContainer
+var _browse_active_tag: String = ""
 
 var _activity_items: Array = []
 var _activity_list: VBoxContainer
@@ -126,6 +129,10 @@ var _ideas_list: VBoxContainer
 var _ideas_status_lbl: Label
 var _ideas_thread: Thread = null
 var _ideas_comments_open: Dictionary = {}  # orig_idx -> bool
+
+var _forum_items: Array = []
+var _forum_content: VBoxContainer
+var _forum_thread_idx: int = -1  # -1 = list view
 
 var _current_user: Dictionary = {}
 var _login_overlay: Control
@@ -1935,7 +1942,8 @@ func _cc_data_bundle() -> Dictionary:
 		"votes.json": JSON.stringify(_vote_items, "\t") + "\n",
 		"ideas.json": JSON.stringify(_ideas_items, "\t") + "\n",
 		"asset_meta.json": JSON.stringify(_asset_meta, "\t") + "\n",
-		"schedule.json": JSON.stringify(_schedule_items, "\t") + "\n"
+		"schedule.json": JSON.stringify(_schedule_items, "\t") + "\n",
+		"forum.json": JSON.stringify(_forum_items, "\t") + "\n"
 	}
 
 func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
@@ -1960,6 +1968,7 @@ func _build_team_supertab(tabs: TabContainer) -> void:
 	_build_activity_tab(inner_tabs)
 	_build_votes_tab(inner_tabs)
 	_build_schedule_tab(inner_tabs)
+	_build_forum_tab(inner_tabs)
 
 # ─── Votes tab ────────────────────────────────────────────────────────────────
 
@@ -2625,6 +2634,330 @@ func _refresh_schedule_list() -> void:
 			cvbox.add_child(attend_grid)
 
 		_schedule_list.add_child(card)
+
+# ─── Forum tab ────────────────────────────────────────────────────────────────
+
+func _build_forum_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Forum", tabs)
+
+	_forum_content = VBoxContainer.new()
+	_forum_content.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_forum_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.add_child(_forum_content)
+
+	_load_forum()
+
+func _forum_file() -> String:
+	return ProjectSettings.globalize_path("user://cc_forum.json")
+
+func _load_forum() -> void:
+	_forum_items = []
+	var path := _forum_file()
+	if FileAccess.file_exists(path):
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f:
+			var parsed: Variant = JSON.parse_string(f.get_as_text())
+			f.close()
+			if parsed is Array:
+				_forum_items = parsed
+	if is_instance_valid(_forum_content):
+		_forum_show_list()
+
+func _save_forum() -> void:
+	var fw := FileAccess.open(_forum_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(_forum_items, "\t") + "\n")
+		fw.close()
+	_activity_auto_push()
+
+func _forum_clear() -> void:
+	for c in _forum_content.get_children():
+		c.queue_free()
+
+func _forum_show_list() -> void:
+	_forum_thread_idx = -1
+	_forum_clear()
+
+	# Toolbar
+	var toolbar := HBoxContainer.new()
+	var new_btn := Button.new()
+	new_btn.text = "✏ New Thread"
+	new_btn.pressed.connect(_forum_prompt_new_thread)
+	toolbar.add_child(new_btn)
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	toolbar.add_child(spacer)
+	var count_lbl := Label.new()
+	count_lbl.text = "%d thread%s" % [_forum_items.size(), "s" if _forum_items.size() != 1 else ""]
+	count_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+	count_lbl.add_theme_font_size_override("font_size", 11)
+	toolbar.add_child(count_lbl)
+	_forum_content.add_child(toolbar)
+	_forum_content.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_theme_constant_override("separation", 2)
+	scroll.add_child(list)
+	_forum_content.add_child(scroll)
+
+	if _forum_items.is_empty():
+		var hint := Label.new()
+		hint.text = "No threads yet. Start a discussion!"
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		list.add_child(hint)
+		return
+
+	for i in range(_forum_items.size()):
+		var thread: Dictionary = _forum_items[i]
+		var replies: Array = thread.get("replies", [])
+		var last_ts: String = replies.back().get("timestamp", thread.get("created_at", "")) if not replies.is_empty() else thread.get("created_at", "")
+
+		var row := HBoxContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var left := VBoxContainer.new()
+		left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var title_btn := Button.new()
+		title_btn.text = thread.get("title", "Untitled")
+		title_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		title_btn.flat = true
+		title_btn.add_theme_font_size_override("font_size", 13)
+		var cap_i := i
+		title_btn.pressed.connect(func(): _forum_show_thread(cap_i))
+		left.add_child(title_btn)
+
+		var meta := Label.new()
+		var body_preview: String = thread.get("body", "")
+		if body_preview.length() > 80:
+			body_preview = body_preview.substr(0, 80) + "…"
+		meta.text = body_preview
+		meta.add_theme_font_size_override("font_size", 11)
+		meta.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+		meta.clip_text = true
+		left.add_child(meta)
+
+		row.add_child(left)
+
+		var right := VBoxContainer.new()
+		right.custom_minimum_size = Vector2(110, 0)
+
+		var reply_lbl := Label.new()
+		reply_lbl.text = "💬 %d" % replies.size()
+		reply_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		reply_lbl.add_theme_font_size_override("font_size", 11)
+		reply_lbl.add_theme_color_override("font_color", Color(0.5, 0.65, 0.8))
+		right.add_child(reply_lbl)
+
+		var by_lbl := Label.new()
+		by_lbl.text = "@" + thread.get("author", "?")
+		by_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		by_lbl.add_theme_font_size_override("font_size", 10)
+		by_lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
+		right.add_child(by_lbl)
+
+		var time_lbl := Label.new()
+		time_lbl.text = last_ts.substr(0, 10) if last_ts.length() >= 10 else ""
+		time_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		time_lbl.add_theme_font_size_override("font_size", 10)
+		time_lbl.add_theme_color_override("font_color", Color(0.35, 0.35, 0.35))
+		right.add_child(time_lbl)
+
+		row.add_child(right)
+
+		var del_btn := Button.new()
+		del_btn.text = "🗑"
+		del_btn.flat = true
+		del_btn.tooltip_text = "Delete thread"
+		var cap_i2 := i
+		del_btn.pressed.connect(func():
+			var cap_title: String = _forum_items[cap_i2].get("title", "")
+			var me: String = _current_user.get("username", "?")
+			_forum_items.remove_at(cap_i2)
+			_save_forum()
+			_log_activity("forum_deleted", '%s deleted thread: "%s"' % [me, cap_title])
+			_forum_show_list()
+		)
+		row.add_child(del_btn)
+
+		list.add_child(row)
+		list.add_child(HSeparator.new())
+
+func _forum_show_thread(idx: int) -> void:
+	_forum_thread_idx = idx
+	_forum_clear()
+	if idx < 0 or idx >= _forum_items.size():
+		_forum_show_list()
+		return
+
+	var thread: Dictionary = _forum_items[idx]
+	var me: String = _current_user.get("username", "?")
+
+	# Back button + title header
+	var header := HBoxContainer.new()
+	var back_btn := Button.new()
+	back_btn.text = "← Back"
+	back_btn.pressed.connect(_forum_show_list)
+	header.add_child(back_btn)
+	var h_title := Label.new()
+	h_title.text = thread.get("title", "Untitled")
+	h_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	h_title.add_theme_font_size_override("font_size", 15)
+	h_title.clip_text = true
+	header.add_child(h_title)
+	_forum_content.add_child(header)
+	_forum_content.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var posts_box := VBoxContainer.new()
+	posts_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	posts_box.add_theme_constant_override("separation", 6)
+	scroll.add_child(posts_box)
+	_forum_content.add_child(scroll)
+
+	# Original post
+	_forum_add_post_card(posts_box, {
+		"user": thread.get("author", "?"),
+		"text": thread.get("body", ""),
+		"timestamp": thread.get("created_at", "")
+	}, true)
+
+	# Replies
+	var replies: Array = thread.get("replies", [])
+	for reply: Dictionary in replies:
+		_forum_add_post_card(posts_box, reply, false)
+
+	posts_box.add_child(HSeparator.new())
+
+	# Reply input
+	var reply_box := VBoxContainer.new()
+	reply_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	reply_box.add_theme_constant_override("separation", 4)
+
+	var reply_lbl := Label.new()
+	reply_lbl.text = "Reply as @" + me
+	reply_lbl.add_theme_font_size_override("font_size", 11)
+	reply_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+	reply_box.add_child(reply_lbl)
+
+	var reply_input := TextEdit.new()
+	reply_input.placeholder_text = "Write your reply…"
+	reply_input.custom_minimum_size = Vector2(0, 60)
+	reply_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	reply_input.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	reply_box.add_child(reply_input)
+
+	var submit_btn := Button.new()
+	submit_btn.text = "Post Reply"
+	submit_btn.alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	var cap_idx := idx
+	submit_btn.pressed.connect(func():
+		var text := reply_input.text.strip_edges()
+		if text.is_empty() or cap_idx < 0 or cap_idx >= _forum_items.size():
+			return
+		var rlist: Array = _forum_items[cap_idx].get("replies", [])
+		rlist.append({
+			"user": me,
+			"text": text,
+			"timestamp": Time.get_datetime_string_from_system()
+		})
+		_forum_items[cap_idx]["replies"] = rlist
+		_save_forum()
+		_forum_show_thread(cap_idx)
+	)
+	reply_box.add_child(submit_btn)
+	_forum_content.add_child(reply_box)
+
+func _forum_add_post_card(parent: VBoxContainer, post: Dictionary, is_op: bool) -> void:
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var cvbox := VBoxContainer.new()
+	cvbox.add_theme_constant_override("separation", 4)
+	card.add_child(cvbox)
+
+	var post_header := HBoxContainer.new()
+	var user_lbl := Label.new()
+	user_lbl.text = "@" + post.get("user", "?")
+	user_lbl.add_theme_font_size_override("font_size", 12)
+	user_lbl.add_theme_color_override("font_color", Color(0.5, 0.75, 1.0))
+	post_header.add_child(user_lbl)
+	if is_op:
+		var op_lbl := Label.new()
+		op_lbl.text = "OP"
+		op_lbl.add_theme_font_size_override("font_size", 10)
+		op_lbl.add_theme_color_override("font_color", Color(0.9, 0.6, 0.2))
+		post_header.add_child(op_lbl)
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	post_header.add_child(spacer)
+	var ts: String = post.get("timestamp", "")
+	var ts_lbl := Label.new()
+	ts_lbl.text = ts.substr(0, 16).replace("T", "  ") if ts.length() >= 16 else ts
+	ts_lbl.add_theme_font_size_override("font_size", 10)
+	ts_lbl.add_theme_color_override("font_color", Color(0.35, 0.35, 0.35))
+	post_header.add_child(ts_lbl)
+	cvbox.add_child(post_header)
+
+	var body_lbl := Label.new()
+	body_lbl.text = post.get("text", "")
+	body_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cvbox.add_child(body_lbl)
+
+	parent.add_child(card)
+
+func _forum_prompt_new_thread() -> void:
+	var dialog := AcceptDialog.new()
+	dialog.title = "New Thread"
+	dialog.size = Vector2i(480, 240)
+	var vbox := VBoxContainer.new()
+	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vbox.add_theme_constant_override("separation", 6)
+	dialog.add_child(vbox)
+
+	var title_lbl := Label.new()
+	title_lbl.text = "Title:"
+	vbox.add_child(title_lbl)
+	var title_edit := LineEdit.new()
+	title_edit.placeholder_text = "Thread subject…"
+	title_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_child(title_edit)
+
+	var body_lbl := Label.new()
+	body_lbl.text = "Post:"
+	vbox.add_child(body_lbl)
+	var body_edit := TextEdit.new()
+	body_edit.placeholder_text = "Write your post…"
+	body_edit.custom_minimum_size = Vector2(0, 80)
+	body_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body_edit.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	vbox.add_child(body_edit)
+
+	dialog.confirmed.connect(func():
+		var title := title_edit.text.strip_edges()
+		var body := body_edit.text.strip_edges()
+		if title.is_empty():
+			return
+		var user := _current_user.get("username", "?")
+		_forum_items.insert(0, {
+			"title": title,
+			"body": body,
+			"author": user,
+			"created_at": Time.get_datetime_string_from_system(),
+			"replies": []
+		})
+		_save_forum()
+		_log_activity("forum_posted", '%s started thread: "%s"' % [user, title])
+		_forum_show_list()
+	)
+	add_child(dialog)
+	dialog.popup_centered()
 
 func _build_vault_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Assets", tabs)
@@ -3876,6 +4209,28 @@ func _build_browse_tab(tabs: TabContainer) -> void:
 	toolbar.add_child(_registry_status)
 	toolbar.add_child(refresh_btn)
 	root.add_child(toolbar)
+
+	var search_row := HBoxContainer.new()
+	search_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var search_lbl := Label.new()
+	search_lbl.text = "🔍"
+	_browse_search_input = LineEdit.new()
+	_browse_search_input.placeholder_text = "Search addons..."
+	_browse_search_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_browse_search_input.text_changed.connect(func(_t: String): _browse_filter_and_render())
+	search_row.add_child(search_lbl)
+	search_row.add_child(_browse_search_input)
+	root.add_child(search_row)
+
+	var tag_scroll := ScrollContainer.new()
+	tag_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tag_scroll.custom_minimum_size = Vector2(0, 32)
+	tag_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_browse_tag_bar = HBoxContainer.new()
+	_browse_tag_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tag_scroll.add_child(_browse_tag_bar)
+	root.add_child(tag_scroll)
+
 	root.add_child(HSeparator.new())
 
 	var split := HBoxContainer.new()
@@ -3917,7 +4272,9 @@ func _on_registry_fetched(result: int, response_code: int, _headers: PackedStrin
 	var entries := _parse_registry(body.get_string_from_utf8())
 	_registry_entries = entries
 	_build_installed_url_map()
-	_populate_registry(entries)
+	_browse_active_tag = ""
+	_browse_build_tag_bar()
+	_browse_filter_and_render()
 	_populate_category_dropdown(entries)
 	_registry_status.text = "%d addon(s) listed" % entries.size()
 
@@ -3956,44 +4313,106 @@ func _build_installed_url_map() -> void:
 		if not url.is_empty():
 			_registry_installed[url] = folder
 
+func _browse_build_tag_bar() -> void:
+	for child in _browse_tag_bar.get_children():
+		child.queue_free()
+
+	var cats: Array[String] = []
+	for entry: Dictionary in _registry_entries:
+		var cat: String = entry.get("category", "Uncategorized")
+		if cat not in cats:
+			cats.append(cat)
+	cats.sort()
+
+	var all_btn := Button.new()
+	all_btn.text = "All"
+	all_btn.toggle_mode = true
+	all_btn.button_pressed = _browse_active_tag.is_empty()
+	all_btn.pressed.connect(func():
+		_browse_active_tag = ""
+		_browse_build_tag_bar()
+		_browse_filter_and_render()
+	)
+	_browse_tag_bar.add_child(all_btn)
+
+	for cat: String in cats:
+		var cap_cat := cat
+		var tag_btn := Button.new()
+		tag_btn.text = cap_cat
+		tag_btn.toggle_mode = true
+		tag_btn.button_pressed = (_browse_active_tag == cap_cat)
+		tag_btn.pressed.connect(func():
+			_browse_active_tag = cap_cat
+			_browse_build_tag_bar()
+			_browse_filter_and_render()
+		)
+		_browse_tag_bar.add_child(tag_btn)
+
+func _browse_filter_and_render() -> void:
+	var query: String = ""
+	if is_instance_valid(_browse_search_input):
+		query = _browse_search_input.text.strip_edges().to_lower()
+	var filtered: Array = []
+	for entry: Dictionary in _registry_entries:
+		var cat: String = entry.get("category", "Uncategorized")
+		if not _browse_active_tag.is_empty() and cat != _browse_active_tag:
+			continue
+		if not query.is_empty():
+			var name_lower: String = (entry.get("name", "") as String).to_lower()
+			var desc_lower: String = (entry.get("desc", "") as String).to_lower()
+			if not (query in name_lower or query in desc_lower):
+				continue
+		filtered.append(entry)
+	filtered.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return (a.get("name", "") as String).to_lower() < (b.get("name", "") as String).to_lower()
+	)
+	_populate_registry(filtered)
+
 func _populate_registry(entries: Array) -> void:
 	for child in _registry_list.get_children():
 		child.queue_free()
 
-	var current_cat := ""
 	for entry: Dictionary in entries:
-		var cat: String = entry.get("category", "Uncategorized")
-		if cat != current_cat:
-			current_cat = cat
-			_registry_list.add_child(HSeparator.new())
-			var cat_lbl := Label.new()
-			cat_lbl.text = cat
-			cat_lbl.add_theme_font_size_override("font_size", 13)
-			_registry_list.add_child(cat_lbl)
+		var url: String = entry.get("url", "")
+		var installed := url in _registry_installed
 
 		var row := HBoxContainer.new()
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
 		var info := VBoxContainer.new()
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var name_row := HBoxContainer.new()
+		name_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		var name_lbl := Label.new()
 		name_lbl.text = entry.get("name", "")
+		name_row.add_child(name_lbl)
+
+		var cat_chip := Label.new()
+		cat_chip.text = " " + entry.get("category", "Uncategorized") + " "
+		cat_chip.add_theme_color_override("font_color", Color(0.5, 0.8, 1.0))
+		cat_chip.add_theme_font_size_override("font_size", 10)
+		name_row.add_child(cat_chip)
+		info.add_child(name_row)
+
 		var desc_lbl := Label.new()
 		desc_lbl.text = entry.get("desc", "")
 		desc_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
 		desc_lbl.clip_text = true
-		info.add_child(name_lbl)
 		info.add_child(desc_lbl)
 		row.add_child(info)
 
-		var url: String = entry.get("url", "")
-		if url in _registry_installed:
-			continue
-		var btn := Button.new()
-		btn.text = "⬇ Install"
-		btn.tooltip_text = url
-		btn.pressed.connect(_install_from_registry.bind(url, btn))
-		row.add_child(btn)
+		if installed:
+			var inst_lbl := Label.new()
+			inst_lbl.text = "✓ Installed"
+			inst_lbl.add_theme_color_override("font_color", Color(0.4, 0.9, 0.4))
+			row.add_child(inst_lbl)
+		else:
+			var btn := Button.new()
+			btn.text = "⬇ Install"
+			btn.tooltip_text = url
+			btn.pressed.connect(_install_from_registry.bind(url, btn))
+			row.add_child(btn)
 		_registry_list.add_child(row)
 
 func _populate_category_dropdown(entries: Array) -> void:
@@ -4474,6 +4893,8 @@ func _activity_icon(type: String) -> String:
 		"idea_rated":        return "⭐"
 		"event_created":     return "📅"
 		"event_deleted":     return "🗑"
+		"forum_posted":      return "💬"
+		"forum_deleted":     return "🗑"
 		_:                   return "•"
 
 func _activity_color(type: String) -> Color:
@@ -4497,6 +4918,8 @@ func _activity_color(type: String) -> Color:
 		"idea_rated":        return Color(1.0, 0.8, 0.2)
 		"event_created":     return Color(0.5, 0.85, 1.0)
 		"event_deleted":     return Color(1.0, 0.5, 0.4)
+		"forum_posted":      return Color(0.6, 0.85, 1.0)
+		"forum_deleted":     return Color(1.0, 0.5, 0.4)
 		_:                   return Color(0.6, 0.6, 0.6)
 
 # ─── Login overlay ────────────────────────────────────────────────────────────
