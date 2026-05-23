@@ -106,6 +106,12 @@ var _activity_push_btn: Button
 var _activity_status_lbl: Label
 var _activity_thread: Thread = null
 
+var _vote_items: Array = []
+var _vote_list: VBoxContainer
+var _vote_status_lbl: Label
+var _vote_create_box: Control
+var _vote_thread: Thread = null
+
 var _current_user: Dictionary = {}
 var _login_overlay: Control
 var _login_status_lbl: Label
@@ -132,6 +138,7 @@ func _ready() -> void:
 
 	_build_addons_supertab(tabs)
 	_build_planning_tab(tabs)
+	_build_votes_tab(tabs)
 	_build_vault_tab(tabs)
 	_build_terminal_tab(tabs)
 	_build_activity_tab(tabs)
@@ -140,6 +147,7 @@ func _ready() -> void:
 	_refresh_addons()
 	_vault_connect()
 	_load_activity()
+	_load_votes()
 
 	_login_overlay = _build_login_overlay()
 	_login_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -160,6 +168,8 @@ func _exit_tree() -> void:
 		_vault_preview_thread.wait_to_finish()
 	if _activity_thread and _activity_thread.is_started():
 		_activity_thread.wait_to_finish()
+	if _vote_thread and _vote_thread.is_started():
+		_vote_thread.wait_to_finish()
 	if _login_thread and _login_thread.is_started():
 		_login_thread.wait_to_finish()
 
@@ -1478,7 +1488,7 @@ func _refresh_todo() -> void:
 			elif _todo_editing_idx > cap_i:
 				_todo_editing_idx -= 1
 			_save_todo()
-			_log_activity("task_completed", done_text)
+			_log_activity("task_completed", 'Task completed: "%s"' % done_text)
 			_refresh_todo()
 		)
 		row.add_child(check)
@@ -1584,7 +1594,7 @@ func _todo_add() -> void:
 	_todo_items.insert(0, {"text": text, "done": false})
 	_todo_input.text = ""
 	_save_todo()
-	_log_activity("todo_added", text)
+	_log_activity("todo_added", 'Added task: "%s"' % text)
 	_refresh_todo()
 
 func _cc_data_bundle() -> Dictionary:
@@ -1598,7 +1608,8 @@ func _cc_data_bundle() -> Dictionary:
 		"todo.json": JSON.stringify(_todo_items, "\t") + "\n",
 		"planned.json": JSON.stringify(_planned_addons, "\t") + "\n",
 		"activity.json": JSON.stringify(_activity_items, "\t") + "\n",
-		"feedback.json": fb_str
+		"feedback.json": fb_str,
+		"votes.json": JSON.stringify(_vote_items, "\t") + "\n"
 	}
 
 func _todo_push() -> void:
@@ -1622,6 +1633,347 @@ func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
 		if is_instance_valid(_todo_status_lbl):
 			_todo_status_lbl.text = ""
 	)
+
+# ─── Votes tab ────────────────────────────────────────────────────────────────
+
+func _build_votes_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Votes", tabs)
+
+	var toolbar := HBoxContainer.new()
+	var new_btn := Button.new()
+	new_btn.text = "+ New Vote"
+	new_btn.pressed.connect(func():
+		if is_instance_valid(_vote_create_box):
+			_vote_create_box.visible = not _vote_create_box.visible
+	)
+	toolbar.add_child(new_btn)
+	var push_btn := Button.new()
+	push_btn.text = "⬆ Push"
+	push_btn.tooltip_text = "Push votes to ChillCube/vault."
+	push_btn.pressed.connect(_vote_push)
+	toolbar.add_child(push_btn)
+	_vote_status_lbl = Label.new()
+	_vote_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	toolbar.add_child(_vote_status_lbl)
+	root.add_child(toolbar)
+
+	# ── Create form ───────────────────────────────────────────────────────────
+	_vote_create_box = VBoxContainer.new()
+	_vote_create_box.visible = false
+	_vote_create_box.add_theme_constant_override("separation", 4)
+	var cg := GridContainer.new()
+	cg.columns = 2
+	cg.add_theme_constant_override("h_separation", 8)
+	var t_lbl := Label.new(); t_lbl.text = "Title"
+	var t_field := LineEdit.new(); t_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var d_lbl := Label.new(); d_lbl.text = "Deadline"
+	var d_field := LineEdit.new()
+	d_field.placeholder_text = "YYYY-MM-DD (optional)"
+	d_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var o_lbl := Label.new(); o_lbl.text = "Options"
+	var o_field := LineEdit.new()
+	o_field.text = "Yes, No"
+	o_field.placeholder_text = "Comma-separated"
+	o_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cg.add_child(t_lbl); cg.add_child(t_field)
+	cg.add_child(d_lbl); cg.add_child(d_field)
+	cg.add_child(o_lbl); cg.add_child(o_field)
+	_vote_create_box.add_child(cg)
+	var desc_field := TextEdit.new()
+	desc_field.placeholder_text = "Description (optional)"
+	desc_field.custom_minimum_size = Vector2(0, 50)
+	_vote_create_box.add_child(desc_field)
+	var create_btn := Button.new()
+	create_btn.text = "Create Vote"
+	create_btn.pressed.connect(func():
+		var title := t_field.text.strip_edges()
+		if title.is_empty():
+			_vote_status_lbl.text = "Title is required."
+			return
+		var options: Array[String] = []
+		for opt: String in o_field.text.split(","):
+			var o := opt.strip_edges()
+			if not o.is_empty():
+				options.append(o)
+		if options.size() < 2:
+			_vote_status_lbl.text = "At least 2 options required."
+			return
+		_create_vote(title, desc_field.text.strip_edges(), options, d_field.text.strip_edges())
+		t_field.text = ""; desc_field.text = ""; d_field.text = ""; o_field.text = "Yes, No"
+		_vote_create_box.visible = false
+	)
+	_vote_create_box.add_child(create_btn)
+	root.add_child(_vote_create_box)
+	root.add_child(HSeparator.new())
+
+	# ── Vote list ─────────────────────────────────────────────────────────────
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vote_list = VBoxContainer.new()
+	_vote_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vote_list.add_theme_constant_override("separation", 8)
+	scroll.add_child(_vote_list)
+	root.add_child(scroll)
+
+func _vote_file() -> String:
+	return ProjectSettings.globalize_path("user://cc_votes.json")
+
+func _load_votes() -> void:
+	_vote_items = []
+	var path := _vote_file()
+	if not FileAccess.file_exists(path):
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if not f:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if parsed is Array:
+		_vote_items = parsed
+	_refresh_vote_list()
+
+func _save_votes() -> void:
+	var fw := FileAccess.open(_vote_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(_vote_items, "\t") + "\n")
+		fw.close()
+
+func _vote_is_expired(vote: Dictionary) -> bool:
+	var dl: String = vote.get("deadline", "")
+	if dl.is_empty():
+		return false
+	return dl < Time.get_datetime_string_from_system().substr(0, 10)
+
+func _vote_tally(vote: Dictionary) -> Dictionary:
+	var options: Array = vote.get("options", [])
+	var counts := {}
+	for opt: String in options:
+		counts[opt] = 0
+	for v: String in (vote.get("votes", {}) as Dictionary).values():
+		if v in counts:
+			counts[v] += 1
+	return counts
+
+func _vote_leading_option(vote: Dictionary) -> String:
+	var tally := _vote_tally(vote)
+	var best := ""; var best_n := -1
+	for opt: String in tally:
+		if tally[opt] > best_n:
+			best_n = tally[opt]; best = opt
+	return best
+
+func _create_vote(title: String, desc: String, options: Array[String], deadline: String) -> void:
+	var vote := {
+		"id": str(int(Time.get_unix_time_from_system())),
+		"title": title,
+		"description": desc,
+		"created_by": _current_user.get("username", "?"),
+		"created_at": Time.get_datetime_string_from_system(),
+		"deadline": deadline,
+		"options": options,
+		"votes": {},
+		"closed": false
+	}
+	_vote_items.insert(0, vote)
+	_save_votes()
+	_log_activity("vote_created", 'New vote opened: "%s"' % title)
+	_refresh_vote_list()
+
+func _cast_vote(vote_idx: int, option: String) -> void:
+	if vote_idx < 0 or vote_idx >= _vote_items.size():
+		return
+	var username: String = _current_user.get("username", "")
+	if username.is_empty():
+		return
+	var vote: Dictionary = _vote_items[vote_idx]
+	var votes_dict: Dictionary = vote.get("votes", {})
+	votes_dict[username] = option
+	vote["votes"] = votes_dict
+	_vote_items[vote_idx] = vote
+	_save_votes()
+	_log_activity("vote_cast", '%s voted "%s" on "%s"' % [username, option, vote.get("title", "")])
+	_refresh_vote_list()
+	if _vote_thread and _vote_thread.is_started():
+		return
+	var cap_idx := vote_idx
+	_vote_thread = Thread.new()
+	_vote_thread.start(func():
+		var all_users := Ops.auth_fetch_all(Callable())
+		var member_count := 0
+		for u: Dictionary in all_users:
+			if u.get("approved", false):
+				member_count += 1
+		call_deferred("_on_vote_member_count", cap_idx, member_count)
+	)
+
+func _on_vote_member_count(vote_idx: int, member_count: int) -> void:
+	if _vote_thread:
+		_vote_thread.wait_to_finish()
+	_vote_thread = null
+	if vote_idx < 0 or vote_idx >= _vote_items.size():
+		return
+	var vote: Dictionary = _vote_items[vote_idx]
+	if not vote.get("closed", false):
+		var cast_count := (vote.get("votes", {}) as Dictionary).size()
+		if member_count > 0 and cast_count * 2 > member_count:
+			vote["closed"] = true
+			vote["result"] = _vote_leading_option(vote)
+			vote["closed_at"] = Time.get_datetime_string_from_system()
+			vote["close_reason"] = "majority"
+			_vote_items[vote_idx] = vote
+			_save_votes()
+			_log_activity("vote_closed",
+				'Vote "%s" closed by majority — result: %s (%d/%d voted)' % [
+				vote.get("title", ""), vote.get("result", ""), cast_count, member_count])
+			_refresh_vote_list()
+	_vote_thread = Thread.new()
+	_vote_thread.start(func():
+		Ops.cc_data_push(_cc_data_bundle(), Callable())
+		call_deferred("_vote_push_done", false)
+	)
+
+func _vote_push() -> void:
+	if _vote_thread and _vote_thread.is_started():
+		return
+	if is_instance_valid(_vote_status_lbl):
+		_vote_status_lbl.text = "Pushing…"
+	_vote_thread = Thread.new()
+	_vote_thread.start(func():
+		var ok := Ops.cc_data_push(_cc_data_bundle(), Callable())
+		call_deferred("_vote_push_done", ok)
+	)
+
+func _vote_push_done(show_result: bool) -> void:
+	if _vote_thread:
+		_vote_thread.wait_to_finish()
+	_vote_thread = null
+	if not show_result or not is_instance_valid(_vote_status_lbl):
+		return
+	_vote_status_lbl.text = "✅ Pushed!"
+	get_tree().create_timer(2.5).timeout.connect(func():
+		if is_instance_valid(_vote_status_lbl):
+			_vote_status_lbl.text = ""
+	)
+
+func _refresh_vote_list() -> void:
+	if not is_instance_valid(_vote_list):
+		return
+	for c in _vote_list.get_children():
+		c.queue_free()
+	if _vote_items.is_empty():
+		var hint := Label.new()
+		hint.text = "No votes yet. Use + New Vote to start one."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_vote_list.add_child(hint)
+		return
+	var username: String = _current_user.get("username", "")
+	for i in range(_vote_items.size()):
+		var vote: Dictionary = _vote_items[i]
+		var title: String = vote.get("title", "Untitled")
+		var options: Array = vote.get("options", [])
+		var votes_dict: Dictionary = vote.get("votes", {})
+		var is_closed: bool = vote.get("closed", false)
+		var my_vote: String = votes_dict.get(username, "")
+		# Auto-close expired votes
+		if not is_closed and _vote_is_expired(vote):
+			vote["closed"] = true
+			vote["result"] = _vote_leading_option(vote)
+			vote["closed_at"] = Time.get_datetime_string_from_system()
+			vote["close_reason"] = "deadline"
+			_vote_items[i] = vote
+			is_closed = true
+			_save_votes()
+			_log_activity("vote_closed",
+				'Vote "%s" closed — deadline reached. Result: %s' % [
+				title, vote.get("result", "")])
+		var result: String = vote.get("result", "")
+		var total: int = votes_dict.size()
+		# Card
+		var panel := PanelContainer.new()
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var cvbox := VBoxContainer.new()
+		cvbox.add_theme_constant_override("separation", 4)
+		panel.add_child(cvbox)
+		# Title + status
+		var header := HBoxContainer.new()
+		var title_lbl := RichTextLabel.new()
+		title_lbl.bbcode_enabled = true
+		title_lbl.fit_content = true
+		title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var sc := "66bb6a" if is_closed else "42a5f5"
+		var st := ("CLOSED" if is_closed else "OPEN")
+		title_lbl.text = "[b]%s[/b]  [color=#%s][%s][/color]" % [title, sc, st]
+		header.add_child(title_lbl)
+		var count_lbl := Label.new()
+		count_lbl.text = "%d voted" % total
+		count_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		header.add_child(count_lbl)
+		cvbox.add_child(header)
+		# Description
+		var desc: String = vote.get("description", "")
+		if not desc.is_empty():
+			var dl := Label.new(); dl.text = desc
+			dl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+			dl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			cvbox.add_child(dl)
+		# Deadline
+		var deadline: String = vote.get("deadline", "")
+		if not deadline.is_empty():
+			var dll := Label.new()
+			dll.text = ("⏰ Ended: " if is_closed else "⏰ Ends: ") + deadline
+			dll.add_theme_color_override("font_color", Color(0.6, 0.5, 0.3))
+			cvbox.add_child(dll)
+		# Options: bars if voted/closed, buttons if open and unvoted
+		if is_closed or not my_vote.is_empty():
+			var tally := _vote_tally(vote)
+			for opt: String in options:
+				var row := HBoxContainer.new()
+				var winner := (result == opt) and is_closed
+				var lbl := Label.new()
+				lbl.text = ("✅ " if winner else "   ") + opt
+				lbl.custom_minimum_size = Vector2(110, 0)
+				if winner:
+					lbl.add_theme_color_override("font_color", Color(0.4, 0.9, 0.5))
+				elif opt == my_vote:
+					lbl.add_theme_color_override("font_color", Color(0.4, 0.7, 1.0))
+				row.add_child(lbl)
+				var pbar := ProgressBar.new()
+				pbar.min_value = 0
+				pbar.max_value = max(total, 1)
+				pbar.value = tally.get(opt, 0)
+				pbar.show_percentage = false
+				pbar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				pbar.custom_minimum_size = Vector2(0, 16)
+				row.add_child(pbar)
+				var n_lbl := Label.new()
+				n_lbl.text = " %d" % tally.get(opt, 0)
+				row.add_child(n_lbl)
+				cvbox.add_child(row)
+			if not my_vote.is_empty() and not is_closed:
+				var vl := Label.new()
+				vl.text = "Your vote: " + my_vote
+				vl.add_theme_color_override("font_color", Color(0.4, 0.7, 1.0))
+				cvbox.add_child(vl)
+		else:
+			var btn_row := HBoxContainer.new()
+			for opt: String in options:
+				var obtn := Button.new()
+				obtn.text = opt
+				var cap_i := i; var cap_opt := opt
+				obtn.pressed.connect(func(): _cast_vote(cap_i, cap_opt))
+				btn_row.add_child(obtn)
+			cvbox.add_child(btn_row)
+		# Footer meta
+		var meta := Label.new()
+		var cr := vote.get("close_reason", "")
+		var close_note := (" — closed by " + ("majority vote" if cr == "majority" else "deadline")) if is_closed else ""
+		meta.text = "by %s  %s%s" % [vote.get("created_by", "?"),
+			vote.get("created_at", "").substr(0, 16), close_note]
+		meta.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
+		meta.add_theme_font_size_override("font_size", 11)
+		cvbox.add_child(meta)
+		_vote_list.add_child(panel)
 
 func _build_vault_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Vault", tabs)
@@ -2568,7 +2920,7 @@ func _refresh_addons() -> void:
 						func(msg): call_deferred("_append_log", _installed_log, msg)
 					)
 					call_deferred("_refresh_addons")
-					call_deferred("_log_activity", "addon_synced", captured_sync_name)
+					call_deferred("_log_activity", "addon_synced", "Synced addon: " + captured_sync_name)
 				)
 			)
 		row.add_child(sync_btn)
@@ -2596,7 +2948,7 @@ func _refresh_addons() -> void:
 						func(msg): call_deferred("_append_log", _installed_log, msg)
 					)
 					call_deferred("_refresh_addons")
-					call_deferred("_log_activity", "addon_removed", captured_rm_name)
+					call_deferred("_log_activity", "addon_removed", "Removed addon: " + captured_rm_name)
 				)
 			)
 		else:
@@ -2628,7 +2980,7 @@ func _start_create() -> void:
 			func(msg): call_deferred("_append_log", _create_log, msg)
 		)
 		call_deferred("_refresh_addons")
-		call_deferred("_log_activity", "addon_created", name)
+		call_deferred("_log_activity", "addon_created", "Created new addon: " + name)
 	)
 
 func _start_clone() -> void:
@@ -2644,7 +2996,7 @@ func _start_clone() -> void:
 			func(msg): call_deferred("_append_log", _create_log, msg)
 		)
 		call_deferred("_refresh_addons")
-		call_deferred("_log_activity", "addon_cloned", url)
+		call_deferred("_log_activity", "addon_cloned", "Cloned addon from: " + url)
 	)
 
 func _start_update_plugin() -> void:
@@ -3118,23 +3470,33 @@ func _refresh_activity_list() -> void:
 
 func _activity_icon(type: String) -> String:
 	match type:
-		"task_completed": return "✅"
-		"addon_created":  return "✨"
-		"addon_cloned":   return "📥"
-		"addon_removed":  return "🗑"
-		"addon_synced":   return "↺"
-		"todo_added":     return "➕"
-		_:                return "•"
+		"task_completed":    return "✅"
+		"addon_created":     return "✨"
+		"addon_cloned":      return "📥"
+		"addon_removed":     return "🗑"
+		"addon_synced":      return "↺"
+		"todo_added":        return "➕"
+		"vote_created":      return "🗳"
+		"vote_cast":         return "🗳"
+		"vote_closed":       return "🏁"
+		"account_approved":  return "👤"
+		"account_removed":   return "🚫"
+		_:                   return "•"
 
 func _activity_color(type: String) -> Color:
 	match type:
-		"task_completed": return Color(0.4, 0.9, 0.4)
-		"addon_created":  return Color(0.4, 0.8, 1.0)
-		"addon_cloned":   return Color(0.6, 0.6, 1.0)
-		"addon_removed":  return Color(1.0, 0.5, 0.4)
-		"addon_synced":   return Color(1.0, 0.85, 0.3)
-		"todo_added":     return Color(0.75, 0.75, 0.75)
-		_:                return Color(0.6, 0.6, 0.6)
+		"task_completed":    return Color(0.4, 0.9, 0.4)
+		"addon_created":     return Color(0.4, 0.8, 1.0)
+		"addon_cloned":      return Color(0.6, 0.6, 1.0)
+		"addon_removed":     return Color(1.0, 0.5, 0.4)
+		"addon_synced":      return Color(1.0, 0.85, 0.3)
+		"todo_added":        return Color(0.75, 0.75, 0.75)
+		"vote_created":      return Color(0.6, 0.8, 1.0)
+		"vote_cast":         return Color(0.6, 0.8, 1.0)
+		"vote_closed":       return Color(0.9, 0.75, 0.3)
+		"account_approved":  return Color(0.4, 0.9, 0.5)
+		"account_removed":   return Color(1.0, 0.4, 0.4)
+		_:                   return Color(0.6, 0.6, 0.6)
 
 # ─── Login overlay ────────────────────────────────────────────────────────────
 
@@ -3557,6 +3919,8 @@ func _on_pending_loaded(all_users: Array, approver: String) -> void:
 				_login_thread = Thread.new()
 				_login_thread.start(func():
 					Ops.auth_approve(cap_approver, cap_name, Callable())
+					call_deferred("_log_activity", "account_approved",
+						"%s approved account for %s" % [cap_approver, cap_name])
 					call_deferred("_refresh_pending_list")
 					call_deferred("_on_approve_done")
 				)
@@ -3574,6 +3938,8 @@ func _on_pending_loaded(all_users: Array, approver: String) -> void:
 			_login_thread = Thread.new()
 			_login_thread.start(func():
 				Ops.auth_remove(cap_approver2, cap_name2, Callable())
+				call_deferred("_log_activity", "account_removed",
+					"%s removed account for %s" % [cap_approver2, cap_name2])
 				call_deferred("_refresh_pending_list")
 				call_deferred("_on_approve_done")
 			)
