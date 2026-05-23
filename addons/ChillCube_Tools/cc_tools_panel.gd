@@ -3146,11 +3146,14 @@ func _build_login_overlay() -> Control:
 	var overlay := ColorRect.new()
 	overlay.color = Color(0.08, 0.08, 0.08, 0.97)
 
+	var wrapper := CenterContainer.new()
+	wrapper.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(wrapper)
+
 	var center := VBoxContainer.new()
-	center.set_anchors_preset(Control.PRESET_CENTER)
 	center.custom_minimum_size = Vector2(380, 0)
 	center.add_theme_constant_override("separation", 8)
-	overlay.add_child(center)
+	wrapper.add_child(center)
 
 	var title := Label.new()
 	title.text = "🧊 ChillCube Tools"
