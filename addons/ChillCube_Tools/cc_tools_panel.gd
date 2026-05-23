@@ -50,6 +50,8 @@ var _todo_editing_idx: int = -1
 var _todo_active_tag: String = ""
 var _todo_tag_bar: HBoxContainer
 
+var _asset_meta: Dictionary = {}
+
 var _term_output: TextEdit
 var _term_input: LineEdit
 var _term_cwd_label: Label
@@ -152,6 +154,7 @@ func _ready() -> void:
 	_vault_connect()
 	_load_activity()
 	_load_votes()
+	_load_asset_meta()
 
 	_login_overlay = _build_login_overlay()
 	_login_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -1590,6 +1593,7 @@ func _save_todo() -> void:
 	if fw:
 		fw.store_string(JSON.stringify(_todo_items, "\t") + "\n")
 		fw.close()
+	_activity_auto_push()
 
 func _todo_extract_tags(text: String) -> Array[String]:
 	var tags: Array[String] = []
@@ -1705,26 +1709,44 @@ func _refresh_todo() -> void:
 		row.add_child(check)
 
 		if _todo_editing_idx == i:
+			var fields := VBoxContainer.new()
+			fields.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			fields.add_theme_constant_override("separation", 2)
 			var edit := LineEdit.new()
 			edit.text = item.get("text", "")
 			edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			edit.placeholder_text = "Task text… use #tag for hashtags"
+			fields.add_child(edit)
+			var assign_row := HBoxContainer.new()
+			var assign_lbl := Label.new()
+			assign_lbl.text = "Assign:"
+			assign_lbl.add_theme_font_size_override("font_size", 11)
+			assign_lbl.custom_minimum_size = Vector2(44, 0)
+			assign_row.add_child(assign_lbl)
+			var assign_edit := LineEdit.new()
+			assign_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			assign_edit.placeholder_text = "username (leave blank to unassign)"
+			assign_edit.add_theme_font_size_override("font_size", 11)
+			assign_edit.text = item.get("assigned_to", "")
+			assign_row.add_child(assign_edit)
+			fields.add_child(assign_row)
+			row.add_child(fields)
 			var cap_edit := edit
-			edit.text_submitted.connect(func(_t):
-				_todo_items[cap_i]["text"] = cap_edit.text.strip_edges()
-				_save_todo()
-				_todo_editing_idx = -1
-				_refresh_todo()
-			)
-			row.add_child(edit)
+			var cap_assign := assign_edit
 			var confirm_btn := Button.new()
 			confirm_btn.text = "✓"
 			confirm_btn.pressed.connect(func():
 				_todo_items[cap_i]["text"] = cap_edit.text.strip_edges()
+				var assignee := cap_assign.text.strip_edges().lstrip("@")
+				if assignee.is_empty():
+					_todo_items[cap_i].erase("assigned_to")
+				else:
+					_todo_items[cap_i]["assigned_to"] = assignee
 				_save_todo()
 				_todo_editing_idx = -1
 				_refresh_todo()
 			)
+			edit.text_submitted.connect(func(_t): confirm_btn.pressed.emit())
 			row.add_child(confirm_btn)
 		else:
 			var lbl := RichTextLabel.new()
@@ -1737,6 +1759,14 @@ func _refresh_todo() -> void:
 			lbl.append_text(_todo_bbcode(item.get("text", ""), item.get("done", false)))
 			lbl.pop()
 			row.add_child(lbl)
+			var assignee: String = item.get("assigned_to", "")
+			if not assignee.is_empty():
+				var a_lbl := Label.new()
+				a_lbl.text = "@" + assignee
+				a_lbl.add_theme_font_size_override("font_size", 11)
+				a_lbl.add_theme_color_override("font_color", Color(0.4, 0.7, 1.0))
+				a_lbl.tooltip_text = "Assigned to " + assignee
+				row.add_child(a_lbl)
 			var edit_btn := Button.new()
 			edit_btn.text = "✏"
 			edit_btn.pressed.connect(func():
@@ -1821,7 +1851,8 @@ func _cc_data_bundle() -> Dictionary:
 		"activity.json": JSON.stringify(_activity_items, "\t") + "\n",
 		"feedback.json": fb_str,
 		"votes.json": JSON.stringify(_vote_items, "\t") + "\n",
-		"ideas.json": JSON.stringify(_ideas_items, "\t") + "\n"
+		"ideas.json": JSON.stringify(_ideas_items, "\t") + "\n",
+		"asset_meta.json": JSON.stringify(_asset_meta, "\t") + "\n"
 	}
 
 func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
@@ -2552,6 +2583,32 @@ func _vault_navigate(rel: String) -> void:
 		)
 		row.add_child(del_btn)
 
+		var meta_file: Dictionary = _asset_meta.get(cap_rel, {})
+		var made_by: String = meta_file.get("made_by", "")
+		var meta_btn := Button.new()
+		meta_btn.flat = true
+		meta_btn.custom_minimum_size = Vector2(26, 0)
+		if not made_by.is_empty():
+			meta_btn.text = "👤"
+			meta_btn.tooltip_text = "Made by: " + made_by + "\n" + meta_file.get("notes", "") + "\nClick to edit"
+		else:
+			meta_btn.text = "👤"
+			meta_btn.tooltip_text = "Add file info (author, notes)"
+			meta_btn.modulate = Color(1, 1, 1, 0.3)
+		meta_btn.pressed.connect(func():
+			_asset_meta_edit(cap_rel)
+		)
+		row.add_child(meta_btn)
+
+		if not made_by.is_empty():
+			var by_lbl := Label.new()
+			by_lbl.text = made_by
+			by_lbl.add_theme_font_size_override("font_size", 10)
+			by_lbl.add_theme_color_override("font_color", Color(0.5, 0.65, 0.5))
+			by_lbl.custom_minimum_size = Vector2(60, 0)
+			by_lbl.clip_text = true
+			row.add_child(by_lbl)
+
 		_vault_browser.add_child(row)
 
 func _vault_file_icon(filename: String) -> String:
@@ -2869,6 +2926,77 @@ func _vault_after_manage_named(log_type: String, log_text: String) -> void:
 	_vault_files = Ops.vault_list_files(_vault_cache)
 	_vault_navigate(_vault_current_dir)
 	_log_activity(log_type, log_text)
+
+func _asset_meta_file() -> String:
+	return ProjectSettings.globalize_path("user://cc_asset_meta.json")
+
+func _load_asset_meta() -> void:
+	_asset_meta = {}
+	var path := _asset_meta_file()
+	if not FileAccess.file_exists(path):
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if not f:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if parsed is Dictionary:
+		_asset_meta = parsed
+
+func _save_asset_meta() -> void:
+	var fw := FileAccess.open(_asset_meta_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(_asset_meta, "\t") + "\n")
+		fw.close()
+	_activity_auto_push()
+
+func _asset_meta_edit(rel_path: String) -> void:
+	var dialog := AcceptDialog.new()
+	dialog.title = "File Info: " + rel_path.get_file()
+	dialog.size = Vector2i(400, 130)
+	var vbox := VBoxContainer.new()
+	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vbox.add_theme_constant_override("separation", 6)
+	dialog.add_child(vbox)
+
+	var row := HBoxContainer.new()
+	var lbl := Label.new()
+	lbl.text = "Made by:"
+	lbl.custom_minimum_size = Vector2(70, 0)
+	row.add_child(lbl)
+	var edit := LineEdit.new()
+	edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	edit.placeholder_text = "Name or username (any text)"
+	var meta: Dictionary = _asset_meta.get(rel_path, {})
+	edit.text = meta.get("made_by", "")
+	row.add_child(edit)
+	vbox.add_child(row)
+
+	var notes_row := HBoxContainer.new()
+	var notes_lbl := Label.new()
+	notes_lbl.text = "Notes:"
+	notes_lbl.custom_minimum_size = Vector2(70, 0)
+	notes_row.add_child(notes_lbl)
+	var notes_edit := LineEdit.new()
+	notes_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	notes_edit.placeholder_text = "Optional description…"
+	notes_edit.text = meta.get("notes", "")
+	notes_row.add_child(notes_edit)
+	vbox.add_child(notes_row)
+
+	var cap_path := rel_path
+	dialog.confirmed.connect(func():
+		var made_by := edit.text.strip_edges()
+		var notes := notes_edit.text.strip_edges()
+		if made_by.is_empty() and notes.is_empty():
+			_asset_meta.erase(cap_path)
+		else:
+			_asset_meta[cap_path] = {"made_by": made_by, "notes": notes}
+		_save_asset_meta()
+		_vault_navigate(_vault_current_dir)
+	)
+	add_child(dialog)
+	dialog.popup_centered()
 
 func _build_terminal_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Terminal", tabs)
