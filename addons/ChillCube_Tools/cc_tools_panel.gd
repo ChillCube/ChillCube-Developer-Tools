@@ -23,6 +23,16 @@ var _update_plugin_btn: Button
 var _dep_addon_list: VBoxContainer
 var _dep_details: VBoxContainer
 var _dep_selected_folder: String = ""
+
+var _ws_addon_list: VBoxContainer
+var _ws_editor_area: VBoxContainer
+var _ws_dep_area: VBoxContainer
+var _ws_selected: String = ""
+var _ws_script_tabs: TabContainer
+var _ws_editors: Dictionary = {}
+var _ws_status_lbl: Label
+var _ws_save_btn: Button
+var _ws_dirty: bool = false
 var _registry_entries: Array = []
 
 var _plan_list: VBoxContainer
@@ -217,6 +227,7 @@ func _build_addons_supertab(tabs: TabContainer) -> void:
 	_build_addons_tab(inner_tabs)
 	_build_add_addon_tab(inner_tabs)
 	_build_deps_tab(inner_tabs)
+	_build_workspace_tab(inner_tabs)
 
 func _build_addons_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Installed Addons", tabs)
@@ -576,6 +587,252 @@ func _url_to_display_name(url: String) -> String:
 		if clean == url:
 			return entry.get("name", url.get_file())
 	return url.get_file()
+
+# ─── Workspace tab ────────────────────────────────────────────────────────────
+
+func _build_workspace_tab(tabs: TabContainer) -> void:
+	var root_vbox := _vbox("Workspace", tabs)
+
+	var toolbar := HBoxContainer.new()
+	_ws_status_lbl = Label.new()
+	_ws_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ws_status_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+	_ws_save_btn = Button.new()
+	_ws_save_btn.text = "💾 Save All"
+	_ws_save_btn.disabled = true
+	_ws_save_btn.pressed.connect(_ws_save_scripts)
+	var refresh_btn := Button.new()
+	refresh_btn.text = "↺"
+	refresh_btn.tooltip_text = "Refresh addon list"
+	refresh_btn.pressed.connect(_ws_refresh_list)
+	toolbar.add_child(_ws_status_lbl)
+	toolbar.add_child(_ws_save_btn)
+	toolbar.add_child(refresh_btn)
+	root_vbox.add_child(toolbar)
+	root_vbox.add_child(HSeparator.new())
+
+	var split := HBoxContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root_vbox.add_child(split)
+
+	# Left: addon list
+	var left_scroll := ScrollContainer.new()
+	left_scroll.custom_minimum_size = Vector2(190, 0)
+	left_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_ws_addon_list = VBoxContainer.new()
+	_ws_addon_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_scroll.add_child(_ws_addon_list)
+	split.add_child(left_scroll)
+	split.add_child(VSeparator.new())
+
+	# Middle: script editor
+	_ws_editor_area = VBoxContainer.new()
+	_ws_editor_area.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ws_editor_area.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.add_child(_ws_editor_area)
+	split.add_child(VSeparator.new())
+
+	# Right: dependencies
+	var right_scroll := ScrollContainer.new()
+	right_scroll.custom_minimum_size = Vector2(230, 0)
+	right_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_ws_dep_area = VBoxContainer.new()
+	_ws_dep_area.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_scroll.add_child(_ws_dep_area)
+	split.add_child(right_scroll)
+
+	_ws_refresh_list()
+
+func _ws_refresh_list() -> void:
+	for child in _ws_addon_list.get_children():
+		child.queue_free()
+
+	var project_root := ProjectSettings.globalize_path("res://").rstrip("/")
+	var folders := Ops.list_addons(project_root)
+
+	if folders.is_empty():
+		var lbl := Label.new()
+		lbl.text = "No addons installed."
+		lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_ws_addon_list.add_child(lbl)
+		_ws_selected = ""
+		_ws_rebuild_editor()
+		_ws_rebuild_deps()
+		return
+
+	if _ws_selected not in folders:
+		_ws_selected = folders[0]
+
+	for folder: String in folders:
+		var cfg := Ops.parse_cfg(project_root + "/addons/" + folder + "/plugin.cfg")
+		var btn := Button.new()
+		btn.text = cfg.get("name", folder)
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.flat = true
+		if folder == _ws_selected:
+			btn.add_theme_color_override("font_color", Color(0.4, 0.85, 1.0))
+		var cap := folder
+		btn.pressed.connect(func():
+			if _ws_dirty:
+				_ws_save_scripts()
+			_ws_selected = cap
+			_ws_refresh_list()
+		)
+		_ws_addon_list.add_child(btn)
+
+	_ws_rebuild_editor()
+	_ws_rebuild_deps()
+
+func _ws_rebuild_editor() -> void:
+	for child in _ws_editor_area.get_children():
+		child.queue_free()
+	_ws_editors = {}
+	_ws_dirty = false
+	if is_instance_valid(_ws_save_btn):
+		_ws_save_btn.disabled = true
+	if is_instance_valid(_ws_status_lbl):
+		_ws_status_lbl.text = ""
+
+	if _ws_selected.is_empty():
+		var hint := Label.new()
+		hint.text = "Select an addon on the left."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		hint.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+		_ws_editor_area.add_child(hint)
+		return
+
+	var project_root := ProjectSettings.globalize_path("res://").rstrip("/")
+	var addon_path := project_root + "/addons/" + _ws_selected
+	var scripts := _find_gd_files(addon_path)
+	scripts.sort()
+
+	if scripts.is_empty():
+		var hint := Label.new()
+		hint.text = "No .gd scripts found in this addon."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_ws_editor_area.add_child(hint)
+		return
+
+	_ws_script_tabs = TabContainer.new()
+	_ws_script_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_ws_script_tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ws_editor_area.add_child(_ws_script_tabs)
+
+	for script_path: String in scripts:
+		var content := ""
+		var f := FileAccess.open(script_path, FileAccess.READ)
+		if f:
+			content = f.get_as_text()
+			f.close()
+
+		var editor := CodeEdit.new()
+		editor.name = script_path.get_file()
+		editor.text = content
+		editor.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		editor.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		editor.gutters_draw_line_numbers = true
+		editor.gutters_draw_fold_gutter = true
+		editor.auto_brace_completion_enabled = true
+		editor.indent_automatic = true
+		editor.indent_use_spaces = false
+		editor.minimap_draw = false
+		editor.syntax_highlighter = GDScriptSyntaxHighlighter.new()
+		editor.text_changed.connect(func():
+			if not _ws_dirty:
+				_ws_dirty = true
+				if is_instance_valid(_ws_save_btn):
+					_ws_save_btn.disabled = false
+				if is_instance_valid(_ws_status_lbl):
+					_ws_status_lbl.text = "● Unsaved changes"
+					_ws_status_lbl.add_theme_color_override("font_color", Color(1.0, 0.75, 0.3))
+		)
+		_ws_script_tabs.add_child(editor)
+		_ws_editors[script_path] = editor
+
+func _ws_rebuild_deps() -> void:
+	for child in _ws_dep_area.get_children():
+		child.queue_free()
+
+	if _ws_selected.is_empty():
+		var hint := Label.new()
+		hint.text = "Select an addon to view its dependencies."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_ws_dep_area.add_child(hint)
+		return
+
+	var project_root := ProjectSettings.globalize_path("res://").rstrip("/")
+	var folder := _ws_selected
+	var cfg := Ops.parse_cfg(project_root + "/addons/" + folder + "/plugin.cfg")
+
+	var title := Label.new()
+	title.text = cfg.get("name", folder)
+	title.add_theme_font_size_override("font_size", 13)
+	_ws_dep_area.add_child(title)
+	_ws_dep_area.add_child(HSeparator.new())
+
+	var dep_hdr := Label.new()
+	dep_hdr.text = "Dependencies"
+	_ws_dep_area.add_child(dep_hdr)
+
+	var deps := Ops.read_dep_urls(project_root + "/addons/" + folder)
+	if deps.is_empty():
+		var none := Label.new()
+		none.text = "(none)"
+		none.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_ws_dep_area.add_child(none)
+	else:
+		for dep_url: String in deps:
+			var row := HBoxContainer.new()
+			row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var lbl := Label.new()
+			lbl.text = _url_to_display_name(dep_url)
+			lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			lbl.tooltip_text = dep_url
+			lbl.clip_text = true
+			var rm := Button.new()
+			rm.text = "✕"
+			var cap_url := dep_url
+			rm.pressed.connect(func():
+				Ops.remove_dep(project_root + "/addons/" + folder, cap_url)
+				_ws_rebuild_deps()
+			)
+			row.add_child(lbl)
+			row.add_child(rm)
+			_ws_dep_area.add_child(row)
+
+	_ws_dep_area.add_child(HSeparator.new())
+	var add_hdr := Label.new()
+	add_hdr.text = "Add dependency:"
+	_ws_dep_area.add_child(add_hdr)
+
+	_dep_search_widget(_ws_dep_area, _build_dep_candidates(folder, deps), func(url: String):
+		Ops.add_dep(project_root + "/addons/" + folder, url)
+		_ws_rebuild_deps()
+	)
+
+func _ws_save_scripts() -> void:
+	var saved := 0
+	for path: String in _ws_editors:
+		var ed: CodeEdit = _ws_editors[path]
+		var fw := FileAccess.open(path, FileAccess.WRITE)
+		if fw:
+			fw.store_string(ed.text)
+			fw.close()
+			saved += 1
+	EditorInterface.get_resource_filesystem().scan()
+	_ws_dirty = false
+	if is_instance_valid(_ws_save_btn):
+		_ws_save_btn.disabled = true
+	if is_instance_valid(_ws_status_lbl):
+		_ws_status_lbl.text = "✅ Saved %d file(s)" % saved
+		_ws_status_lbl.add_theme_color_override("font_color", Color(0.4, 0.9, 0.4))
+		get_tree().create_timer(2.5).timeout.connect(func():
+			if is_instance_valid(_ws_status_lbl) and not _ws_dirty:
+				_ws_status_lbl.text = ""
+		)
 
 func _build_planning_tab(tabs: TabContainer) -> void:
 	var outer := _vbox("Planning", tabs)
