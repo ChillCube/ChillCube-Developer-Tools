@@ -2727,10 +2727,28 @@ func _install_from_registry(url: String, btn: Button) -> void:
 
 # ─── Script editor ────────────────────────────────────────────────────────────
 
+func _find_gd_files(base: String) -> Array[String]:
+	var result: Array[String] = []
+	var dir := DirAccess.open(base)
+	if not dir:
+		return result
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while name != "":
+		if not name.begins_with("."):
+			var full := base + "/" + name
+			if dir.current_is_dir():
+				result.append_array(_find_gd_files(full))
+			elif name.ends_with(".gd"):
+				result.append(full)
+		name = dir.get_next()
+	dir.list_dir_end()
+	return result
+
 func _open_script_editor(folder: String, addon_name: String) -> void:
 	var root := ProjectSettings.globalize_path("res://").rstrip("/")
 	var addon_path := root + "/addons/" + folder
-	var scripts := Ops._find(addon_path, "*.gd")
+	var scripts := _find_gd_files(addon_path)
 	scripts.sort()
 
 	if scripts.is_empty():
