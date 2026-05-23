@@ -1429,8 +1429,10 @@ func _refresh_todo() -> void:
 			_todo_items[a] = _todo_items[b]
 			_todo_items[b] = tmp
 			_save_todo()
-			if _todo_editing_idx == a: _todo_editing_idx = b
-			elif _todo_editing_idx == b: _todo_editing_idx = a
+			if _todo_editing_idx == a:
+				_todo_editing_idx = b
+			elif _todo_editing_idx == b:
+				_todo_editing_idx = a
 			_refresh_todo()
 		)
 		row.add_child(up_btn)
@@ -1445,8 +1447,10 @@ func _refresh_todo() -> void:
 			_todo_items[a] = _todo_items[b]
 			_todo_items[b] = tmp
 			_save_todo()
-			if _todo_editing_idx == a: _todo_editing_idx = b
-			elif _todo_editing_idx == b: _todo_editing_idx = a
+			if _todo_editing_idx == a:
+				_todo_editing_idx = b
+			elif _todo_editing_idx == b:
+				_todo_editing_idx = a
 			_refresh_todo()
 		)
 		row.add_child(down_btn)
