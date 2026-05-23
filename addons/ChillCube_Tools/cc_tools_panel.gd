@@ -1259,8 +1259,11 @@ func _refresh_ideas_list() -> void:
 func _ideas_prompt_new() -> void:
 	var dialog := AcceptDialog.new()
 	dialog.title = "Suggest a Game Idea"
-	dialog.size = Vector2i(440, 200)
-	var vbox: VBoxContainer = dialog.get_vbox()
+	dialog.size = Vector2i(440, 220)
+	var vbox := VBoxContainer.new()
+	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vbox.add_theme_constant_override("separation", 4)
+	dialog.add_child(vbox)
 
 	var title_lbl := Label.new()
 	title_lbl.text = "Title:"
@@ -2432,7 +2435,9 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	_vault_move_dialog = AcceptDialog.new()
 	_vault_move_dialog.title = "Rename / Move File"
 	_vault_move_dialog.size = Vector2i(420, 120)
-	var move_vbox: VBoxContainer = _vault_move_dialog.get_vbox()
+	var move_vbox := VBoxContainer.new()
+	move_vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_vault_move_dialog.add_child(move_vbox)
 	var move_hint := Label.new()
 	move_hint.text = "New path (e.g. images/photo.png):"
 	move_vbox.add_child(move_hint)
@@ -2454,7 +2459,9 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	_vault_newdir_dialog = AcceptDialog.new()
 	_vault_newdir_dialog.title = "New Folder"
 	_vault_newdir_dialog.size = Vector2i(360, 110)
-	var dir_vbox: VBoxContainer = _vault_newdir_dialog.get_vbox()
+	var dir_vbox := VBoxContainer.new()
+	dir_vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_vault_newdir_dialog.add_child(dir_vbox)
 	var dir_hint := Label.new()
 	dir_hint.text = "Folder path (e.g. images/subfolder):"
 	dir_vbox.add_child(dir_hint)
