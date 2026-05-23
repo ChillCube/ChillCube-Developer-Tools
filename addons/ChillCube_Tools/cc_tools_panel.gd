@@ -2585,7 +2585,7 @@ func _start_update_plugin() -> void:
 
 func _start_push() -> void:
 	_installed_log.text = ""
-	var self_folder := get_script().resource_path.get_base_dir().get_file()
+	var self_folder: String = (get_script() as Script).resource_path.get_base_dir().get_file()
 	_run_op(_push_btn, _installed_log, func():
 		Ops.push_all(
 			ProjectSettings.globalize_path("res://").rstrip("/"),
