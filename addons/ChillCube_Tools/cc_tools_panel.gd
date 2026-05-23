@@ -192,6 +192,7 @@ func _ready() -> void:
 	_login_overlay = _build_login_overlay()
 	_login_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(_login_overlay)
+	_session_restore()
 
 func _exit_tree() -> void:
 	if _thread and _thread.is_started():
@@ -5732,6 +5733,7 @@ func _on_login_done(user: Dictionary, btn: Button) -> void:
 	if user.is_empty():
 		return
 	_current_user = user
+	_session_save()
 	if is_instance_valid(_login_overlay):
 		_login_overlay.visible = false
 	_refresh_account_tab()
@@ -5752,16 +5754,55 @@ func _on_setup_done(login_btn: Button, setup_btn: Button) -> void:
 	if is_instance_valid(setup_btn):
 		setup_btn.disabled = false
 
+# ─── Session persistence ──────────────────────────────────────────────────────
+
+func _session_save() -> void:
+	var fw := FileAccess.open("user://cc_session.json", FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(_current_user, "\t") + "\n")
+		fw.close()
+
+func _session_restore() -> void:
+	if not FileAccess.file_exists("user://cc_session.json"):
+		return
+	var f := FileAccess.open("user://cc_session.json", FileAccess.READ)
+	if not f:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if not (parsed is Dictionary) or (parsed as Dictionary).is_empty():
+		return
+	_current_user = parsed
+	if is_instance_valid(_login_overlay):
+		_login_overlay.visible = false
+	_refresh_account_tab()
+
+func _session_logout() -> void:
+	_current_user = {}
+	var path := ProjectSettings.globalize_path("user://cc_session.json")
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(path)
+	if is_instance_valid(_login_overlay):
+		_login_overlay.visible = true
+
 # ─── Account tab ─────────────────────────────────────────────────────────────
 
 func _build_account_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Account", tabs)
 
+	var top_row := HBoxContainer.new()
+	top_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var info_lbl := Label.new()
 	info_lbl.name = "InfoLbl"
 	info_lbl.text = "Not logged in."
 	info_lbl.add_theme_font_size_override("font_size", 13)
-	root.add_child(info_lbl)
+	info_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var logout_btn := Button.new()
+	logout_btn.text = "Log Out"
+	logout_btn.pressed.connect(_session_logout)
+	top_row.add_child(info_lbl)
+	top_row.add_child(logout_btn)
+	root.add_child(top_row)
 	root.add_child(HSeparator.new())
 
 	# Change password
@@ -5904,6 +5945,7 @@ func _on_change_name_done(btn: Button, field: LineEdit, new_name: String) -> voi
 		btn.disabled = false
 	if not new_name.is_empty():
 		_current_user["username"] = new_name
+		_session_save()
 		if is_instance_valid(field):
 			field.text = ""
 		_refresh_account_tab()
