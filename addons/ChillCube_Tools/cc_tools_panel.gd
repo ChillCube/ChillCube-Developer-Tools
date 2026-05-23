@@ -964,7 +964,7 @@ func _ws_build_known_classes(addon_path: String) -> Array:
 
 # ─── Workspace: code completion ──────────────────────────────────────────────
 
-const _WS_KEYWORDS: PackedStringArray = PackedStringArray([
+var _WS_KEYWORDS: PackedStringArray = PackedStringArray([
 	"var", "const", "func", "class", "class_name", "extends", "return",
 	"if", "elif", "else", "for", "while", "break", "continue", "pass",
 	"and", "or", "not", "in", "is", "as", "null", "true", "false",
