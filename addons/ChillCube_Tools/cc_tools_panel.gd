@@ -635,8 +635,8 @@ func _plan_push() -> void:
 		OS.execute("git", PackedStringArray(["-C", root, "add", "PLANNED_ADDONS.json"]), [], true)
 		OS.execute("git", PackedStringArray(["-C", root, "commit", "-m", "plan: update planned addons"]), [], true)
 		var push_out := []
-		var push_code := OS.execute("git", PackedStringArray(["-C", root, "push", "origin", "main"]), push_out, true)
-		var msg := "✅ Pushed!" if push_code == OK else "❌ Push failed (no network?)"
+		var push_code := OS.execute("git", PackedStringArray(["-C", root, "push", "origin", "HEAD"]), push_out, true)
+		var msg := "✅ Pushed!" if push_code == OK else "❌ Push failed (code %d)" % push_code
 		call_deferred("_plan_on_pushed", msg)
 	)
 
@@ -1609,8 +1609,8 @@ func _todo_push() -> void:
 		OS.execute("git", PackedStringArray(["-C", project_root, "add", "TODO.md"]), [], true)
 		OS.execute("git", PackedStringArray(["-C", project_root, "commit", "-m", "todo: update"]), [], true)
 		var push_out := []
-		var push_code := OS.execute("git", PackedStringArray(["-C", project_root, "push", "origin", "main"]), push_out, true)
-		var msg := "✅ Pushed!" if push_code == OK else "❌ Push failed (no network?)"
+		var push_code := OS.execute("git", PackedStringArray(["-C", project_root, "push", "origin", "HEAD"]), push_out, true)
+		var msg := "✅ Pushed!" if push_code == OK else "❌ Push failed (code %d)" % push_code
 		call_deferred("_todo_on_pushed", msg)
 	)
 
@@ -3023,7 +3023,7 @@ func _activity_auto_push() -> void:
 		Ops._git(["add", "ACTIVITY_LOG.json"], root, Callable())
 		var code := Ops._git(["commit", "-m", "activity: auto-backup"], root, Callable())
 		if code == OK:
-			Ops._git(["push", "origin", "main"], root, Callable())
+			Ops._git(["push", "origin", "HEAD"], root, Callable())
 		call_deferred("_activity_on_pushed", code == OK)
 	)
 
