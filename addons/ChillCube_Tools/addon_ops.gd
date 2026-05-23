@@ -161,13 +161,47 @@ static func parse_cfg(path: String) -> Dictionary:
 	return out
 
 static func git_remote(addon_path: String) -> String:
+	# Read .git/config directly — more reliable than running git in Godot's PATH
+	var git_path := addon_path + "/.git"
+	var config_path := ""
+	if DirAccess.dir_exists_absolute(git_path):
+		config_path = git_path + "/config"
+	elif FileAccess.file_exists(git_path):
+		# .git is a file (submodule/worktree) pointing to the real git dir
+		var gf := FileAccess.open(git_path, FileAccess.READ)
+		if gf:
+			var line := gf.get_as_text().strip_edges()
+			gf.close()
+			if line.begins_with("gitdir: "):
+				config_path = addon_path + "/" + line.substr(8).strip_edges() + "/config"
+	if not config_path.is_empty() and FileAccess.file_exists(config_path):
+		var cf := FileAccess.open(config_path, FileAccess.READ)
+		if cf:
+			var in_origin := false
+			for line: String in cf.get_as_text().split("\n"):
+				var t := line.strip_edges()
+				if t == '[remote "origin"]':
+					in_origin = true
+				elif t.begins_with("[") and in_origin:
+					break
+				elif in_origin and t.begins_with("url = "):
+					cf.close()
+					return _normalise_remote_url(t.substr(6).strip_edges())
+			cf.close()
+	# Fallback: run git, take first non-error line
 	var output := []
-	OS.execute("git", PackedStringArray(["-C", addon_path, "remote", "get-url", "origin"]), output, true)
-	if output.is_empty():
-		return ""
-	var url: String = output[0].strip_edges()
+	OS.execute("git", PackedStringArray(["-C", addon_path, "remote", "get-url", "origin"]), output, false)
+	if not output.is_empty():
+		for line: String in (output[0] as String).split("\n"):
+			var t := line.strip_edges()
+			if not t.is_empty() and not t.begins_with("fatal") and not t.begins_with("error"):
+				return _normalise_remote_url(t)
+	return ""
+
+static func _normalise_remote_url(url: String) -> String:
 	url = url.replace(".git", "")
 	url = url.replace("git@github.com:", "https://github.com/")
+	url = url.replace("ssh://git@github.com/", "https://github.com/")
 	return url
 
 static func is_chillcube(url: String) -> bool:
