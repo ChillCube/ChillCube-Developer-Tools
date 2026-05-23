@@ -134,6 +134,12 @@ var _forum_items: Array = []
 var _forum_content: VBoxContainer
 var _forum_thread_idx: int = -1  # -1 = list view
 
+var _contract_items: Dictionary = {}  # addon_name -> {symbols: [...], registered_at: "..."}
+var _deps_items: Dictionary = {}       # depender -> {requires: {provider: [sym_names]}}
+var _contract_errors: Array = []
+var _contracts_status_lbl: Label
+var _contracts_scroll_list: VBoxContainer
+
 var _current_user: Dictionary = {}
 var _login_overlay: Control
 var _login_status_lbl: Label
@@ -170,6 +176,7 @@ func _ready() -> void:
 	_load_activity()
 	_load_votes()
 	_load_asset_meta()
+	_load_contracts()
 
 	_login_overlay = _build_login_overlay()
 	_login_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -567,6 +574,7 @@ func _build_planning_tab(tabs: TabContainer) -> void:
 	_build_ideas_subtab(inner_tabs)
 	_build_bugs_subtab(inner_tabs)
 	_build_todo_subtab(inner_tabs)
+	_build_contracts_subtab(inner_tabs)
 
 func _build_planned_subtab(tabs: TabContainer) -> void:
 	var root := _vbox("Addons", tabs)
@@ -1943,7 +1951,9 @@ func _cc_data_bundle() -> Dictionary:
 		"ideas.json": JSON.stringify(_ideas_items, "\t") + "\n",
 		"asset_meta.json": JSON.stringify(_asset_meta, "\t") + "\n",
 		"schedule.json": JSON.stringify(_schedule_items, "\t") + "\n",
-		"forum.json": JSON.stringify(_forum_items, "\t") + "\n"
+		"forum.json": JSON.stringify(_forum_items, "\t") + "\n",
+		"contracts.json": JSON.stringify(_contract_items, "\t") + "\n",
+		"deps.json": JSON.stringify(_deps_items, "\t") + "\n"
 	}
 
 func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
@@ -4921,6 +4931,360 @@ func _activity_color(type: String) -> Color:
 		"forum_posted":      return Color(0.6, 0.85, 1.0)
 		"forum_deleted":     return Color(1.0, 0.5, 0.4)
 		_:                   return Color(0.6, 0.6, 0.6)
+
+# ─── API Contracts ────────────────────────────────────────────────────────────
+
+func _load_contracts() -> void:
+	_contract_items = {}
+	_deps_items = {}
+	var p1 := "user://cc_contracts.json"
+	if FileAccess.file_exists(p1):
+		var f := FileAccess.open(p1, FileAccess.READ)
+		if f:
+			var parsed: Variant = JSON.parse_string(f.get_as_text())
+			f.close()
+			if parsed is Dictionary:
+				_contract_items = parsed
+	var p2 := "user://cc_deps.json"
+	if FileAccess.file_exists(p2):
+		var f2 := FileAccess.open(p2, FileAccess.READ)
+		if f2:
+			var parsed2: Variant = JSON.parse_string(f2.get_as_text())
+			f2.close()
+			if parsed2 is Dictionary:
+				_deps_items = parsed2
+	_validate_all_contracts()
+
+func _save_contracts() -> void:
+	var fw := FileAccess.open("user://cc_contracts.json", FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(_contract_items, "\t") + "\n")
+		fw.close()
+	var fw2 := FileAccess.open("user://cc_deps.json", FileAccess.WRITE)
+	if fw2:
+		fw2.store_string(JSON.stringify(_deps_items, "\t") + "\n")
+		fw2.close()
+	_activity_auto_push()
+
+func _contract_register(addon_name: String) -> void:
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+	var addon_path := root + "/addons/" + addon_name
+	if not DirAccess.dir_exists_absolute(addon_path):
+		push_warning("[CC Tools] Cannot register contract for '%s' — not installed" % addon_name)
+		return
+	var api: Array = Ops.extract_api(addon_path)
+	_contract_items[addon_name] = {
+		"symbols": api,
+		"registered_at": Time.get_date_string_from_system()
+	}
+	_save_contracts()
+	_validate_all_contracts()
+
+func _validate_all_contracts() -> void:
+	var errors: Array = []
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+
+	for addon_name: String in _contract_items:
+		var contract: Dictionary = _contract_items[addon_name]
+		var registered: Array = contract.get("symbols", [])
+		if registered.is_empty():
+			continue
+		var addon_path := root + "/addons/" + addon_name
+		if not DirAccess.dir_exists_absolute(addon_path):
+			continue
+		var current_api: Array = Ops.extract_api(addon_path)
+		var cur_map: Dictionary = {}
+		for sym: Dictionary in current_api:
+			cur_map[sym["kind"] + ":" + sym["name"]] = sym
+		for sym: Dictionary in registered:
+			var kind: String = sym.get("kind", "")
+			var name: String = sym.get("name", "")
+			var key: String = kind + ":" + name
+			if key not in cur_map:
+				errors.append('[%s] "%s" (%s) removed or renamed — dependent addons will break' % [addon_name, name, kind])
+			elif kind == "func":
+				var old_sig: String = sym.get("signature", "")
+				var new_sig: String = (cur_map[key] as Dictionary).get("signature", "")
+				if old_sig != new_sig:
+					errors.append('[%s] "%s" signature changed\n    was: %s\n    now: %s' % [addon_name, name, old_sig, new_sig])
+			elif kind == "export_var":
+				var old_type: String = sym.get("type", "")
+				var new_type: String = (cur_map[key] as Dictionary).get("type", "")
+				if old_type != new_type:
+					errors.append('[%s] "@export var %s" type changed from %s to %s' % [addon_name, name, old_type, new_type])
+
+	for depender: String in _deps_items:
+		var requires: Dictionary = (_deps_items[depender] as Dictionary).get("requires", {})
+		for provider: String in requires:
+			if provider not in _contract_items:
+				errors.append('[%s] Depends on "%s" which has no registered contract' % [depender, provider])
+				continue
+			var sym_names: Array = []
+			for s: Dictionary in (_contract_items[provider] as Dictionary).get("symbols", []):
+				sym_names.append(s.get("name", ""))
+			for sym_name: Variant in (requires[provider] as Array):
+				if sym_name not in sym_names:
+					errors.append('[%s] Requires "%s.%s" which is missing from the contract' % [depender, provider, sym_name])
+
+	_contract_errors = errors
+	for err: String in errors:
+		push_error("[CC Tools] " + err.replace("\n", " "))
+
+	if is_instance_valid(_contracts_status_lbl):
+		if errors.is_empty():
+			_contracts_status_lbl.text = "✅ All contracts valid"
+			_contracts_status_lbl.add_theme_color_override("font_color", Color(0.4, 0.9, 0.4))
+		else:
+			_contracts_status_lbl.text = "⚠️ %d contract violation(s)" % errors.size()
+			_contracts_status_lbl.add_theme_color_override("font_color", Color(1.0, 0.4, 0.3))
+	_refresh_contracts_list()
+
+func _sym_display(sym: Dictionary) -> String:
+	var kind: String = sym.get("kind", "")
+	var name: String = sym.get("name", "")
+	match kind:
+		"func":      return "func " + name + sym.get("signature", "()")
+		"export_var": return "@export var " + name + ": " + sym.get("type", "Variant")
+		"signal":    return "signal " + name + "(" + sym.get("args", "") + ")"
+		_:           return name
+
+func _build_contracts_subtab(tabs: TabContainer) -> void:
+	var root := _vbox("Contracts", tabs)
+
+	var toolbar := HBoxContainer.new()
+	toolbar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_contracts_status_lbl = Label.new()
+	_contracts_status_lbl.text = "Not validated yet"
+	_contracts_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var validate_btn := Button.new()
+	validate_btn.text = "↺ Validate"
+	validate_btn.pressed.connect(_validate_all_contracts)
+	toolbar.add_child(_contracts_status_lbl)
+	toolbar.add_child(validate_btn)
+	root.add_child(toolbar)
+	root.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_contracts_scroll_list = VBoxContainer.new()
+	_contracts_scroll_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_contracts_scroll_list.add_theme_constant_override("separation", 4)
+	scroll.add_child(_contracts_scroll_list)
+	root.add_child(scroll)
+
+func _refresh_contracts_list() -> void:
+	if not is_instance_valid(_contracts_scroll_list):
+		return
+	for child in _contracts_scroll_list.get_children():
+		child.queue_free()
+
+	# ── Error list ──
+	if not _contract_errors.is_empty():
+		var err_hdr := Label.new()
+		err_hdr.text = "Contract Violations"
+		err_hdr.add_theme_font_size_override("font_size", 12)
+		err_hdr.add_theme_color_override("font_color", Color(1.0, 0.4, 0.3))
+		_contracts_scroll_list.add_child(err_hdr)
+		for err: String in _contract_errors:
+			var lbl := Label.new()
+			lbl.text = "• " + err
+			lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			lbl.add_theme_color_override("font_color", Color(1.0, 0.55, 0.45))
+			_contracts_scroll_list.add_child(lbl)
+		_contracts_scroll_list.add_child(HSeparator.new())
+
+	# ── Registered contracts ──
+	var hdr1 := Label.new()
+	hdr1.text = "Registered Contracts"
+	hdr1.add_theme_font_size_override("font_size", 13)
+	_contracts_scroll_list.add_child(hdr1)
+
+	if _contract_items.is_empty():
+		var empty := Label.new()
+		empty.text = "No contracts registered. Register an addon's public API below."
+		empty.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_contracts_scroll_list.add_child(empty)
+	else:
+		for addon_name: String in _contract_items:
+			var contract: Dictionary = _contract_items[addon_name]
+			var symbols: Array = contract.get("symbols", [])
+
+			var card := VBoxContainer.new()
+			card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+			var title_row := HBoxContainer.new()
+			title_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var title_lbl := Label.new()
+			title_lbl.text = addon_name
+			title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var meta_lbl := Label.new()
+			meta_lbl.text = "%d symbols · %s" % [symbols.size(), contract.get("registered_at", "")]
+			meta_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+			meta_lbl.add_theme_font_size_override("font_size", 10)
+			var cap_name: String = addon_name
+			var upd_btn := Button.new()
+			upd_btn.text = "⬆ Update"
+			upd_btn.tooltip_text = "Re-scan addon and update registered symbols"
+			upd_btn.pressed.connect(func(): _contract_register(cap_name))
+			var del_btn := Button.new()
+			del_btn.text = "🗑"
+			del_btn.pressed.connect(func():
+				_contract_items.erase(cap_name)
+				_save_contracts()
+				_validate_all_contracts()
+			)
+			title_row.add_child(title_lbl)
+			title_row.add_child(meta_lbl)
+			title_row.add_child(upd_btn)
+			title_row.add_child(del_btn)
+			card.add_child(title_row)
+
+			for sym: Dictionary in symbols:
+				var sym_lbl := Label.new()
+				sym_lbl.text = "  " + _sym_display(sym)
+				sym_lbl.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+				sym_lbl.add_theme_font_size_override("font_size", 10)
+				card.add_child(sym_lbl)
+
+			_contracts_scroll_list.add_child(card)
+			_contracts_scroll_list.add_child(HSeparator.new())
+
+	# ── Register new ──
+	var hdr_add := Label.new()
+	hdr_add.text = "Register New Contract"
+	hdr_add.add_theme_font_size_override("font_size", 12)
+	_contracts_scroll_list.add_child(hdr_add)
+
+	var add_row := HBoxContainer.new()
+	add_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var addon_opt := OptionButton.new()
+	addon_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var project_root := ProjectSettings.globalize_path("res://").rstrip("/")
+	for a: String in Ops.list_addons(project_root):
+		addon_opt.add_item(a)
+	var reg_btn := Button.new()
+	reg_btn.text = "🔍 Scan & Register"
+	reg_btn.pressed.connect(func():
+		if addon_opt.selected >= 0:
+			_contract_register(addon_opt.get_item_text(addon_opt.selected))
+	)
+	add_row.add_child(addon_opt)
+	add_row.add_child(reg_btn)
+	_contracts_scroll_list.add_child(add_row)
+
+	_contracts_scroll_list.add_child(HSeparator.new())
+
+	# ── Dependencies ──
+	var hdr2 := Label.new()
+	hdr2.text = "Declared Dependencies"
+	hdr2.add_theme_font_size_override("font_size", 13)
+	_contracts_scroll_list.add_child(hdr2)
+
+	var dep_hint := Label.new()
+	dep_hint.text = "Declare which symbols your addon requires from others. Violations are raised even if the dependent addon is not installed."
+	dep_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	dep_hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+	dep_hint.add_theme_font_size_override("font_size", 10)
+	_contracts_scroll_list.add_child(dep_hint)
+
+	if _deps_items.is_empty():
+		var empty2 := Label.new()
+		empty2.text = "No dependencies declared."
+		empty2.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_contracts_scroll_list.add_child(empty2)
+	else:
+		for depender: String in _deps_items:
+			var requires: Dictionary = (_deps_items[depender] as Dictionary).get("requires", {})
+			for provider: String in requires:
+				var syms: Array = requires[provider]
+				var dep_row := HBoxContainer.new()
+				dep_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				var dep_lbl := Label.new()
+				dep_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				var psa := PackedStringArray()
+				for s: Variant in syms:
+					psa.append(str(s))
+				var syms_str: String = ", ".join(psa)
+				dep_lbl.text = depender + " → " + provider + ": " + syms_str
+				dep_lbl.clip_text = true
+				dep_row.add_child(dep_lbl)
+				var cap_d: String = depender
+				var cap_p: String = provider
+				var rm_btn := Button.new()
+				rm_btn.text = "🗑"
+				rm_btn.pressed.connect(func():
+					if cap_d in _deps_items:
+						var r: Dictionary = (_deps_items[cap_d] as Dictionary).get("requires", {})
+						r.erase(cap_p)
+						if r.is_empty():
+							_deps_items.erase(cap_d)
+					_save_contracts()
+					_validate_all_contracts()
+				)
+				dep_row.add_child(rm_btn)
+				_contracts_scroll_list.add_child(dep_row)
+
+	# Add new dep form
+	var dep_form := VBoxContainer.new()
+	dep_form.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dep_form.add_theme_constant_override("separation", 2)
+
+	var dep_row1 := HBoxContainer.new()
+	dep_row1.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var dep_lbl1 := Label.new()
+	dep_lbl1.text = "Addon:"
+	var dep_opt1 := OptionButton.new()
+	dep_opt1.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for a: String in Ops.list_addons(project_root):
+		dep_opt1.add_item(a)
+	var dep_lbl2 := Label.new()
+	dep_lbl2.text = "requires from:"
+	var dep_opt2 := OptionButton.new()
+	dep_opt2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for a: String in _contract_items:
+		dep_opt2.add_item(a)
+	dep_row1.add_child(dep_lbl1)
+	dep_row1.add_child(dep_opt1)
+	dep_row1.add_child(dep_lbl2)
+	dep_row1.add_child(dep_opt2)
+
+	var dep_row2 := HBoxContainer.new()
+	dep_row2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var dep_sym_input := LineEdit.new()
+	dep_sym_input.placeholder_text = "symbol1, symbol2, ..."
+	dep_sym_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var dep_add_btn := Button.new()
+	dep_add_btn.text = "+ Add Dependency"
+	dep_add_btn.pressed.connect(func():
+		var d_idx := dep_opt1.selected
+		var p_idx := dep_opt2.selected
+		var raw_syms: String = dep_sym_input.text.strip_edges()
+		if d_idx < 0 or p_idx < 0 or raw_syms.is_empty():
+			return
+		var depender_name: String = dep_opt1.get_item_text(d_idx)
+		var provider_name: String = dep_opt2.get_item_text(p_idx)
+		var syms_arr: Array[String] = []
+		for s: String in raw_syms.split(","):
+			var cleaned := s.strip_edges()
+			if not cleaned.is_empty():
+				syms_arr.append(cleaned)
+		if syms_arr.is_empty():
+			return
+		if depender_name not in _deps_items:
+			_deps_items[depender_name] = {"requires": {}}
+		((_deps_items[depender_name] as Dictionary)["requires"] as Dictionary)[provider_name] = syms_arr
+		dep_sym_input.text = ""
+		_save_contracts()
+		_validate_all_contracts()
+	)
+	dep_row2.add_child(dep_sym_input)
+	dep_row2.add_child(dep_add_btn)
+
+	dep_form.add_child(dep_row1)
+	dep_form.add_child(dep_row2)
+	_contracts_scroll_list.add_child(dep_form)
 
 # ─── Login overlay ────────────────────────────────────────────────────────────
 

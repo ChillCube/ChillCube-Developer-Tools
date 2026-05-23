@@ -1365,6 +1365,50 @@ static func _make_id(s: String) -> String:
 static func _clean_label(s: String) -> String:
 	return s.replace("Godot_", "").replace("_", " ")
 
+# ─── API CONTRACT ────────────────────────────────────────────────────────────
+
+# Scan an addon's .gd files and return every public symbol:
+# public func (not starting with _), @export var, and signal.
+static func extract_api(addon_path: String) -> Array:
+	var result: Array = []
+	var func_re := RegEx.new()
+	func_re.compile("^(?:static\\s+)?func\\s+(\\w+)\\s*\\(([^)]*)\\)(?:\\s*->\\s*(\\w+))?")
+	var export_re := RegEx.new()
+	export_re.compile("^@export\\s+var\\s+(\\w+)(?:\\s*:\\s*(\\w+))?")
+	var signal_re := RegEx.new()
+	signal_re.compile("^signal\\s+(\\w+)(?:\\s*\\(([^)]*)\\))?")
+	for gf: String in _find(addon_path, "*.gd"):
+		var rel: String = gf.replace(addon_path + "/", "")
+		for line: String in _read(gf).split("\n"):
+			var t: String = line.strip_edges()
+			if t.is_empty() or t.begins_with("#"):
+				continue
+			var fm := func_re.search(t)
+			if fm:
+				var fname: String = fm.get_string(1)
+				if not fname.begins_with("_"):
+					var args: String = fm.get_string(2).strip_edges()
+					var ret: String = fm.get_string(3).strip_edges()
+					if ret.is_empty():
+						ret = "void"
+					result.append({"kind": "func", "name": fname,
+						"signature": "(%s) -> %s" % [args, ret], "file": rel})
+				continue
+			var em := export_re.search(t)
+			if em:
+				var vname: String = em.get_string(1)
+				var vtype: String = em.get_string(2).strip_edges()
+				if vtype.is_empty():
+					vtype = "Variant"
+				result.append({"kind": "export_var", "name": vname, "type": vtype, "file": rel})
+				continue
+			var sm := signal_re.search(t)
+			if sm:
+				var sname: String = sm.get_string(1)
+				var sargs: String = sm.get_string(2).strip_edges()
+				result.append({"kind": "signal", "name": sname, "args": sargs, "file": rel})
+	return result
+
 # ─── AUTH ─────────────────────────────────────────────────────────────────────
 
 const AUTH_SSH := "git@github.com:ChillCube/cc-auth.git"
