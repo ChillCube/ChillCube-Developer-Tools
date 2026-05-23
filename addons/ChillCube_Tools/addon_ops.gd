@@ -1451,6 +1451,37 @@ static func auth_fetch_pending(log: Callable) -> Array:
 			result.append(u.get("username", ""))
 	return result
 
+static func auth_change_username(username: String, new_name: String, log: Callable) -> String:
+	log.call("🔄 Connecting...")
+	var tmp := _auth_clone(log)
+	if tmp.is_empty():
+		return ""
+	var data := _auth_load(tmp)
+	var users: Array = data.get("users", [])
+	for u: Dictionary in users:
+		if (u.get("username", "") as String).to_lower() == new_name.to_lower():
+			log.call("❌ Username already taken.")
+			_rm_rf(tmp)
+			return ""
+	var found := false
+	for u: Dictionary in users:
+		if (u.get("username", "") as String).to_lower() == username.to_lower():
+			u["username"] = new_name
+			found = true
+			break
+	if not found:
+		log.call("❌ User not found.")
+		_rm_rf(tmp)
+		return ""
+	data["users"] = users
+	_auth_save(tmp, data)
+	_git(["add", "accounts.json"], tmp, Callable())
+	_git(["commit", "-m", "auth: rename " + username + " -> " + new_name], tmp, Callable())
+	var ok := _git(["push", "origin", "main"], tmp, Callable()) == OK
+	_rm_rf(tmp)
+	log.call("✅ Username changed!" if ok else "❌ Push failed.")
+	return new_name if ok else ""
+
 static func auth_bootstrap(log: Callable) -> bool:
 	log.call("🌐 Creating ChillCube/cc-auth repo...")
 	_gh(["repo", "create", "ChillCube/cc-auth", "--private",

@@ -3389,6 +3389,46 @@ func _build_account_tab(tabs: TabContainer) -> void:
 		)
 	)
 
+	# Change username
+	root.add_child(HSeparator.new())
+	var cn_heading := Label.new()
+	cn_heading.text = "Change Username"
+	cn_heading.add_theme_font_size_override("font_size", 13)
+	root.add_child(cn_heading)
+
+	var ng := GridContainer.new()
+	ng.columns = 2
+	ng.add_theme_constant_override("h_separation", 8)
+	var cn_lbl := Label.new(); cn_lbl.text = "New name"
+	var cn_field := LineEdit.new(); cn_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ng.add_child(cn_lbl); ng.add_child(cn_field)
+	root.add_child(ng)
+
+	var cn_btn := Button.new()
+	cn_btn.text = "Change Name"
+	root.add_child(cn_btn)
+
+	cn_btn.pressed.connect(func():
+		if _login_thread and _login_thread.is_started():
+			return
+		var username: String = _current_user.get("username", "")
+		if username.is_empty():
+			_account_status_lbl.text = "Not logged in."
+			return
+		var new_name := cn_field.text.strip_edges()
+		if new_name.is_empty():
+			_account_status_lbl.text = "Enter a new username."
+			return
+		cn_btn.disabled = true
+		_account_status_lbl.text = "🔄 Changing..."
+		_login_thread = Thread.new()
+		_login_thread.start(func():
+			var result := Ops.auth_change_username(username, new_name,
+				func(msg): call_deferred("_set_account_status", msg))
+			call_deferred("_on_change_name_done", cn_btn, cn_field, result)
+		)
+	)
+
 	# Pending approvals (shown only for leader after login — refreshed dynamically)
 	root.add_child(HSeparator.new())
 	var ap_heading := Label.new()
@@ -3426,6 +3466,18 @@ func _on_change_pw_done(btn: Button, _ok: bool) -> void:
 	_login_thread = null
 	if is_instance_valid(btn):
 		btn.disabled = false
+
+func _on_change_name_done(btn: Button, field: LineEdit, new_name: String) -> void:
+	if _login_thread:
+		_login_thread.wait_to_finish()
+	_login_thread = null
+	if is_instance_valid(btn):
+		btn.disabled = false
+	if not new_name.is_empty():
+		_current_user["username"] = new_name
+		if is_instance_valid(field):
+			field.text = ""
+		_refresh_account_tab()
 
 func _refresh_account_tab() -> void:
 	# Update info label and show/hide leader section
