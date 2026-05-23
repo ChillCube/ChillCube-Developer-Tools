@@ -107,12 +107,14 @@ var _activity_list: VBoxContainer
 var _activity_status_lbl: Label
 var _activity_thread: Thread = null
 var _activity_push_pending: bool = false
+var _activity_comments_open: Dictionary = {}  # idx -> bool
 
 var _vote_items: Array = []
 var _vote_list: VBoxContainer
 var _vote_status_lbl: Label
 var _vote_create_box: Control
 var _vote_thread: Thread = null
+var _vote_comments_open: Dictionary = {}  # idx -> bool
 
 var _ideas_items: Array = []
 var _ideas_list: VBoxContainer
@@ -2175,7 +2177,8 @@ func _refresh_vote_list() -> void:
 				obtn.pressed.connect(func(): _cast_vote(cap_i, cap_opt))
 				btn_row.add_child(obtn)
 			cvbox.add_child(btn_row)
-		# Footer meta
+		# Footer row: meta + comment toggle
+		var footer := HBoxContainer.new()
 		var meta := Label.new()
 		var cr := vote.get("close_reason", "")
 		var close_note := (" — closed by " + ("majority vote" if cr == "majority" else "deadline")) if is_closed else ""
@@ -2183,7 +2186,76 @@ func _refresh_vote_list() -> void:
 			vote.get("created_at", "").substr(0, 16), close_note]
 		meta.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
 		meta.add_theme_font_size_override("font_size", 11)
-		cvbox.add_child(meta)
+		meta.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		footer.add_child(meta)
+
+		var vote_comments: Array = vote.get("comments", [])
+		var vcmt_btn := Button.new()
+		vcmt_btn.text = ("💬 %d" % vote_comments.size()) if not vote_comments.is_empty() else "💬 Discuss"
+		vcmt_btn.flat = true
+		vcmt_btn.add_theme_font_size_override("font_size", 11)
+		if _vote_comments_open.get(i, false):
+			vcmt_btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+		var cap_vi := i
+		vcmt_btn.pressed.connect(func():
+			_vote_comments_open[cap_vi] = not _vote_comments_open.get(cap_vi, false)
+			_refresh_vote_list()
+		)
+		footer.add_child(vcmt_btn)
+		cvbox.add_child(footer)
+
+		# Comments section
+		if _vote_comments_open.get(i, false):
+			cvbox.add_child(HSeparator.new())
+			for comment: Dictionary in vote_comments:
+				var c_row := HBoxContainer.new()
+				var c_user: String = comment.get("user", "?")
+				var c_text: String = comment.get("text", "")
+				var c_ts: String = comment.get("timestamp", "")
+				var c_lbl := RichTextLabel.new()
+				c_lbl.bbcode_enabled = true
+				c_lbl.fit_content = true
+				c_lbl.scroll_active = false
+				c_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				c_lbl.push_color(Color(0.75, 0.75, 0.75))
+				c_lbl.append_text("[b]@" + c_user + "[/b]  " + c_text)
+				c_lbl.pop()
+				c_row.add_child(c_lbl)
+				var ct_lbl := Label.new()
+				ct_lbl.text = c_ts.substr(11, 5) if c_ts.length() >= 16 else ""
+				ct_lbl.add_theme_font_size_override("font_size", 10)
+				ct_lbl.add_theme_color_override("font_color", Color(0.35, 0.35, 0.35))
+				c_row.add_child(ct_lbl)
+				cvbox.add_child(c_row)
+			var add_row := HBoxContainer.new()
+			var c_input := LineEdit.new()
+			c_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			c_input.placeholder_text = "Share your thoughts…"
+			c_input.add_theme_font_size_override("font_size", 11)
+			add_row.add_child(c_input)
+			var post_btn := Button.new()
+			post_btn.text = "Post"
+			post_btn.add_theme_font_size_override("font_size", 11)
+			var cap_vi2 := i
+			var cap_me := username
+			var post_fn := func():
+				var text := c_input.text.strip_edges()
+				if text.is_empty():
+					return
+				var clist: Array = _vote_items[cap_vi2].get("comments", [])
+				clist.append({
+					"user": cap_me if not cap_me.is_empty() else "?",
+					"text": text,
+					"timestamp": Time.get_datetime_string_from_system()
+				})
+				_vote_items[cap_vi2]["comments"] = clist
+				_save_votes()
+				_refresh_vote_list()
+			post_btn.pressed.connect(post_fn)
+			c_input.text_submitted.connect(func(_t): post_fn.call())
+			add_row.add_child(post_btn)
+			cvbox.add_child(add_row)
+
 		_vote_list.add_child(panel)
 
 func _build_vault_tab(tabs: TabContainer) -> void:
@@ -3759,6 +3831,8 @@ func _activity_on_pushed(pushed: bool) -> void:
 	if _activity_push_pending:
 		_activity_auto_push()
 
+const _REACTION_EMOJIS := ["👍", "❤", "😄", "🔥", "🎉", "👀", "🤔", "👎"]
+
 func _refresh_activity_list() -> void:
 	if not is_instance_valid(_activity_list):
 		return
@@ -3772,8 +3846,11 @@ func _refresh_activity_list() -> void:
 		_activity_list.add_child(empty_lbl)
 		return
 
+	var me: String = _current_user.get("username", "")
 	var last_date := ""
-	for entry: Dictionary in _activity_items:
+
+	for idx in range(_activity_items.size()):
+		var entry: Dictionary = _activity_items[idx]
 		var ts: String = entry.get("timestamp", "")
 		var date := ts.substr(0, 10) if ts.length() >= 10 else ts
 
@@ -3786,6 +3863,11 @@ func _refresh_activity_list() -> void:
 			_activity_list.add_child(date_lbl)
 			_activity_list.add_child(HSeparator.new())
 
+		var entry_box := VBoxContainer.new()
+		entry_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		entry_box.add_theme_constant_override("separation", 2)
+
+		# ── Main row ──────────────────────────────────────────────────────────
 		var row := HBoxContainer.new()
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
@@ -3817,8 +3899,8 @@ func _refresh_activity_list() -> void:
 			var undo_btn := Button.new()
 			undo_btn.text = "↩"
 			undo_btn.tooltip_text = "Restore to todo list"
-			var cap_idx := _activity_items.find(entry)
 			var cap_text: String = entry.get("text", "")
+			var cap_idx := idx
 			undo_btn.pressed.connect(func():
 				_todo_items.insert(0, {"text": cap_text, "done": false})
 				_save_todo()
@@ -3829,7 +3911,175 @@ func _refresh_activity_list() -> void:
 			)
 			row.add_child(undo_btn)
 
-		_activity_list.add_child(row)
+		# Comments toggle button
+		var comments: Array = entry.get("comments", [])
+		var comment_count := comments.size()
+		var comment_btn := Button.new()
+		comment_btn.text = ("💬 %d" % comment_count) if comment_count > 0 else "💬"
+		comment_btn.flat = true
+		comment_btn.tooltip_text = "Toggle comments"
+		comment_btn.add_theme_font_size_override("font_size", 11)
+		if _activity_comments_open.get(idx, false):
+			comment_btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+		var cap_idx2 := idx
+		comment_btn.pressed.connect(func():
+			_activity_comments_open[cap_idx2] = not _activity_comments_open.get(cap_idx2, false)
+			_refresh_activity_list()
+		)
+		row.add_child(comment_btn)
+
+		# Emoji reaction picker button
+		var react_btn := Button.new()
+		react_btn.text = "+"
+		react_btn.flat = true
+		react_btn.tooltip_text = "Add reaction"
+		react_btn.add_theme_font_size_override("font_size", 11)
+		var cap_idx3 := idx
+		react_btn.pressed.connect(func():
+			_activity_show_reaction_picker(cap_idx3)
+		)
+		row.add_child(react_btn)
+
+		entry_box.add_child(row)
+
+		# ── Reactions row ─────────────────────────────────────────────────────
+		var reactions: Dictionary = entry.get("reactions", {})
+		if not reactions.is_empty():
+			var react_row := HBoxContainer.new()
+			react_row.add_theme_constant_override("separation", 4)
+			for emoji: String in reactions:
+				var users: Array = reactions[emoji]
+				if users.is_empty():
+					continue
+				var rb := Button.new()
+				rb.text = emoji + " " + str(users.size())
+				rb.flat = true
+				rb.add_theme_font_size_override("font_size", 12)
+				var tip := ", ".join(users)
+				rb.tooltip_text = tip
+				if me in users:
+					rb.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+				var cap_emoji := emoji
+				var cap_idx4 := idx
+				rb.pressed.connect(func():
+					_activity_toggle_reaction(cap_idx4, cap_emoji)
+				)
+				react_row.add_child(rb)
+			if react_row.get_child_count() > 0:
+				var react_indent := HBoxContainer.new()
+				var spacer := Control.new()
+				spacer.custom_minimum_size = Vector2(26, 0)
+				react_indent.add_child(spacer)
+				react_indent.add_child(react_row)
+				entry_box.add_child(react_indent)
+
+		# ── Comments section ──────────────────────────────────────────────────
+		if _activity_comments_open.get(idx, false):
+			var comments_box := VBoxContainer.new()
+			comments_box.add_theme_constant_override("separation", 2)
+			var indent_box := HBoxContainer.new()
+			var spacer2 := Control.new()
+			spacer2.custom_minimum_size = Vector2(26, 0)
+			indent_box.add_child(spacer2)
+			indent_box.add_child(comments_box)
+			entry_box.add_child(indent_box)
+
+			for comment: Dictionary in comments:
+				var c_row := HBoxContainer.new()
+				var c_user: String = comment.get("user", "?")
+				var c_text: String = comment.get("text", "")
+				var c_ts: String = comment.get("timestamp", "")
+				var c_lbl := RichTextLabel.new()
+				c_lbl.bbcode_enabled = true
+				c_lbl.fit_content = true
+				c_lbl.scroll_active = false
+				c_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				c_lbl.push_color(Color(0.6, 0.6, 0.6))
+				c_lbl.append_text("[b]@" + c_user + "[/b]  " + c_text)
+				c_lbl.pop()
+				c_row.add_child(c_lbl)
+				var c_time := Label.new()
+				c_time.text = c_ts.substr(11, 5) if c_ts.length() >= 16 else ""
+				c_time.add_theme_font_size_override("font_size", 10)
+				c_time.add_theme_color_override("font_color", Color(0.35, 0.35, 0.35))
+				c_row.add_child(c_time)
+				comments_box.add_child(c_row)
+
+			# Add-comment input
+			var add_row := HBoxContainer.new()
+			var c_input := LineEdit.new()
+			c_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			c_input.placeholder_text = "Add a comment…"
+			c_input.add_theme_font_size_override("font_size", 11)
+			add_row.add_child(c_input)
+			var post_btn := Button.new()
+			post_btn.text = "Post"
+			post_btn.add_theme_font_size_override("font_size", 11)
+			var cap_idx5 := idx
+			var post_fn := func():
+				var text := c_input.text.strip_edges()
+				if text.is_empty():
+					return
+				var comment_list: Array = _activity_items[cap_idx5].get("comments", [])
+				comment_list.append({
+					"user": me if not me.is_empty() else "?",
+					"text": text,
+					"timestamp": Time.get_datetime_string_from_system()
+				})
+				_activity_items[cap_idx5]["comments"] = comment_list
+				_save_activity()
+				_activity_auto_push()
+				_refresh_activity_list()
+			post_btn.pressed.connect(post_fn)
+			c_input.text_submitted.connect(func(_t): post_fn.call())
+			add_row.add_child(post_btn)
+			comments_box.add_child(add_row)
+
+		_activity_list.add_child(entry_box)
+
+func _activity_toggle_reaction(idx: int, emoji: String) -> void:
+	if idx < 0 or idx >= _activity_items.size():
+		return
+	var me: String = _current_user.get("username", "")
+	if me.is_empty():
+		return
+	var reactions: Dictionary = _activity_items[idx].get("reactions", {})
+	var users: Array = reactions.get(emoji, [])
+	if me in users:
+		users.erase(me)
+	else:
+		users.append(me)
+	if users.is_empty():
+		reactions.erase(emoji)
+	else:
+		reactions[emoji] = users
+	_activity_items[idx]["reactions"] = reactions
+	_save_activity()
+	_activity_auto_push()
+	_refresh_activity_list()
+
+func _activity_show_reaction_picker(idx: int) -> void:
+	var dialog := AcceptDialog.new()
+	dialog.title = "React"
+	dialog.size = Vector2i(280, 80)
+	var vbox := VBoxContainer.new()
+	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	dialog.add_child(vbox)
+	var grid := HBoxContainer.new()
+	grid.add_theme_constant_override("separation", 4)
+	for emoji: String in _REACTION_EMOJIS:
+		var btn := Button.new()
+		btn.text = emoji
+		btn.custom_minimum_size = Vector2(32, 32)
+		var cap_emoji := emoji
+		btn.pressed.connect(func():
+			_activity_toggle_reaction(idx, cap_emoji)
+			dialog.hide()
+		)
+		grid.add_child(btn)
+	vbox.add_child(grid)
+	add_child(dialog)
+	dialog.popup_centered()
 
 func _activity_icon(type: String) -> String:
 	match type:
