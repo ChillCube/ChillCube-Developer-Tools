@@ -2209,6 +2209,7 @@ func _refresh_vote_list() -> void:
 			cvbox.add_child(HSeparator.new())
 			for comment: Dictionary in vote_comments:
 				var c_row := HBoxContainer.new()
+				c_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 				var c_user: String = comment.get("user", "?")
 				var c_text: String = comment.get("text", "")
 				var c_ts: String = comment.get("timestamp", "")
@@ -2228,6 +2229,7 @@ func _refresh_vote_list() -> void:
 				c_row.add_child(ct_lbl)
 				cvbox.add_child(c_row)
 			var add_row := HBoxContainer.new()
+			add_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			var c_input := LineEdit.new()
 			c_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			c_input.placeholder_text = "Share your thoughts…"
@@ -3976,8 +3978,10 @@ func _refresh_activity_list() -> void:
 		# ── Comments section ──────────────────────────────────────────────────
 		if _activity_comments_open.get(idx, false):
 			var comments_box := VBoxContainer.new()
+			comments_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			comments_box.add_theme_constant_override("separation", 2)
 			var indent_box := HBoxContainer.new()
+			indent_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			var spacer2 := Control.new()
 			spacer2.custom_minimum_size = Vector2(26, 0)
 			indent_box.add_child(spacer2)
@@ -3986,6 +3990,7 @@ func _refresh_activity_list() -> void:
 
 			for comment: Dictionary in comments:
 				var c_row := HBoxContainer.new()
+				c_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 				var c_user: String = comment.get("user", "?")
 				var c_text: String = comment.get("text", "")
 				var c_ts: String = comment.get("timestamp", "")
@@ -4007,6 +4012,7 @@ func _refresh_activity_list() -> void:
 
 			# Add-comment input
 			var add_row := HBoxContainer.new()
+			add_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			var c_input := LineEdit.new()
 			c_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			c_input.placeholder_text = "Add a comment…"
