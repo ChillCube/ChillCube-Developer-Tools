@@ -2453,6 +2453,14 @@ func _refresh_addons() -> void:
 			)
 		row.add_child(sync_btn)
 
+		var edit_btn := Button.new()
+		edit_btn.text = "✏️ Edit"
+		edit_btn.tooltip_text = "Open script editor for " + folder
+		var captured_edit_folder := folder
+		var captured_addon_name: String = cfg.get("name", folder)
+		edit_btn.pressed.connect(func(): _open_script_editor(captured_edit_folder, captured_addon_name))
+		row.add_child(edit_btn)
+
 		var rm_btn := Button.new()
 		rm_btn.text = "🗑️"
 		if dependers.is_empty():
@@ -2716,3 +2724,86 @@ func _install_from_registry(url: String, btn: Button) -> void:
 		call_deferred("_build_installed_url_map")
 		call_deferred("_fetch_registry")
 	)
+
+# ─── Script editor ────────────────────────────────────────────────────────────
+
+func _open_script_editor(folder: String, addon_name: String) -> void:
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+	var addon_path := root + "/addons/" + folder
+	var scripts := Ops._find(addon_path, "*.gd")
+	scripts.sort()
+
+	if scripts.is_empty():
+		_append_log(_installed_log, "ℹ️  No scripts found in " + addon_name)
+		return
+
+	var win := Window.new()
+	win.title = "Edit Scripts — " + addon_name
+	win.wrap_controls = true
+	win.close_requested.connect(func(): win.queue_free())
+
+	var vbox := VBoxContainer.new()
+	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vbox.add_theme_constant_override("separation", 4)
+	win.add_child(vbox)
+
+	var toolbar := HBoxContainer.new()
+	toolbar.add_theme_constant_override("separation", 6)
+	var save_btn := Button.new()
+	save_btn.text = "💾 Save All"
+	var status_lbl := Label.new()
+	status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	toolbar.add_child(save_btn)
+	toolbar.add_child(status_lbl)
+	vbox.add_child(toolbar)
+	vbox.add_child(HSeparator.new())
+
+	var tabs := TabContainer.new()
+	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_child(tabs)
+
+	var editors: Dictionary = {}
+
+	for script_path: String in scripts:
+		var filename := script_path.get_file()
+		var content := ""
+		var f := FileAccess.open(script_path, FileAccess.READ)
+		if f:
+			content = f.get_as_text()
+			f.close()
+
+		var editor := CodeEdit.new()
+		editor.name = filename
+		editor.text = content
+		editor.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		editor.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		editor.gutters_draw_line_numbers = true
+		editor.gutters_draw_fold_gutter = true
+		editor.auto_brace_completion_enabled = true
+		editor.indent_automatic = true
+		editor.indent_use_spaces = false
+		editor.minimap_draw = false
+
+		var highlighter := GDScriptSyntaxHighlighter.new()
+		editor.syntax_highlighter = highlighter
+
+		tabs.add_child(editor)
+		editors[script_path] = editor
+
+	save_btn.pressed.connect(func():
+		var saved := 0
+		for path: String in editors:
+			var ed: CodeEdit = editors[path]
+			var fw := FileAccess.open(path, FileAccess.WRITE)
+			if fw:
+				fw.store_string(ed.text)
+				fw.close()
+				saved += 1
+		status_lbl.text = "✅ Saved %d file(s)" % saved
+		EditorInterface.get_resource_filesystem().scan()
+		get_tree().create_timer(2.5).timeout.connect(func(): status_lbl.text = "")
+	)
+
+	add_child(win)
+	win.popup_centered(Vector2i(960, 680))
