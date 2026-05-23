@@ -1047,9 +1047,16 @@ func _ws_run_check(editor: CodeEdit, addon_path: String, err_icon: Texture2D) ->
 
 	var errors := _ws_check_dep_classes(editor.text, addon_path)
 
-	# Binary syntax check via GDScript compiler
+	# Binary syntax check — strip class_name declarations first to avoid
+	# "hides a global script class" errors from re-registering already-loaded classes
+	var stripped: PackedStringArray = []
+	for line: String in editor.text.split("\n"):
+		if line.strip_edges().begins_with("class_name "):
+			stripped.append("")
+		else:
+			stripped.append(line)
 	var gs := GDScript.new()
-	gs.source_code = editor.text
+	gs.source_code = "\n".join(stripped)
 	var rc := gs.reload()
 	var syntax_ok := rc == OK
 
@@ -1256,7 +1263,7 @@ func _load_planned() -> void:
 		return
 	var f := FileAccess.open(path, FileAccess.READ)
 	if f:
-		var parsed := JSON.parse_string(f.get_as_text())
+		var parsed: Variant = JSON.parse_string(f.get_as_text())
 		f.close()
 		if parsed is Array:
 			_planned_addons = parsed
@@ -1759,7 +1766,7 @@ func _ideas_avg_score(idea: Dictionary) -> float:
 	return total / ratings.size()
 
 func _ideas_user_rating(idea: Dictionary) -> int:
-	var user := _current_user.get("username", "")
+	var user: String = _current_user.get("username", "")
 	if user.is_empty():
 		return 0
 	for r: Dictionary in idea.get("ratings", []):
@@ -1822,7 +1829,7 @@ func _refresh_ideas_list() -> void:
 		top_row.add_child(del_btn)
 		card_vbox.add_child(top_row)
 
-		var desc := idea.get("description", "")
+		var desc: String = idea.get("description", "")
 		if not desc.is_empty():
 			var desc_lbl := Label.new()
 			desc_lbl.text = desc
@@ -1856,7 +1863,7 @@ func _refresh_ideas_list() -> void:
 			star_btn.pressed.connect(func():
 				if cap_idea_idx < 0 or cap_idea_idx >= _ideas_items.size():
 					return
-				var user := _current_user.get("username", "")
+				var user: String = _current_user.get("username", "")
 				if user.is_empty():
 					return
 				var ratings: Array = _ideas_items[cap_idea_idx].get("ratings", [])
@@ -1931,7 +1938,7 @@ func _refresh_ideas_list() -> void:
 			post_btn.text = "Post"
 			post_btn.add_theme_font_size_override("font_size", 11)
 			var cap_post_idx := orig_idx
-			var me := _current_user.get("username", "?")
+			var me: String = _current_user.get("username", "?")
 			var post_fn := func():
 				var text := c_input.text.strip_edges()
 				if text.is_empty() or cap_post_idx < 0 or cap_post_idx >= _ideas_items.size():
@@ -1983,7 +1990,7 @@ func _ideas_prompt_new() -> void:
 		var title := title_edit.text.strip_edges()
 		if title.is_empty():
 			return
-		var user := _current_user.get("username", "?")
+		var user: String = _current_user.get("username", "?")
 		_ideas_items.append({
 			"title": title,
 			"description": desc_edit.text.strip_edges(),
@@ -2902,7 +2909,7 @@ func _refresh_vote_list() -> void:
 		# Footer row: meta + comment toggle
 		var footer := HBoxContainer.new()
 		var meta := Label.new()
-		var cr := vote.get("close_reason", "")
+		var cr: String = vote.get("close_reason", "")
 		var close_note := (" — closed by " + ("majority vote" if cr == "majority" else "deadline")) if is_closed else ""
 		meta.text = "by %s  %s%s" % [vote.get("created_by", "?"),
 			vote.get("created_at", "").substr(0, 16), close_note]
@@ -3046,7 +3053,7 @@ func _build_schedule_tab(tabs: TabContainer) -> void:
 		if title.is_empty() or date.is_empty():
 			_schedule_status_lbl.text = "⚠ Title and date are required."
 			return
-		var user := _current_user.get("username", "?")
+		var user: String = _current_user.get("username", "?")
 		_schedule_items.append({
 			"title": title,
 			"date": date,
@@ -3575,7 +3582,7 @@ func _forum_prompt_new_thread() -> void:
 		var body := body_edit.text.strip_edges()
 		if title.is_empty():
 			return
-		var user := _current_user.get("username", "?")
+		var user: String = _current_user.get("username", "?")
 		_forum_items.insert(0, {
 			"title": title,
 			"body": body,
