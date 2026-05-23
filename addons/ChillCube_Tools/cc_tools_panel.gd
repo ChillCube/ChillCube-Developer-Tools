@@ -3026,6 +3026,22 @@ func _refresh_activity_list() -> void:
 		time_lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
 		row.add_child(time_lbl)
 
+		if type == "task_completed":
+			var undo_btn := Button.new()
+			undo_btn.text = "↩"
+			undo_btn.tooltip_text = "Restore to todo list"
+			var cap_idx := _activity_items.find(entry)
+			var cap_text: String = entry.get("text", "")
+			undo_btn.pressed.connect(func():
+				_todo_items.insert(0, {"text": cap_text, "done": false})
+				_save_todo()
+				_activity_items.remove_at(cap_idx)
+				_save_activity()
+				_refresh_todo()
+				_refresh_activity_list()
+			)
+			row.add_child(undo_btn)
+
 		_activity_list.add_child(row)
 
 func _activity_icon(type: String) -> String:
