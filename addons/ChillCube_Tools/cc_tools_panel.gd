@@ -2487,7 +2487,7 @@ func _refresh_schedule_list() -> void:
 			rsvp_lbl.add_theme_font_size_override("font_size", 11)
 			rsvp_row.add_child(rsvp_lbl)
 			for opt_key: String in ["yes", "no", "maybe"]:
-				var opt_text := {"yes": "✅ Can join", "no": "❌ Can't join", "maybe": "🤔 Maybe"}[opt_key]
+				var opt_text: String = {"yes": "✅ Can join", "no": "❌ Can't join", "maybe": "🤔 Maybe"}[opt_key]
 				var rbtn := Button.new()
 				rbtn.text = opt_text
 				rbtn.add_theme_font_size_override("font_size", 11)
