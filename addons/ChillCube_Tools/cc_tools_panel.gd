@@ -1317,6 +1317,29 @@ func _todo_all_tags() -> Array[String]:
 	tags.sort()
 	return tags
 
+func _todo_tag_color(tag: String) -> Color:
+	var h: float = 0.0
+	for ch in tag.to_lower():
+		h = fmod(h * 31.0 + float(ch.unicode_at(0)), 360.0)
+	return Color.from_hsv(h / 360.0, 0.70, 0.95)
+
+func _todo_bbcode(text: String, done: bool = false) -> String:
+	var out := ""
+	for word: String in text.split(" "):
+		if not out.is_empty():
+			out += " "
+		var stripped := word.strip_edges()
+		if stripped.begins_with("#") and stripped.length() > 1:
+			var tag := stripped.substr(1).rstrip(".,!?;:")
+			if not tag.is_empty():
+				var col := _todo_tag_color(tag)
+				if done:
+					col = col.darkened(0.45)
+				out += "[color=#%s]%s[/color]" % [col.to_html(false), word]
+				continue
+		out += word
+	return out
+
 func _refresh_todo() -> void:
 	for child in _todo_list.get_children():
 		child.queue_free()
@@ -1340,8 +1363,8 @@ func _refresh_todo() -> void:
 			var tag_btn := Button.new()
 			tag_btn.text = "#" + tag
 			tag_btn.flat = _todo_active_tag != tag
-			if _todo_active_tag == tag:
-				tag_btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+			var tc := _todo_tag_color(tag)
+			tag_btn.add_theme_color_override("font_color", tc)
 			var cap_tag := tag
 			tag_btn.pressed.connect(func():
 				_todo_active_tag = cap_tag
@@ -1403,12 +1426,15 @@ func _refresh_todo() -> void:
 			)
 			row.add_child(confirm_btn)
 		else:
-			var lbl := Label.new()
-			lbl.text = item.get("text", "")
+			var lbl := RichTextLabel.new()
+			lbl.bbcode_enabled = true
+			lbl.fit_content = true
 			lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			if item.get("done", false):
-				lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
+			lbl.scroll_active = false
+			var base_color := Color(0.4, 0.4, 0.4) if item.get("done", false) else Color(1, 1, 1)
+			lbl.push_color(base_color)
+			lbl.append_text(_todo_bbcode(item.get("text", ""), item.get("done", false)))
+			lbl.pop()
 			row.add_child(lbl)
 			var edit_btn := Button.new()
 			edit_btn.text = "✏"
