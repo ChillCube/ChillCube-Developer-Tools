@@ -1362,7 +1362,7 @@ func _refresh_todo() -> void:
 		_todo_list.add_child(lbl)
 		return
 
-	var cap_filtered := filtered.duplicate()
+	var cap_filtered: Array[int] = filtered.duplicate()
 
 	for fi in range(filtered.size()):
 		var i := filtered[fi]
@@ -1425,7 +1425,7 @@ func _refresh_todo() -> void:
 		up_btn.pressed.connect(func():
 			var a := cap_filtered[cap_fi]
 			var b := cap_filtered[cap_fi - 1]
-			var tmp := _todo_items[a]
+			var tmp: Dictionary = _todo_items[a]
 			_todo_items[a] = _todo_items[b]
 			_todo_items[b] = tmp
 			_save_todo()
@@ -1443,7 +1443,7 @@ func _refresh_todo() -> void:
 		down_btn.pressed.connect(func():
 			var a := cap_filtered[cap_fi]
 			var b := cap_filtered[cap_fi + 1]
-			var tmp := _todo_items[a]
+			var tmp: Dictionary = _todo_items[a]
 			_todo_items[a] = _todo_items[b]
 			_todo_items[b] = tmp
 			_save_todo()
@@ -1754,7 +1754,7 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	_vault_move_dialog = AcceptDialog.new()
 	_vault_move_dialog.title = "Move / Rename File"
 	_vault_move_dialog.size = Vector2i(420, 120)
-	var move_vbox := _vault_move_dialog.get_vbox()
+	var move_vbox: VBoxContainer = _vault_move_dialog.get_vbox()
 	var move_hint := Label.new()
 	move_hint.text = "Destination path (e.g. images/photo.png):"
 	move_vbox.add_child(move_hint)
@@ -1769,7 +1769,7 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	_vault_newdir_dialog = AcceptDialog.new()
 	_vault_newdir_dialog.title = "New Folder"
 	_vault_newdir_dialog.size = Vector2i(360, 110)
-	var dir_vbox := _vault_newdir_dialog.get_vbox()
+	var dir_vbox: VBoxContainer = _vault_newdir_dialog.get_vbox()
 	var dir_hint := Label.new()
 	dir_hint.text = "Folder path (e.g. images/subfolder):"
 	dir_vbox.add_child(dir_hint)
