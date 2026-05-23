@@ -38,6 +38,8 @@ var _plan_status_lbl: Label
 var _plan_thread: Thread = null
 
 var _bug_list: VBoxContainer
+var _bug_items: Array = []
+var _bug_editing_idx: int = -1
 
 var _todo_list: VBoxContainer
 var _todo_input: LineEdit
@@ -45,6 +47,9 @@ var _todo_push_btn: Button
 var _todo_status_lbl: Label
 var _todo_items: Array = []
 var _todo_thread: Thread = null
+var _todo_editing_idx: int = -1
+var _todo_active_tag: String = ""
+var _todo_tag_bar: HBoxContainer
 
 var _term_output: TextEdit
 var _term_input: LineEdit
@@ -65,10 +70,29 @@ var _vault_remote_sel_lbl: Label
 var _vault_upload_dest: LineEdit
 var _vault_download_dest: LineEdit
 var _vault_status_lbl: Label
+var _vault_refresh_btn: Button
 var _vault_log: TextEdit
 var _vault_thread: Thread = null
 var _vault_cache: String = ""
 var _vault_file_dialog: EditorFileDialog
+var _vault_files: Array[String] = []
+var _vault_preview_panel: VBoxContainer
+var _vault_preview_name_lbl: Label
+var _vault_img_rect: TextureRect
+var _vault_audio_container: VBoxContainer
+var _vault_audio_player: AudioStreamPlayer
+var _vault_audio_play_btn: Button
+var _vault_text_preview: TextEdit
+var _vault_video_container: VBoxContainer
+var _vault_video_player: VideoStreamPlayer
+var _vault_video_play_btn: Button
+var _vault_preview_unsupported: Label
+var _vault_preview_loading_lbl: Label
+var _vault_preview_thread: Thread = null
+var _vault_move_dialog: AcceptDialog
+var _vault_move_dest_input: LineEdit
+var _vault_newdir_dialog: AcceptDialog
+var _vault_newdir_input: LineEdit
 
 var _http: HTTPRequest
 var _registry_list: VBoxContainer
@@ -111,6 +135,8 @@ func _exit_tree() -> void:
 		_plan_thread.wait_to_finish()
 	if _vault_thread and _vault_thread.is_started():
 		_vault_thread.wait_to_finish()
+	if _vault_preview_thread and _vault_preview_thread.is_started():
+		_vault_preview_thread.wait_to_finish()
 
 # ─── Tab builders ─────────────────────────────────────────────────────────────
 
@@ -583,15 +609,17 @@ func _plan_push() -> void:
 	_plan_thread.start(func():
 		OS.execute("git", PackedStringArray(["-C", root, "add", "PLANNED_ADDONS.json"]), [], true)
 		OS.execute("git", PackedStringArray(["-C", root, "commit", "-m", "plan: update planned addons"]), [], true)
-		OS.execute("git", PackedStringArray(["-C", root, "push", "origin", "main"]), [], true)
-		call_deferred("_plan_on_pushed")
+		var push_out := []
+		var push_code := OS.execute("git", PackedStringArray(["-C", root, "push", "origin", "main"]), push_out, true)
+		var msg := "✅ Pushed!" if push_code == OK else "❌ Push failed (no network?)"
+		call_deferred("_plan_on_pushed", msg)
 	)
 
-func _plan_on_pushed() -> void:
+func _plan_on_pushed(msg: String = "✅ Pushed!") -> void:
 	if _plan_thread and _plan_thread.is_started():
 		_plan_thread.wait_to_finish()
 	_plan_thread = null
-	_plan_status_lbl.text = "Pushed!"
+	_plan_status_lbl.text = msg
 	get_tree().create_timer(2.5).timeout.connect(func():
 		if is_instance_valid(_plan_status_lbl): _plan_status_lbl.text = ""
 	)
@@ -1053,6 +1081,10 @@ func _build_todo_subtab(tabs: TabContainer) -> void:
 	root.add_child(toolbar)
 	root.add_child(HSeparator.new())
 
+	_todo_tag_bar = HBoxContainer.new()
+	_todo_tag_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.add_child(_todo_tag_bar)
+
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1072,16 +1104,17 @@ func _refresh_bugs() -> void:
 
 	var project_root := ProjectSettings.globalize_path("res://").rstrip("/")
 	var plugin_dir := ProjectSettings.globalize_path(get_script().resource_path.get_base_dir())
-	var bugs := _scan_bugs(project_root, plugin_dir)
+	_bug_items = _scan_bugs(project_root, plugin_dir)
 
-	if bugs.is_empty():
+	if _bug_items.is_empty():
 		var lbl := Label.new()
 		lbl.text = "No bugs found."
 		lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 		_bug_list.add_child(lbl)
 		return
 
-	for bug: Dictionary in bugs:
+	for i in range(_bug_items.size()):
+		var bug: Dictionary = _bug_items[i]
 		var row := HBoxContainer.new()
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
@@ -1091,25 +1124,54 @@ func _refresh_bugs() -> void:
 		var info := VBoxContainer.new()
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
-		var desc_lbl := Label.new()
-		desc_lbl.text = bug.get("desc", "")
-		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		info.add_child(desc_lbl)
-
-		var loc_lbl := Label.new()
-		var rel_path: String = (bug.get("path", "") as String).replace(project_root + "/", "")
-		loc_lbl.text = rel_path + ":" + str(int(bug.get("line", 0)) + 1)
-		loc_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
-		loc_lbl.clip_text = true
-		info.add_child(loc_lbl)
-
-		row.add_child(info)
-
-		var cap := bug
+		var cap_i := i
+		var cap_bug := bug
 		check.toggled.connect(func(pressed: bool):
 			if pressed:
-				_resolve_bug(cap)
+				_resolve_bug(cap_bug)
 		)
+
+		var rel_path: String = (bug.get("path", "") as String).replace(project_root + "/", "")
+
+		if _bug_editing_idx == i:
+			var edit := LineEdit.new()
+			edit.text = bug.get("desc", "")
+			edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			info.add_child(edit)
+			var loc_lbl := Label.new()
+			loc_lbl.text = rel_path + ":" + str(int(bug.get("line", 0)) + 1)
+			loc_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+			loc_lbl.clip_text = true
+			info.add_child(loc_lbl)
+			row.add_child(info)
+			var confirm_btn := Button.new()
+			confirm_btn.text = "✓"
+			var cap_edit := edit
+			confirm_btn.pressed.connect(func():
+				_bug_save_edit(cap_i, cap_edit.text.strip_edges())
+			)
+			edit.text_submitted.connect(func(_t):
+				_bug_save_edit(cap_i, cap_edit.text.strip_edges())
+			)
+			row.add_child(confirm_btn)
+		else:
+			var desc_lbl := Label.new()
+			desc_lbl.text = bug.get("desc", "")
+			desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			info.add_child(desc_lbl)
+			var loc_lbl := Label.new()
+			loc_lbl.text = rel_path + ":" + str(int(bug.get("line", 0)) + 1)
+			loc_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+			loc_lbl.clip_text = true
+			info.add_child(loc_lbl)
+			row.add_child(info)
+			var edit_btn := Button.new()
+			edit_btn.text = "✏"
+			edit_btn.pressed.connect(func():
+				_bug_editing_idx = cap_i
+				_refresh_bugs()
+			)
+			row.add_child(edit_btn)
 
 		_bug_list.add_child(row)
 		_bug_list.add_child(HSeparator.new())
@@ -1176,6 +1238,35 @@ func _resolve_bug(bug: Dictionary) -> void:
 	EditorInterface.get_resource_filesystem().scan()
 	call_deferred("_refresh_bugs")
 
+func _bug_save_edit(idx: int, new_desc: String) -> void:
+	if idx < 0 or idx >= _bug_items.size():
+		return
+	var bug: Dictionary = _bug_items[idx]
+	var path: String = bug.get("path", "")
+	var line_num: int = bug.get("line", -1)
+	if path.is_empty() or line_num < 0:
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if not f:
+		return
+	var lines := f.get_as_text().split("\n")
+	f.close()
+	if line_num >= lines.size():
+		return
+	var current := lines[line_num]
+	var tag_idx := current.to_lower().find("#bug ")
+	if tag_idx == -1:
+		return
+	lines[line_num] = current.substr(0, tag_idx) + "#bug " + new_desc
+	var fw := FileAccess.open(path, FileAccess.WRITE)
+	if not fw:
+		return
+	fw.store_string("\n".join(PackedStringArray(lines)))
+	fw.close()
+	_bug_editing_idx = -1
+	EditorInterface.get_resource_filesystem().scan()
+	call_deferred("_refresh_bugs")
+
 # ─── To-Do logic ─────────────────────────────────────────────────────────────
 
 func _todo_file() -> String:
@@ -1207,18 +1298,74 @@ func _save_todo() -> void:
 		fw.store_string("\n".join(lines) + "\n")
 		fw.close()
 
+func _todo_extract_tags(text: String) -> Array[String]:
+	var tags: Array[String] = []
+	for word: String in text.split(" "):
+		var w := word.strip_edges()
+		if w.begins_with("#") and w.length() > 1:
+			var tag := w.substr(1).rstrip(".,!?;:")
+			if not tag.is_empty() and tag not in tags:
+				tags.append(tag)
+	return tags
+
+func _todo_all_tags() -> Array[String]:
+	var tags: Array[String] = []
+	for item: Dictionary in _todo_items:
+		for tag: String in _todo_extract_tags(item.get("text", "")):
+			if tag not in tags:
+				tags.append(tag)
+	tags.sort()
+	return tags
+
 func _refresh_todo() -> void:
 	for child in _todo_list.get_children():
 		child.queue_free()
 
-	if _todo_items.is_empty():
+	# Rebuild tag filter bar
+	for child in _todo_tag_bar.get_children():
+		child.queue_free()
+	var all_tags := _todo_all_tags()
+	if not all_tags.is_empty():
+		var all_btn := Button.new()
+		all_btn.text = "All"
+		all_btn.flat = not _todo_active_tag.is_empty()
+		if _todo_active_tag.is_empty():
+			all_btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+		all_btn.pressed.connect(func():
+			_todo_active_tag = ""
+			_refresh_todo()
+		)
+		_todo_tag_bar.add_child(all_btn)
+		for tag: String in all_tags:
+			var tag_btn := Button.new()
+			tag_btn.text = "#" + tag
+			tag_btn.flat = _todo_active_tag != tag
+			if _todo_active_tag == tag:
+				tag_btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+			var cap_tag := tag
+			tag_btn.pressed.connect(func():
+				_todo_active_tag = cap_tag
+				_refresh_todo()
+			)
+			_todo_tag_bar.add_child(tag_btn)
+
+	# Build filtered index list
+	var filtered: Array[int] = []
+	for i in range(_todo_items.size()):
+		if _todo_active_tag.is_empty() or _todo_active_tag in _todo_extract_tags(_todo_items[i].get("text", "")):
+			filtered.append(i)
+
+	if filtered.is_empty():
 		var lbl := Label.new()
-		lbl.text = "No items yet."
+		lbl.text = "No items" + (" tagged #" + _todo_active_tag if not _todo_active_tag.is_empty() else "") + "."
 		lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 		_todo_list.add_child(lbl)
 		return
 
-	for i in range(_todo_items.size()):
+	var cap_filtered := filtered.duplicate()
+
+	for fi in range(filtered.size()):
+		var i := filtered[fi]
 		var item: Dictionary = _todo_items[i]
 		var row := HBoxContainer.new()
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1233,20 +1380,86 @@ func _refresh_todo() -> void:
 		)
 		row.add_child(check)
 
-		var lbl := Label.new()
-		lbl.text = item.get("text", "")
-		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		if item.get("done", false):
-			lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
-		row.add_child(lbl)
+		if _todo_editing_idx == i:
+			var edit := LineEdit.new()
+			edit.text = item.get("text", "")
+			edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			edit.placeholder_text = "Task text… use #tag for hashtags"
+			var cap_edit := edit
+			edit.text_submitted.connect(func(_t):
+				_todo_items[cap_i]["text"] = cap_edit.text.strip_edges()
+				_save_todo()
+				_todo_editing_idx = -1
+				_refresh_todo()
+			)
+			row.add_child(edit)
+			var confirm_btn := Button.new()
+			confirm_btn.text = "✓"
+			confirm_btn.pressed.connect(func():
+				_todo_items[cap_i]["text"] = cap_edit.text.strip_edges()
+				_save_todo()
+				_todo_editing_idx = -1
+				_refresh_todo()
+			)
+			row.add_child(confirm_btn)
+		else:
+			var lbl := Label.new()
+			lbl.text = item.get("text", "")
+			lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			if item.get("done", false):
+				lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
+			row.add_child(lbl)
+			var edit_btn := Button.new()
+			edit_btn.text = "✏"
+			edit_btn.pressed.connect(func():
+				_todo_editing_idx = cap_i
+				_refresh_todo()
+			)
+			row.add_child(edit_btn)
+
+		var cap_fi := fi
+		var up_btn := Button.new()
+		up_btn.text = "↑"
+		up_btn.disabled = fi == 0
+		up_btn.pressed.connect(func():
+			var a := cap_filtered[cap_fi]
+			var b := cap_filtered[cap_fi - 1]
+			var tmp := _todo_items[a]
+			_todo_items[a] = _todo_items[b]
+			_todo_items[b] = tmp
+			_save_todo()
+			if _todo_editing_idx == a: _todo_editing_idx = b
+			elif _todo_editing_idx == b: _todo_editing_idx = a
+			_refresh_todo()
+		)
+		row.add_child(up_btn)
+
+		var down_btn := Button.new()
+		down_btn.text = "↓"
+		down_btn.disabled = fi == filtered.size() - 1
+		down_btn.pressed.connect(func():
+			var a := cap_filtered[cap_fi]
+			var b := cap_filtered[cap_fi + 1]
+			var tmp := _todo_items[a]
+			_todo_items[a] = _todo_items[b]
+			_todo_items[b] = tmp
+			_save_todo()
+			if _todo_editing_idx == a: _todo_editing_idx = b
+			elif _todo_editing_idx == b: _todo_editing_idx = a
+			_refresh_todo()
+		)
+		row.add_child(down_btn)
 
 		var rm_btn := Button.new()
 		rm_btn.text = "✕"
-		var cap_rm := i
 		rm_btn.pressed.connect(func():
-			_todo_items.remove_at(cap_rm)
+			_todo_items.remove_at(cap_i)
 			_save_todo()
+			if _todo_editing_idx == cap_i:
+				_todo_editing_idx = -1
+			elif _todo_editing_idx > cap_i:
+				_todo_editing_idx -= 1
 			_refresh_todo()
 		)
 		row.add_child(rm_btn)
@@ -1273,16 +1486,18 @@ func _todo_push() -> void:
 	_todo_thread.start(func():
 		OS.execute("git", PackedStringArray(["-C", project_root, "add", "TODO.md"]), [], true)
 		OS.execute("git", PackedStringArray(["-C", project_root, "commit", "-m", "todo: update"]), [], true)
-		OS.execute("git", PackedStringArray(["-C", project_root, "push", "origin", "main"]), [], true)
-		call_deferred("_todo_on_pushed")
+		var push_out := []
+		var push_code := OS.execute("git", PackedStringArray(["-C", project_root, "push", "origin", "main"]), push_out, true)
+		var msg := "✅ Pushed!" if push_code == OK else "❌ Push failed (no network?)"
+		call_deferred("_todo_on_pushed", msg)
 	)
 
-func _todo_on_pushed() -> void:
+func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
 	if _todo_thread and _todo_thread.is_started():
 		_todo_thread.wait_to_finish()
 	_todo_thread = null
 	_todo_push_btn.disabled = false
-	_todo_status_lbl.text = "Pushed!"
+	_todo_status_lbl.text = msg
 	get_tree().create_timer(2.5).timeout.connect(func():
 		if is_instance_valid(_todo_status_lbl):
 			_todo_status_lbl.text = ""
@@ -1297,10 +1512,11 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	repo_lbl.text = "🔒 ChillCube/vault"
 	repo_lbl.add_theme_color_override("font_color", Color(0.5, 0.7, 1.0))
 	repo_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var connect_btn := Button.new()
-	connect_btn.text = "🔄 Refresh"
-	connect_btn.tooltip_text = "Pull latest from ChillCube/vault"
-	connect_btn.pressed.connect(_vault_connect)
+	_vault_refresh_btn = Button.new()
+	_vault_refresh_btn.text = "🔄 Refresh"
+	_vault_refresh_btn.tooltip_text = "Pull latest from ChillCube/vault"
+	_vault_refresh_btn.pressed.connect(_vault_connect)
+	var connect_btn := _vault_refresh_btn
 	_vault_status_lbl = Label.new()
 	_vault_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
 	top.add_child(repo_lbl)
@@ -1315,13 +1531,26 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 
 	# Left: browser
 	var left := VBoxContainer.new()
-	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left.custom_minimum_size = Vector2(180, 0)
 	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
+	var path_row := HBoxContainer.new()
 	_vault_path_lbl = Label.new()
 	_vault_path_lbl.text = "/"
 	_vault_path_lbl.add_theme_color_override("font_color", Color(0.5, 0.7, 1.0))
-	left.add_child(_vault_path_lbl)
+	_vault_path_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vault_path_lbl.clip_text = true
+	var newdir_btn := Button.new()
+	newdir_btn.text = "📁+"
+	newdir_btn.tooltip_text = "Create new folder in vault"
+	newdir_btn.pressed.connect(func():
+		var pre := _vault_current_dir + ("/" if not _vault_current_dir.is_empty() else "") + "new-folder"
+		_vault_newdir_input.text = pre
+		_vault_newdir_dialog.popup_centered()
+	)
+	path_row.add_child(_vault_path_lbl)
+	path_row.add_child(newdir_btn)
+	left.add_child(path_row)
 
 	var browser_scroll := ScrollContainer.new()
 	browser_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -1336,6 +1565,19 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	_vault_remote_sel_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
 	_vault_remote_sel_lbl.clip_text = true
 	left.add_child(_vault_remote_sel_lbl)
+
+	var action_row := HBoxContainer.new()
+	var move_btn := Button.new()
+	move_btn.text = "🗂 Move/Rename"
+	move_btn.pressed.connect(func():
+		if _vault_remote_sel.is_empty():
+			_vault_log.text = "⚠ Select a file first."
+			return
+		_vault_move_dest_input.text = _vault_remote_sel
+		_vault_move_dialog.popup_centered()
+	)
+	action_row.add_child(move_btn)
+	left.add_child(action_row)
 
 	var dl_row := HBoxContainer.new()
 	var dl_lbl := Label.new()
@@ -1353,6 +1595,92 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	left.add_child(dl_row)
 
 	split.add_child(left)
+	split.add_child(VSeparator.new())
+
+	# Center: preview
+	_vault_preview_panel = VBoxContainer.new()
+	_vault_preview_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vault_preview_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
+	_vault_preview_name_lbl = Label.new()
+	_vault_preview_name_lbl.text = "Select a file to preview"
+	_vault_preview_name_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+	_vault_preview_name_lbl.clip_text = true
+	_vault_preview_panel.add_child(_vault_preview_name_lbl)
+
+	_vault_preview_loading_lbl = Label.new()
+	_vault_preview_loading_lbl.text = "Loading preview…"
+	_vault_preview_loading_lbl.add_theme_color_override("font_color", Color(0.5, 0.7, 1.0))
+	_vault_preview_loading_lbl.visible = false
+	_vault_preview_panel.add_child(_vault_preview_loading_lbl)
+
+	var preview_scroll := ScrollContainer.new()
+	preview_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	preview_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var preview_inner := VBoxContainer.new()
+	preview_inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	preview_scroll.add_child(preview_inner)
+	_vault_preview_panel.add_child(preview_scroll)
+
+	_vault_img_rect = TextureRect.new()
+	_vault_img_rect.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+	_vault_img_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_vault_img_rect.custom_minimum_size = Vector2(0, 200)
+	_vault_img_rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vault_img_rect.visible = false
+	preview_inner.add_child(_vault_img_rect)
+
+	_vault_audio_container = VBoxContainer.new()
+	_vault_audio_container.visible = false
+	var audio_lbl := Label.new()
+	audio_lbl.text = "🎵 Audio File"
+	audio_lbl.add_theme_color_override("font_color", Color(0.9, 0.7, 0.4))
+	_vault_audio_container.add_child(audio_lbl)
+	var audio_btns := HBoxContainer.new()
+	_vault_audio_play_btn = Button.new()
+	_vault_audio_play_btn.text = "▶ Play"
+	_vault_audio_play_btn.pressed.connect(_vault_toggle_audio)
+	audio_btns.add_child(_vault_audio_play_btn)
+	_vault_audio_container.add_child(audio_btns)
+	preview_inner.add_child(_vault_audio_container)
+
+	_vault_text_preview = TextEdit.new()
+	_vault_text_preview.editable = false
+	_vault_text_preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vault_text_preview.custom_minimum_size = Vector2(0, 200)
+	_vault_text_preview.visible = false
+	preview_inner.add_child(_vault_text_preview)
+
+	_vault_video_container = VBoxContainer.new()
+	_vault_video_container.visible = false
+	_vault_video_player = VideoStreamPlayer.new()
+	_vault_video_player.custom_minimum_size = Vector2(0, 180)
+	_vault_video_player.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vault_video_player.expand = true
+	_vault_video_container.add_child(_vault_video_player)
+	var vid_btns := HBoxContainer.new()
+	_vault_video_play_btn = Button.new()
+	_vault_video_play_btn.text = "▶ Play"
+	_vault_video_play_btn.pressed.connect(_vault_toggle_video)
+	var vid_stop_btn := Button.new()
+	vid_stop_btn.text = "⏹ Stop"
+	vid_stop_btn.pressed.connect(func():
+		_vault_video_player.stop()
+		_vault_video_play_btn.text = "▶ Play"
+	)
+	vid_btns.add_child(_vault_video_play_btn)
+	vid_btns.add_child(vid_stop_btn)
+	_vault_video_container.add_child(vid_btns)
+	preview_inner.add_child(_vault_video_container)
+
+	_vault_preview_unsupported = Label.new()
+	_vault_preview_unsupported.text = ""
+	_vault_preview_unsupported.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+	_vault_preview_unsupported.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_vault_preview_unsupported.visible = false
+	preview_inner.add_child(_vault_preview_unsupported)
+
+	split.add_child(_vault_preview_panel)
 	split.add_child(VSeparator.new())
 
 	# Right: upload
@@ -1403,6 +1731,11 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	_vault_log.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	root.add_child(_vault_log)
 
+	# Audio player (must be in scene tree, not visual layout)
+	_vault_audio_player = AudioStreamPlayer.new()
+	_vault_audio_player.finished.connect(func(): _vault_audio_play_btn.text = "▶ Play")
+	add_child(_vault_audio_player)
+
 	# File picker dialog
 	_vault_file_dialog = EditorFileDialog.new()
 	_vault_file_dialog.file_mode = EditorFileDialog.FILE_MODE_OPEN_FILE
@@ -1413,6 +1746,36 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	)
 	add_child(_vault_file_dialog)
 
+	# Move/rename dialog
+	_vault_move_dialog = AcceptDialog.new()
+	_vault_move_dialog.title = "Move / Rename File"
+	_vault_move_dialog.size = Vector2i(420, 120)
+	var move_vbox := _vault_move_dialog.get_vbox()
+	var move_hint := Label.new()
+	move_hint.text = "Destination path (e.g. images/photo.png):"
+	move_vbox.add_child(move_hint)
+	_vault_move_dest_input = LineEdit.new()
+	_vault_move_dest_input.placeholder_text = "folder/filename.ext"
+	_vault_move_dest_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	move_vbox.add_child(_vault_move_dest_input)
+	_vault_move_dialog.confirmed.connect(_vault_do_move)
+	add_child(_vault_move_dialog)
+
+	# New folder dialog
+	_vault_newdir_dialog = AcceptDialog.new()
+	_vault_newdir_dialog.title = "New Folder"
+	_vault_newdir_dialog.size = Vector2i(360, 110)
+	var dir_vbox := _vault_newdir_dialog.get_vbox()
+	var dir_hint := Label.new()
+	dir_hint.text = "Folder path (e.g. images/subfolder):"
+	dir_vbox.add_child(dir_hint)
+	_vault_newdir_input = LineEdit.new()
+	_vault_newdir_input.placeholder_text = "my-folder"
+	_vault_newdir_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dir_vbox.add_child(_vault_newdir_input)
+	_vault_newdir_dialog.confirmed.connect(_vault_do_mkdir)
+	add_child(_vault_newdir_dialog)
+
 	_vault_navigate("")
 
 # ─── Vault logic ──────────────────────────────────────────────────────────────
@@ -1421,13 +1784,14 @@ func _vault_connect() -> void:
 	_vault_cache = OS.get_user_data_dir() + "/cc_vault"
 	_vault_status_lbl.text = "Connecting…"
 	_vault_log.text = ""
+	_vault_refresh_btn.disabled = true
 	if _vault_thread and _vault_thread.is_started():
 		_vault_thread.wait_to_finish()
 	_vault_thread = Thread.new()
 	var cache := _vault_cache
 	_vault_thread.start(func():
 		var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
-		var ok := Ops.vault_connect(cache, "ChillCube/vault", log_fn)
+		var ok := Ops.vault_refresh(cache, log_fn)
 		call_deferred("_vault_on_connected", ok)
 	)
 
@@ -1435,10 +1799,12 @@ func _vault_on_connected(ok: bool) -> void:
 	if _vault_thread and _vault_thread.is_started():
 		_vault_thread.wait_to_finish()
 	_vault_thread = null
+	_vault_refresh_btn.disabled = false
 	_vault_status_lbl.text = "✅ Connected" if ok else "❌ Not found — see log"
 	if ok:
 		_vault_current_dir = ""
 		_vault_remote_sel = ""
+		_vault_files = Ops.vault_list_files(_vault_cache)
 		_vault_navigate("")
 
 func _vault_navigate(rel: String) -> void:
@@ -1455,10 +1821,21 @@ func _vault_navigate(rel: String) -> void:
 		_vault_browser.add_child(hint)
 		return
 
-	var abs_dir := _vault_cache + ("/" + rel if not rel.is_empty() else "")
-	var dir := DirAccess.open(abs_dir)
-	if not dir:
-		return
+	var prefix := (rel + "/") if not rel.is_empty() else ""
+	var folders: Array[String] = []
+	var files: Array[String] = []
+	for path: String in _vault_files:
+		if not path.begins_with(prefix):
+			continue
+		var rest := path.substr(prefix.length())
+		if "/" in rest:
+			var folder := rest.split("/")[0]
+			if folder not in folders:
+				folders.append(folder)
+		elif rest != ".gitkeep":
+			files.append(rest)
+	folders.sort()
+	files.sort()
 
 	if not rel.is_empty():
 		var up_btn := Button.new()
@@ -1471,34 +1848,19 @@ func _vault_navigate(rel: String) -> void:
 		up_btn.pressed.connect(func(): _vault_navigate(parent))
 		_vault_browser.add_child(up_btn)
 
-	var folders: Array[String] = []
-	var files: Array[String] = []
-	dir.list_dir_begin()
-	var n := dir.get_next()
-	while n != "":
-		if not n.begins_with("."):
-			if dir.current_is_dir():
-				folders.append(n)
-			else:
-				files.append(n)
-		n = dir.get_next()
-	dir.list_dir_end()
-	folders.sort()
-	files.sort()
-
-	for folder in folders:
+	for folder: String in folders:
 		var btn := Button.new()
 		btn.text = "📁 " + folder
 		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var cap := (rel + "/" if not rel.is_empty() else "") + folder
+		var cap := prefix + folder
 		btn.pressed.connect(func(): _vault_navigate(cap))
 		_vault_browser.add_child(btn)
 
-	for file in files:
-		var rel_file := (rel + "/" if not rel.is_empty() else "") + file
+	for file: String in files:
+		var rel_file := prefix + file
 		var btn := Button.new()
-		btn.text = "📄 " + file
+		btn.text = _vault_file_icon(file) + " " + file
 		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		btn.flat = true
@@ -1509,10 +1871,23 @@ func _vault_navigate(rel: String) -> void:
 			_vault_remote_sel = cap_rel
 			_vault_remote_sel_lbl.text = "Selected: " + cap_rel
 			_vault_navigate(_vault_current_dir)
+			_vault_request_preview(cap_rel)
 		)
 		_vault_browser.add_child(btn)
 
-	_vault_upload_dest.text = "/" + (rel + "/" if not rel.is_empty() else "")
+	_vault_upload_dest.text = "/" + prefix
+
+func _vault_file_icon(filename: String) -> String:
+	var ext := filename.get_extension().to_lower()
+	if ext in ["png", "jpg", "jpeg", "webp", "bmp", "tga", "svg", "hdr"]:
+		return "🖼"
+	if ext in ["ogg", "mp3", "wav", "flac", "m4a"]:
+		return "🎵"
+	if ext in ["ogv", "webm", "mp4", "avi", "mov"]:
+		return "🎬"
+	if ext in ["txt", "md", "json", "csv", "gd", "cfg", "ini", "toml", "yaml", "yml", "xml", "html", "shader", "glsl"]:
+		return "📄"
+	return "📎"
 
 func _vault_open_picker() -> void:
 	_vault_file_dialog.popup_centered_ratio(0.7)
@@ -1534,7 +1909,8 @@ func _vault_upload() -> void:
 	var dest := _vault_upload_dest.text
 	_vault_thread.start(func():
 		var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
-		Ops.vault_upload(cache, local, dest, log_fn)
+		Ops.vault_upload_file(local, dest, log_fn)
+		Ops.vault_refresh(cache, log_fn)
 		call_deferred("_vault_after_op", "")
 	)
 
@@ -1555,7 +1931,7 @@ func _vault_download() -> void:
 	var dest := _vault_download_dest.text
 	_vault_thread.start(func():
 		var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
-		Ops.vault_download(cache, remote, dest, log_fn)
+		Ops.vault_download_file(cache, remote, dest, log_fn)
 		call_deferred("_vault_after_op", "")
 	)
 
@@ -1564,8 +1940,214 @@ func _vault_after_op(status: String) -> void:
 		_vault_thread.wait_to_finish()
 	_vault_thread = null
 	_vault_status_lbl.text = status
+	_vault_files = Ops.vault_list_files(_vault_cache)
 	_vault_navigate(_vault_current_dir)
 	EditorInterface.get_resource_filesystem().scan()
+
+func _vault_request_preview(rel_path: String) -> void:
+	if _vault_preview_thread and _vault_preview_thread.is_started():
+		return
+	_vault_clear_preview()
+	_vault_preview_name_lbl.text = rel_path.get_file()
+	var ext := rel_path.get_extension().to_lower()
+	const IMAGE_EXTS := ["png", "jpg", "jpeg", "webp", "bmp", "tga", "svg"]
+	const AUDIO_EXTS := ["ogg", "mp3", "wav"]
+	const VIDEO_EXTS := ["ogv", "webm", "mp4"]
+	const TEXT_EXTS  := ["txt", "md", "json", "csv", "gd", "cfg", "ini", "toml", "yaml", "yml", "xml", "html", "shader", "glsl"]
+	if ext not in IMAGE_EXTS and ext not in AUDIO_EXTS and ext not in VIDEO_EXTS and ext not in TEXT_EXTS:
+		_vault_preview_unsupported.text = "No preview available for ." + ext + " files."
+		_vault_preview_unsupported.visible = true
+		return
+	_vault_preview_loading_lbl.visible = true
+	var cache := _vault_cache
+	var tmp_dir := OS.get_temp_dir() + "/cc_vault_preview"
+	DirAccess.make_dir_recursive_absolute(tmp_dir)
+	_vault_preview_thread = Thread.new()
+	_vault_preview_thread.start(func():
+		Ops.vault_download_file(cache, rel_path, tmp_dir, Callable())
+		var tmp_path := tmp_dir + "/" + rel_path.get_file()
+		call_deferred("_vault_on_preview_ready", tmp_path, ext)
+	)
+
+func _vault_on_preview_ready(tmp_path: String, ext: String) -> void:
+	if _vault_preview_thread and _vault_preview_thread.is_started():
+		_vault_preview_thread.wait_to_finish()
+	_vault_preview_thread = null
+	_vault_preview_loading_lbl.visible = false
+	if not FileAccess.file_exists(tmp_path):
+		_vault_preview_unsupported.text = "Preview extraction failed."
+		_vault_preview_unsupported.visible = true
+		return
+	const IMAGE_EXTS := ["png", "jpg", "jpeg", "webp", "bmp", "tga", "svg"]
+	const AUDIO_EXTS := ["ogg", "mp3", "wav"]
+	const VIDEO_EXTS := ["ogv", "webm", "mp4"]
+	if ext in IMAGE_EXTS:
+		_vault_show_image(tmp_path)
+	elif ext in AUDIO_EXTS:
+		_vault_show_audio(tmp_path, ext)
+	elif ext in VIDEO_EXTS:
+		_vault_show_video(tmp_path, ext)
+	else:
+		_vault_show_text(tmp_path)
+
+func _vault_clear_preview() -> void:
+	if _vault_audio_player and _vault_audio_player.playing:
+		_vault_audio_player.stop()
+	if _vault_audio_player:
+		_vault_audio_player.stream = null
+	if _vault_audio_play_btn:
+		_vault_audio_play_btn.text = "▶ Play"
+	if _vault_img_rect:
+		_vault_img_rect.texture = null
+		_vault_img_rect.visible = false
+	if _vault_audio_container:
+		_vault_audio_container.visible = false
+	if _vault_text_preview:
+		_vault_text_preview.text = ""
+		_vault_text_preview.visible = false
+	if _vault_video_container:
+		_vault_video_container.visible = false
+	if _vault_video_player and _vault_video_player.is_playing():
+		_vault_video_player.stop()
+	if _vault_preview_unsupported:
+		_vault_preview_unsupported.visible = false
+
+func _vault_show_image(path: String) -> void:
+	var img := Image.new()
+	var err: Error
+	if path.get_extension().to_lower() == "svg":
+		var bytes := FileAccess.get_file_as_bytes(path)
+		err = img.load_svg_from_buffer(bytes, 2.0)
+	else:
+		err = img.load(path)
+	if err == OK:
+		_vault_img_rect.texture = ImageTexture.create_from_image(img)
+		_vault_img_rect.visible = true
+	else:
+		_vault_preview_unsupported.text = "Failed to load image."
+		_vault_preview_unsupported.visible = true
+
+func _vault_show_audio(path: String, ext: String) -> void:
+	var stream: AudioStream = null
+	match ext:
+		"ogg":
+			stream = AudioStreamOggVorbis.load_from_file(path)
+		"mp3":
+			var bytes := FileAccess.get_file_as_bytes(path)
+			if bytes.size() > 0:
+				var s := AudioStreamMP3.new()
+				s.data = bytes
+				stream = s
+		"wav":
+			var bytes := FileAccess.get_file_as_bytes(path)
+			if bytes.size() > 0:
+				var user_path := "user://cc_preview_tmp.wav"
+				var f := FileAccess.open(user_path, FileAccess.WRITE)
+				if f:
+					f.store_buffer(bytes)
+					f.close()
+					stream = ResourceLoader.load(user_path, "", ResourceLoader.CACHE_MODE_IGNORE) as AudioStream
+	if stream:
+		_vault_audio_player.stream = stream
+		_vault_audio_container.visible = true
+	else:
+		_vault_preview_unsupported.text = "Could not load audio (" + ext + ")."
+		_vault_preview_unsupported.visible = true
+
+func _vault_show_text(path: String) -> void:
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f:
+		_vault_text_preview.text = f.get_as_text()
+		f.close()
+		_vault_text_preview.visible = true
+	else:
+		_vault_preview_unsupported.text = "Could not read file."
+		_vault_preview_unsupported.visible = true
+
+func _vault_show_video(path: String, ext: String) -> void:
+	var bytes := FileAccess.get_file_as_bytes(path)
+	if bytes.is_empty():
+		_vault_preview_unsupported.text = "Could not read video file."
+		_vault_preview_unsupported.visible = true
+		return
+	var user_path := "user://cc_preview_tmp." + ext
+	var f := FileAccess.open(user_path, FileAccess.WRITE)
+	if not f:
+		_vault_preview_unsupported.text = "Could not write temp video file."
+		_vault_preview_unsupported.visible = true
+		return
+	f.store_buffer(bytes)
+	f.close()
+	var stream := ResourceLoader.load(user_path, "", ResourceLoader.CACHE_MODE_IGNORE) as VideoStream
+	if stream:
+		_vault_video_player.stream = stream
+		_vault_video_container.visible = true
+	else:
+		_vault_preview_unsupported.text = "Cannot preview ." + ext + " (try .ogv for video)."
+		_vault_preview_unsupported.visible = true
+
+func _vault_toggle_audio() -> void:
+	if _vault_audio_player.playing:
+		_vault_audio_player.stop()
+		_vault_audio_play_btn.text = "▶ Play"
+	else:
+		_vault_audio_player.play()
+		_vault_audio_play_btn.text = "⏸ Pause"
+
+func _vault_toggle_video() -> void:
+	if _vault_video_player.is_playing():
+		_vault_video_player.paused = not _vault_video_player.paused
+		_vault_video_play_btn.text = "⏸ Pause" if not _vault_video_player.paused else "▶ Play"
+	else:
+		_vault_video_player.play()
+		_vault_video_play_btn.text = "⏸ Pause"
+
+func _vault_do_move() -> void:
+	var dest := _vault_move_dest_input.text.strip_edges().lstrip("/")
+	if dest.is_empty() or dest == _vault_remote_sel.lstrip("/"):
+		_vault_log.text = "⚠ Enter a different destination path."
+		return
+	if _vault_thread and _vault_thread.is_started():
+		_vault_log.text = "⚠ Another operation is running."
+		return
+	_vault_log.text = ""
+	_vault_status_lbl.text = "Moving…"
+	_vault_thread = Thread.new()
+	var src := _vault_remote_sel
+	var cache := _vault_cache
+	var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
+	_vault_thread.start(func():
+		Ops.vault_move_file(src, dest, log_fn)
+		Ops.vault_refresh(cache, log_fn)
+		call_deferred("_vault_after_manage")
+	)
+
+func _vault_do_mkdir() -> void:
+	var name := _vault_newdir_input.text.strip_edges().lstrip("/")
+	if name.is_empty():
+		return
+	if _vault_thread and _vault_thread.is_started():
+		_vault_log.text = "⚠ Another operation is running."
+		return
+	_vault_log.text = ""
+	_vault_status_lbl.text = "Creating folder…"
+	_vault_thread = Thread.new()
+	var cache := _vault_cache
+	var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
+	_vault_thread.start(func():
+		Ops.vault_mkdir(name, log_fn)
+		Ops.vault_refresh(cache, log_fn)
+		call_deferred("_vault_after_manage")
+	)
+
+func _vault_after_manage() -> void:
+	if _vault_thread and _vault_thread.is_started():
+		_vault_thread.wait_to_finish()
+	_vault_thread = null
+	_vault_status_lbl.text = ""
+	_vault_remote_sel = ""
+	_vault_files = Ops.vault_list_files(_vault_cache)
+	_vault_navigate(_vault_current_dir)
 
 func _build_terminal_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Terminal", tabs)

@@ -1143,74 +1143,135 @@ static func _update_tree(root: String, log: Callable) -> void:
 	_rm_rf(tmp)
 
 # ─── FILE VAULT ──────────────────────────────────────────────────────────────
+# Uses a metadata-only clone (no file blobs) for browsing, then extracts
+# individual files on demand. Upload uses a temp shallow clone.
 
-static func vault_connect(cache_dir: String, full_repo: String, log: Callable) -> bool:
-	# Pull if already cloned
+const VAULT_SSH := "git@github.com:ChillCube/vault.git"
+const VAULT_REPO := "ChillCube/vault"
+
+# Fetch or create a lightweight metadata cache (tree objects only, no blobs).
+static func vault_refresh(cache_dir: String, log: Callable) -> bool:
 	if DirAccess.dir_exists_absolute(cache_dir + "/.git"):
-		log.call("🔄 Pulling latest...")
-		if _git(["pull", "--rebase", "origin", "main"], cache_dir, log) != OK:
-			_git(["rebase", "--abort"], cache_dir, Callable())
-			log.call("⚠️ Pull failed — using cached version.")
+		log.call("🔄 Refreshing file list...")
+		_git(["fetch", "--quiet", "origin"], cache_dir, log)
 		return true
-	# Clone via SSH (same auth path as every other addon push/pull)
 	_rm_rf(cache_dir)
-	var ssh_url := "git@github.com:" + full_repo + ".git"
-	log.call("📥 Cloning " + full_repo + "...")
-	if _git(["clone", ssh_url, cache_dir], "", log) == OK:
-		log.call("✅ Connected to " + full_repo)
+	log.call("📋 Fetching vault file list...")
+	# --no-checkout --filter=blob:none: downloads only tree objects, no file contents
+	if _git(["clone", "--no-checkout", "--filter=blob:none", "--quiet", VAULT_SSH, cache_dir], "", log) == OK:
+		log.call("✅ Vault ready.")
 		return true
-	# Repo doesn't exist — try creating it via gh, then clone
-	log.call("📦 Repo not found. Creating private repo " + full_repo + "...")
-	if _gh(["repo", "create", full_repo, "--private", "--description", "ChillCube private file vault"], log) != OK:
-		log.call("❌ Could not create repo.")
-		log.call("   Either create ChillCube/vault manually on GitHub,")
-		log.call("   or install gh CLI (https://cli.github.com) and run: gh auth login")
-		return false
-	# Clone the freshly created (empty) repo
-	if _git(["clone", ssh_url, cache_dir], "", log) != OK:
-		log.call("❌ Clone failed after creation.")
-		return false
-	# Seed with a README so main branch exists
-	_write(cache_dir + "/README.md", "# ChillCube Vault\nPrivate file storage for ChillCube projects.\n")
-	_git(["add", "."], cache_dir, log)
-	_git(["commit", "-m", "initial: create vault"], cache_dir, log)
-	_git(["push", "-u", "origin", "main"], cache_dir, log)
-	log.call("✅ Vault created and ready.")
-	return true
+	log.call("❌ Could not reach ChillCube/vault.")
+	log.call("   Make sure the repo exists at github.com/ChillCube/vault (private).")
+	return false
 
-static func vault_upload(cache_dir: String, local_file: String, remote_dir: String, log: Callable) -> bool:
-	var rdir := remote_dir.strip_edges().lstrip("/").rstrip("/")
-	var dest_folder := cache_dir + ("/" + rdir if not rdir.is_empty() else "")
-	DirAccess.make_dir_recursive_absolute(dest_folder)
-	var filename := local_file.get_file()
-	log.call("📋 Copying %s → /%s" % [filename, rdir])
-	_exec("cp", ["-f", local_file, dest_folder + "/" + filename], log)
-	_git(["add", "."], cache_dir, log)
-	if _git(["commit", "-m", "vault: upload " + filename], cache_dir, log) != OK:
-		log.call("✨ File unchanged — nothing to push.")
-		return true
-	log.call("⬆️ Pushing...")
-	if _git(["push", "origin", "main"], cache_dir, log) != OK:
-		log.call("⚠️ Push failed — check gh auth.")
-		return false
-	log.call("✅ Uploaded " + filename)
-	return true
+# Return every file path stored in the vault (flat list, from tree metadata only).
+static func vault_list_files(cache_dir: String) -> Array[String]:
+	var output := []
+	OS.execute("git", PackedStringArray(["-C", cache_dir, "ls-tree", "-r", "--name-only", "origin/main"]), output, true)
+	var result: Array[String] = []
+	if output.is_empty():
+		return result
+	for line: String in output[0].split("\n"):
+		var l := line.strip_edges()
+		if not l.is_empty():
+			result.append(l)
+	return result
 
-static func vault_download(cache_dir: String, remote_rel: String, local_dest: String, log: Callable) -> bool:
-	var src := cache_dir + "/" + remote_rel.lstrip("/")
-	if not FileAccess.file_exists(src):
-		log.call("❌ File not found in vault: " + remote_rel)
-		return false
+# Extract a single file from the vault without checking out anything else.
+static func vault_download_file(cache_dir: String, remote_rel: String, local_dest: String, log: Callable) -> bool:
 	var dest_dir: String
 	if local_dest.begins_with("res://") or local_dest.begins_with("user://"):
 		dest_dir = ProjectSettings.globalize_path(local_dest).rstrip("/")
 	else:
 		dest_dir = local_dest.rstrip("/")
 	DirAccess.make_dir_recursive_absolute(dest_dir)
-	var filename := remote_rel.get_file()
-	_exec("cp", ["-f", src, dest_dir + "/" + filename], log)
-	log.call("✅ Downloaded to " + dest_dir + "/" + filename)
+	var dest_file := dest_dir + "/" + remote_rel.get_file()
+	log.call("⬇️  Extracting " + remote_rel.get_file() + "...")
+	# Pipe git-show into the destination file so binary files are handled correctly
+	var safe_cache := cache_dir.replace("'", "'\"'\"'")
+	var safe_ref  := remote_rel.lstrip("/").replace("'", "'\"'\"'")
+	var safe_dest := dest_file.replace("'", "'\"'\"'")
+	var cmd := "git -C '%s' show 'origin/main:%s' > '%s'" % [safe_cache, safe_ref, safe_dest]
+	var out := []
+	var code := OS.execute("bash", PackedStringArray(["-c", cmd]), out, true)
+	if code != OK:
+		log.call("❌ Failed to extract file.")
+		if not out.is_empty(): log.call(out[0])
+		return false
+	log.call("✅ Saved to " + dest_file)
 	return true
+
+# Upload a local file into the vault via a temporary shallow clone.
+static func vault_upload_file(local_file: String, remote_dir: String, log: Callable) -> bool:
+	var tmp := OS.get_temp_dir() + "/.cc_vaultup_" + str(int(Time.get_unix_time_from_system()))
+	log.call("📥 Preparing upload (shallow clone)...")
+	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+		log.call("❌ Could not clone vault.")
+		_rm_rf(tmp)
+		return false
+	var rdir := remote_dir.strip_edges().lstrip("/").rstrip("/")
+	var dest_folder := tmp + ("/" + rdir if not rdir.is_empty() else "")
+	DirAccess.make_dir_recursive_absolute(dest_folder)
+	var filename := local_file.get_file()
+	_exec("cp", ["-f", local_file, dest_folder + "/" + filename], log)
+	log.call("📦 Committing " + filename + "...")
+	_git(["add", "."], tmp, log)
+	if _git(["commit", "-m", "vault: upload " + filename], tmp, log) != OK:
+		log.call("✨ File unchanged — nothing to push.")
+		_rm_rf(tmp)
+		return true
+	log.call("⬆️  Pushing...")
+	var ok := _git(["push", "origin", "main"], tmp, log) == OK
+	_rm_rf(tmp)
+	log.call("✅ Uploaded " + filename if ok else "⚠️  Push failed.")
+	return ok
+
+static func vault_move_file(src_rel: String, dest_rel: String, log: Callable) -> bool:
+	var tmp := OS.get_temp_dir() + "/.cc_vaultmv_" + str(int(Time.get_unix_time_from_system()))
+	log.call("📥 Preparing move (shallow clone)...")
+	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+		log.call("❌ Could not clone vault.")
+		_rm_rf(tmp)
+		return false
+	var src := src_rel.strip_edges().lstrip("/")
+	var dest := dest_rel.strip_edges().lstrip("/")
+	var dest_dir := tmp + "/" + dest.get_base_dir()
+	if dest.get_base_dir() != ".":
+		DirAccess.make_dir_recursive_absolute(dest_dir)
+	if _git(["mv", src, dest], tmp, log) != OK:
+		log.call("❌ Move failed — file may not exist at that path.")
+		_rm_rf(tmp)
+		return false
+	_git(["add", "."], tmp, log)
+	if _git(["commit", "-m", "vault: move " + src.get_file() + " → " + dest], tmp, log) != OK:
+		log.call("✨ Nothing to commit.")
+		_rm_rf(tmp)
+		return true
+	var ok := _git(["push", "origin", "main"], tmp, log) == OK
+	_rm_rf(tmp)
+	log.call("✅ Moved!" if ok else "⚠️  Push failed.")
+	return ok
+
+static func vault_mkdir(dir_path: String, log: Callable) -> bool:
+	var tmp := OS.get_temp_dir() + "/.cc_vaultmkdir_" + str(int(Time.get_unix_time_from_system()))
+	log.call("📥 Preparing (shallow clone)...")
+	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+		log.call("❌ Could not clone vault.")
+		_rm_rf(tmp)
+		return false
+	var rdir := dir_path.strip_edges().lstrip("/").rstrip("/")
+	DirAccess.make_dir_recursive_absolute(tmp + "/" + rdir)
+	_write(tmp + "/" + rdir + "/.gitkeep", "")
+	_git(["add", "."], tmp, log)
+	if _git(["commit", "-m", "vault: create directory " + rdir], tmp, log) != OK:
+		log.call("✨ Directory already exists.")
+		_rm_rf(tmp)
+		return true
+	var ok := _git(["push", "origin", "main"], tmp, log) == OK
+	_rm_rf(tmp)
+	log.call("✅ Created " + rdir if ok else "⚠️  Push failed.")
+	return ok
 
 static func _make_id(s: String) -> String:
 	return s.to_lower().replace(" ", "_").replace("-", "_")
