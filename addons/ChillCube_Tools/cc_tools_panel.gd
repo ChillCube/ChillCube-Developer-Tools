@@ -542,7 +542,7 @@ func _build_planned_subtab(tabs: TabContainer) -> void:
 	new_btn.pressed.connect(_plan_new)
 	var push_btn := Button.new()
 	push_btn.text = "⬆ Push"
-	push_btn.tooltip_text = "Commit and push PLANNED_ADDONS.json to the project's GitHub repo."
+	push_btn.tooltip_text = "Push all CC Tools data (todos, planning, activity, bugs) to ChillCube/vault."
 	push_btn.pressed.connect(_plan_push)
 	_plan_status_lbl = Label.new()
 	_plan_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -588,7 +588,7 @@ func _build_planned_subtab(tabs: TabContainer) -> void:
 # ─── Planned addons logic ─────────────────────────────────────────────────────
 
 func _plan_file() -> String:
-	return ProjectSettings.globalize_path("res://").rstrip("/") + "/PLANNED_ADDONS.json"
+	return ProjectSettings.globalize_path("user://cc_planned.json")
 
 func _load_planned() -> void:
 	_planned_addons = []
@@ -629,14 +629,10 @@ func _plan_push() -> void:
 	if _plan_thread and _plan_thread.is_started():
 		return
 	_plan_status_lbl.text = "Pushing…"
-	var root := ProjectSettings.globalize_path("res://").rstrip("/")
 	_plan_thread = Thread.new()
 	_plan_thread.start(func():
-		OS.execute("git", PackedStringArray(["-C", root, "add", "PLANNED_ADDONS.json"]), [], true)
-		OS.execute("git", PackedStringArray(["-C", root, "commit", "-m", "plan: update planned addons"]), [], true)
-		var push_out := []
-		var push_code := OS.execute("git", PackedStringArray(["-C", root, "push", "origin", "HEAD"]), push_out, true)
-		var msg := "✅ Pushed!" if push_code == OK else "❌ Push failed (code %d)" % push_code
+		var ok := Ops.cc_data_push(_cc_data_bundle(), Callable())
+		var msg := "✅ Pushed to vault!" if ok else "❌ Push failed"
 		call_deferred("_plan_on_pushed", msg)
 	)
 
@@ -1095,7 +1091,7 @@ func _build_todo_subtab(tabs: TabContainer) -> void:
 	add_btn.pressed.connect(_todo_add)
 	_todo_push_btn = Button.new()
 	_todo_push_btn.text = "⬆ Push"
-	_todo_push_btn.tooltip_text = "Commit and push TODO.md to the project's GitHub repo."
+	_todo_push_btn.tooltip_text = "Push all CC Tools data (todos, planning, activity, bugs) to ChillCube/vault."
 	_todo_push_btn.pressed.connect(_todo_push)
 	_todo_status_lbl = Label.new()
 	_todo_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
@@ -1353,7 +1349,7 @@ func _bug_save_edit(idx: int, new_desc: String) -> void:
 # ─── To-Do logic ─────────────────────────────────────────────────────────────
 
 func _todo_file() -> String:
-	return ProjectSettings.globalize_path("res://").rstrip("/") + "/TODO.md"
+	return ProjectSettings.globalize_path("user://cc_todo.json")
 
 func _load_todo() -> void:
 	_todo_items = []
@@ -1363,22 +1359,15 @@ func _load_todo() -> void:
 	var f := FileAccess.open(path, FileAccess.READ)
 	if not f:
 		return
-	for line: String in f.get_as_text().split("\n"):
-		var t := line.strip_edges()
-		if t.begins_with("- [ ] "):
-			_todo_items.append({"text": t.substr(6).strip_edges(), "done": false})
-		elif t.begins_with("- [x] ") or t.begins_with("- [X] "):
-			_todo_items.append({"text": t.substr(6).strip_edges(), "done": true})
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
 	f.close()
+	if parsed is Array:
+		_todo_items = parsed
 
 func _save_todo() -> void:
-	var lines: PackedStringArray = ["# To-Do", ""]
-	for item: Dictionary in _todo_items:
-		var mark := "[x]" if item.get("done", false) else "[ ]"
-		lines.append("- %s %s" % [mark, item.get("text", "")])
 	var fw := FileAccess.open(_todo_file(), FileAccess.WRITE)
 	if fw:
-		fw.store_string("\n".join(lines) + "\n")
+		fw.store_string(JSON.stringify(_todo_items, "\t") + "\n")
 		fw.close()
 
 func _todo_extract_tags(text: String) -> Array[String]:
@@ -1598,20 +1587,29 @@ func _todo_add() -> void:
 	_log_activity("todo_added", text)
 	_refresh_todo()
 
+func _cc_data_bundle() -> Dictionary:
+	var fb_path := ProjectSettings.globalize_path("user://cc_feedback.json")
+	var fb_f := FileAccess.open(fb_path, FileAccess.READ)
+	var fb_str := "[]"
+	if fb_f:
+		fb_str = fb_f.get_as_text()
+		fb_f.close()
+	return {
+		"todo.json": JSON.stringify(_todo_items, "\t") + "\n",
+		"planned.json": JSON.stringify(_planned_addons, "\t") + "\n",
+		"activity.json": JSON.stringify(_activity_items, "\t") + "\n",
+		"feedback.json": fb_str
+	}
+
 func _todo_push() -> void:
 	if _todo_thread and _todo_thread.is_started():
 		return
 	_todo_push_btn.disabled = true
 	_todo_status_lbl.text = "Pushing…"
-	var project_root := ProjectSettings.globalize_path("res://").rstrip("/")
 	_todo_thread = Thread.new()
 	_todo_thread.start(func():
-		OS.execute("git", PackedStringArray(["-C", project_root, "add", "TODO.md"]), [], true)
-		OS.execute("git", PackedStringArray(["-C", project_root, "commit", "-m", "todo: update"]), [], true)
-		var push_out := []
-		var push_code := OS.execute("git", PackedStringArray(["-C", project_root, "push", "origin", "HEAD"]), push_out, true)
-		var msg := "✅ Pushed!" if push_code == OK else "❌ Push failed (code %d)" % push_code
-		call_deferred("_todo_on_pushed", msg)
+		var ok := Ops.cc_data_push(_cc_data_bundle(), Callable())
+		call_deferred("_todo_on_pushed", "✅ Pushed to vault!" if ok else "❌ Push failed")
 	)
 
 func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
@@ -1947,6 +1945,8 @@ func _vault_navigate(rel: String) -> void:
 	var folders: Array[String] = []
 	var files: Array[String] = []
 	for path: String in _vault_files:
+		if path.begins_with("_cc_tools/") or path == "_cc_tools":
+			continue
 		if not path.begins_with(prefix):
 			continue
 		var rest := path.substr(prefix.length())
@@ -2981,7 +2981,7 @@ func _build_activity_tab(tabs: TabContainer) -> void:
 	_refresh_activity_list()
 
 func _activity_file() -> String:
-	return ProjectSettings.globalize_path("res://").rstrip("/") + "/ACTIVITY_LOG.json"
+	return ProjectSettings.globalize_path("user://cc_activity.json")
 
 func _load_activity() -> void:
 	_activity_items = []
@@ -3017,14 +3017,10 @@ func _log_activity(type: String, text: String) -> void:
 func _activity_auto_push() -> void:
 	if _activity_thread and _activity_thread.is_started():
 		return
-	var root := ProjectSettings.globalize_path("res://").rstrip("/")
 	_activity_thread = Thread.new()
 	_activity_thread.start(func():
-		Ops._git(["add", "ACTIVITY_LOG.json"], root, Callable())
-		var code := Ops._git(["commit", "-m", "activity: auto-backup"], root, Callable())
-		if code == OK:
-			Ops._git(["push", "origin", "HEAD"], root, Callable())
-		call_deferred("_activity_on_pushed", code == OK)
+		var pushed := Ops.cc_data_push(_cc_data_bundle(), Callable())
+		call_deferred("_activity_on_pushed", pushed)
 	)
 
 func _activity_manual_push() -> void:
@@ -3210,6 +3206,8 @@ func _build_login_overlay() -> Control:
 	rg.add_theme_constant_override("h_separation", 8)
 	var run_lbl := Label.new(); run_lbl.text = "Username"
 	var run_field := LineEdit.new(); run_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var rgh_lbl := Label.new(); rgh_lbl.text = "GitHub user"
+	var rgh_field := LineEdit.new(); rgh_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var rpw_lbl := Label.new(); rpw_lbl.text = "Password"
 	var rpw_field := LineEdit.new()
 	rpw_field.secret = true; rpw_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -3217,6 +3215,7 @@ func _build_login_overlay() -> Control:
 	var rpw2_field := LineEdit.new()
 	rpw2_field.secret = true; rpw2_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	rg.add_child(run_lbl); rg.add_child(run_field)
+	rg.add_child(rgh_lbl); rg.add_child(rgh_field)
 	rg.add_child(rpw_lbl); rg.add_child(rpw_field)
 	rg.add_child(rpw2_lbl); rg.add_child(rpw2_field)
 	reg_vbox.add_child(rg)
@@ -3267,9 +3266,10 @@ func _build_login_overlay() -> Control:
 		if _login_thread and _login_thread.is_started():
 			return
 		var u := run_field.text.strip_edges()
+		var gh := rgh_field.text.strip_edges()
 		var p := rpw_field.text
 		var p2 := rpw2_field.text
-		if u.is_empty() or p.is_empty():
+		if u.is_empty() or gh.is_empty() or p.is_empty():
 			_reg_status_lbl.text = "Fill in all fields."
 			return
 		if p != p2:
@@ -3279,7 +3279,7 @@ func _build_login_overlay() -> Control:
 		_reg_status_lbl.text = "🔄 Registering..."
 		_login_thread = Thread.new()
 		_login_thread.start(func():
-			Ops.auth_register(u, p, func(msg): call_deferred("_set_reg_status", msg))
+			Ops.auth_register(u, gh, p, func(msg): call_deferred("_set_reg_status", msg))
 			call_deferred("_on_reg_done", reg_btn)
 		)
 	)
@@ -3433,7 +3433,7 @@ func _build_account_tab(tabs: TabContainer) -> void:
 	root.add_child(HSeparator.new())
 	var ap_heading := Label.new()
 	ap_heading.name = "ApprovalHeading"
-	ap_heading.text = "Pending Approvals"
+	ap_heading.text = "Account Management"
 	ap_heading.add_theme_font_size_override("font_size", 13)
 	ap_heading.visible = false
 	root.add_child(ap_heading)
@@ -3514,11 +3514,11 @@ func _refresh_pending_list() -> void:
 	var approver: String = _current_user.get("username", "")
 	_login_thread = Thread.new()
 	_login_thread.start(func():
-		var pending := Ops.auth_fetch_pending(Callable())
-		call_deferred("_on_pending_loaded", pending, approver)
+		var all_users := Ops.auth_fetch_all(Callable())
+		call_deferred("_on_pending_loaded", all_users, approver)
 	)
 
-func _on_pending_loaded(pending: Array, approver: String) -> void:
+func _on_pending_loaded(all_users: Array, approver: String) -> void:
 	if _login_thread:
 		_login_thread.wait_to_finish()
 	_login_thread = null
@@ -3526,35 +3526,59 @@ func _on_pending_loaded(pending: Array, approver: String) -> void:
 		return
 	for child in _pending_list.get_children():
 		child.queue_free()
-	if pending.is_empty():
+	if all_users.is_empty():
 		var lbl := Label.new()
-		lbl.text = "No pending accounts."
+		lbl.text = "No accounts found."
 		lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 		_pending_list.add_child(lbl)
 		return
-	for username: String in pending:
+	for u: Dictionary in all_users:
+		var uname: String = u.get("username", "")
+		if uname.to_lower() == approver.to_lower():
+			continue
+		var approved: bool = u.get("approved", false)
 		var row := HBoxContainer.new()
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		var lbl := Label.new()
-		lbl.text = username
+		lbl.text = ("✅ " if approved else "⏳ ") + uname
 		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var approve_btn := Button.new()
-		approve_btn.text = "✅ Approve"
-		var cap_name := username
-		var cap_approver := approver
-		approve_btn.pressed.connect(func():
-			approve_btn.disabled = true
+		if not approved:
+			lbl.add_theme_color_override("font_color", Color(0.9, 0.7, 0.3))
+		row.add_child(lbl)
+		if not approved:
+			var approve_btn := Button.new()
+			approve_btn.text = "Approve"
+			var cap_name := uname
+			var cap_approver := approver
+			approve_btn.pressed.connect(func():
+				approve_btn.disabled = true
+				if _login_thread and _login_thread.is_started():
+					return
+				_login_thread = Thread.new()
+				_login_thread.start(func():
+					Ops.auth_approve(cap_approver, cap_name, Callable())
+					call_deferred("_refresh_pending_list")
+					call_deferred("_on_approve_done")
+				)
+			)
+			row.add_child(approve_btn)
+		var remove_btn := Button.new()
+		remove_btn.text = "Remove"
+		remove_btn.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+		var cap_name2 := uname
+		var cap_approver2 := approver
+		remove_btn.pressed.connect(func():
+			remove_btn.disabled = true
 			if _login_thread and _login_thread.is_started():
 				return
 			_login_thread = Thread.new()
 			_login_thread.start(func():
-				Ops.auth_approve(cap_approver, cap_name, Callable())
+				Ops.auth_remove(cap_approver2, cap_name2, Callable())
 				call_deferred("_refresh_pending_list")
 				call_deferred("_on_approve_done")
 			)
 		)
-		row.add_child(lbl)
-		row.add_child(approve_btn)
+		row.add_child(remove_btn)
 		_pending_list.add_child(row)
 
 func _on_approve_done() -> void:

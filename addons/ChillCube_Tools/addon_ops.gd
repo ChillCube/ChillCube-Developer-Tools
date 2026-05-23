@@ -1180,6 +1180,34 @@ static func _update_tree(root: String, log: Callable) -> void:
 	_exec("git", ["-C", tmp, "push", "origin", "main"], Callable())
 	_rm_rf(tmp)
 
+# ─── CC TOOLS DATA (stored in vault under _cc_tools/) ───────────────────────
+
+const CC_DATA_DIR := "_cc_tools"
+
+static func cc_data_push(data: Dictionary, log: Callable) -> bool:
+	var tmp := OS.get_temp_dir() + "/.cc_data_" + str(int(Time.get_unix_time_from_system()))
+	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+		log.call("❌ Could not reach vault.")
+		_rm_rf(tmp)
+		return false
+	DirAccess.make_dir_recursive_absolute(tmp + "/" + CC_DATA_DIR)
+	for fname: String in data:
+		_write(tmp + "/" + CC_DATA_DIR + "/" + fname, data[fname])
+	_git(["add", CC_DATA_DIR], tmp, Callable())
+	if _git(["commit", "-m", "cc-tools: sync data"], tmp, Callable()) != OK:
+		_rm_rf(tmp)
+		return true
+	var ok := _git(["push", "origin", "HEAD"], tmp, Callable()) == OK
+	_rm_rf(tmp)
+	log.call("✅ Synced to vault!" if ok else "❌ Push failed.")
+	return ok
+
+static func cc_data_read(cache_dir: String, fname: String) -> String:
+	var out := []
+	OS.execute("git", PackedStringArray(["-C", cache_dir, "show",
+		"origin/main:" + CC_DATA_DIR + "/" + fname]), out, true)
+	return out[0] if not out.is_empty() else ""
+
 # ─── FILE VAULT ──────────────────────────────────────────────────────────────
 # Uses a metadata-only clone (no file blobs) for browsing, then extracts
 # individual files on demand. Upload uses a temp shallow clone.
@@ -1362,7 +1390,7 @@ static func auth_verify(username: String, password: String, log: Callable) -> Di
 	log.call("❌ Invalid username or password.")
 	return {}
 
-static func auth_register(username: String, password: String, log: Callable) -> bool:
+static func auth_register(username: String, github_username: String, password: String, log: Callable) -> bool:
 	log.call("🔄 Connecting...")
 	var tmp := _auth_clone(log)
 	if tmp.is_empty():
@@ -1374,7 +1402,8 @@ static func auth_register(username: String, password: String, log: Callable) -> 
 			log.call("❌ Username already taken.")
 			_rm_rf(tmp)
 			return false
-	users.append({"username": username, "password_hash": auth_hash(password), "role": "member", "approved": false})
+	users.append({"username": username, "github_username": github_username,
+		"password_hash": auth_hash(password), "role": "member", "approved": false})
 	data["users"] = users
 	_auth_save(tmp, data)
 	_git(["add", "accounts.json"], tmp, Callable())
@@ -1421,10 +1450,12 @@ static func auth_approve(approver: String, target: String, log: Callable) -> boo
 	var data := _auth_load(tmp)
 	var users: Array = data.get("users", [])
 	var found := false
+	var gh_user := ""
 	for u: Dictionary in users:
 		if (u.get("username", "") as String).to_lower() == target.to_lower():
 			u["approved"] = true
 			found = true
+			gh_user = u.get("github_username", "")
 			break
 	if not found:
 		log.call("❌ User not found.")
@@ -1436,6 +1467,11 @@ static func auth_approve(approver: String, target: String, log: Callable) -> boo
 	_git(["commit", "-m", "auth: " + approver + " approved " + target], tmp, Callable())
 	var ok := _git(["push", "origin", "main"], tmp, Callable()) == OK
 	_rm_rf(tmp)
+	if ok and not gh_user.is_empty():
+		log.call("🔑 Granting GitHub access to " + gh_user + "...")
+		for repo in ["ChillCube/vault", "ChillCube/cc-auth"]:
+			_gh(["api", "-X", "PUT", "repos/" + repo + "/collaborators/" + gh_user,
+				"--field", "permission=push"], log)
 	log.call("✅ Approved: " + target if ok else "❌ Push failed.")
 	return ok
 
@@ -1450,6 +1486,44 @@ static func auth_fetch_pending(log: Callable) -> Array:
 		if not u.get("approved", false):
 			result.append(u.get("username", ""))
 	return result
+
+static func auth_fetch_all(log: Callable) -> Array:
+	var tmp := _auth_clone(log)
+	if tmp.is_empty():
+		return []
+	var users: Array = _auth_load(tmp).get("users", [])
+	_rm_rf(tmp)
+	return users
+
+static func auth_remove(approver: String, target: String, log: Callable) -> bool:
+	var tmp := _auth_clone(log)
+	if tmp.is_empty():
+		return false
+	var data := _auth_load(tmp)
+	var users: Array = data.get("users", [])
+	var gh_user := ""
+	var new_users: Array = []
+	for u: Dictionary in users:
+		if (u.get("username", "") as String).to_lower() == target.to_lower():
+			gh_user = u.get("github_username", "")
+		else:
+			new_users.append(u)
+	if new_users.size() == users.size():
+		log.call("❌ User not found.")
+		_rm_rf(tmp)
+		return false
+	data["users"] = new_users
+	_auth_save(tmp, data)
+	_git(["add", "accounts.json"], tmp, Callable())
+	_git(["commit", "-m", "auth: " + approver + " removed " + target], tmp, Callable())
+	var ok := _git(["push", "origin", "main"], tmp, Callable()) == OK
+	_rm_rf(tmp)
+	if ok and not gh_user.is_empty():
+		log.call("🔑 Revoking GitHub access from " + gh_user + "...")
+		for repo in ["ChillCube/vault", "ChillCube/cc-auth"]:
+			_gh(["api", "-X", "DELETE", "repos/" + repo + "/collaborators/" + gh_user], log)
+	log.call("✅ Removed: " + target if ok else "❌ Push failed.")
+	return ok
 
 static func auth_change_username(username: String, new_name: String, log: Callable) -> String:
 	log.call("🔄 Connecting...")
