@@ -1,23 +1,23 @@
-## ChillCubeFeedback — call from your game to send user feedback to the editor bug panel.
+## Usage anywhere in your game:
+##   ChillCubeFeedback.submit("Player fell through floor")
+##   ChillCubeFeedback.submit("Crash on level 3", {"scene": get_tree().current_scene.name})
 ##
-## Usage (anywhere in your game):
-##   const Feedback = preload("res://addons/ChillCube_Tools/bug_report.gd")
-##   Feedback.report("Player fell through floor", {"scene": get_tree().current_scene.name})
-##
-## Reports are saved to user://cc_feedback.json and appear in the CC Tools
-## Planning → Bugs tab marked with 👤.
+## Reports appear in CC Tools → Planning → Bugs, marked 👤.
+## Game name is captured automatically from ProjectSettings.
 
 extends Object
 class_name ChillCubeFeedback
 
-static func report(description: String, context: Dictionary = {}) -> void:
+static func submit(description: String, context: Dictionary = {}) -> void:
 	var path := "user://cc_feedback.json"
 	var items: Array = _load(path)
-	items.insert(0, {
+	var entry := {
 		"desc": description,
 		"timestamp": Time.get_datetime_string_from_system(),
+		"game": ProjectSettings.get_setting("application/config/name", "Unknown"),
 		"context": context
-	})
+	}
+	items.insert(0, entry)
 	_save(path, items)
 
 static func _load(path: String) -> Array:

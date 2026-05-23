@@ -1316,3 +1316,157 @@ static func _make_id(s: String) -> String:
 
 static func _clean_label(s: String) -> String:
 	return s.replace("Godot_", "").replace("_", " ")
+
+# ─── AUTH ─────────────────────────────────────────────────────────────────────
+
+const AUTH_SSH := "git@github.com:ChillCube/cc-auth.git"
+
+static func auth_hash(password: String) -> String:
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA256)
+	ctx.update(password.to_utf8_buffer())
+	return ctx.finish().hex_encode()
+
+static func _auth_tmp() -> String:
+	return OS.get_temp_dir() + "/.cc_auth_" + str(int(Time.get_unix_time_from_system()))
+
+static func _auth_load(tmp: String) -> Dictionary:
+	var parsed: Variant = JSON.parse_string(_read(tmp + "/accounts.json"))
+	return parsed if parsed is Dictionary else {"users": []}
+
+static func _auth_save(tmp: String, data: Dictionary) -> void:
+	_write(tmp + "/accounts.json", JSON.stringify(data, "\t") + "\n")
+
+static func _auth_clone(log: Callable) -> String:
+	var tmp := _auth_tmp()
+	if _git(["clone", "--depth=1", "--quiet", AUTH_SSH, tmp], "", Callable()) != OK:
+		log.call("❌ Cannot reach auth server. Check SSH/git access.")
+		return ""
+	return tmp
+
+static func auth_verify(username: String, password: String, log: Callable) -> Dictionary:
+	log.call("🔄 Connecting...")
+	var tmp := _auth_clone(log)
+	if tmp.is_empty():
+		return {}
+	var users: Array = _auth_load(tmp).get("users", [])
+	_rm_rf(tmp)
+	var h := auth_hash(password)
+	for u: Dictionary in users:
+		if (u.get("username", "") as String).to_lower() == username.to_lower():
+			if u.get("password_hash", "") == h:
+				if u.get("approved", false):
+					return u
+				log.call("⏳ Account pending approval by the leader.")
+				return {}
+	log.call("❌ Invalid username or password.")
+	return {}
+
+static func auth_register(username: String, password: String, log: Callable) -> bool:
+	log.call("🔄 Connecting...")
+	var tmp := _auth_clone(log)
+	if tmp.is_empty():
+		return false
+	var data := _auth_load(tmp)
+	var users: Array = data.get("users", [])
+	for u: Dictionary in users:
+		if (u.get("username", "") as String).to_lower() == username.to_lower():
+			log.call("❌ Username already taken.")
+			_rm_rf(tmp)
+			return false
+	users.append({"username": username, "password_hash": auth_hash(password), "role": "member", "approved": false})
+	data["users"] = users
+	_auth_save(tmp, data)
+	_git(["add", "accounts.json"], tmp, Callable())
+	_git(["commit", "-m", "auth: register " + username], tmp, Callable())
+	var ok := _git(["push", "origin", "main"], tmp, Callable()) == OK
+	_rm_rf(tmp)
+	log.call("✅ Account created! Waiting for leader approval." if ok else "❌ Push failed — do you have collaborator access to cc-auth?")
+	return ok
+
+static func auth_change_password(username: String, old_pw: String, new_pw: String, log: Callable) -> bool:
+	log.call("🔄 Connecting...")
+	var tmp := _auth_clone(log)
+	if tmp.is_empty():
+		return false
+	var data := _auth_load(tmp)
+	var users: Array = data.get("users", [])
+	var found := false
+	for u: Dictionary in users:
+		if (u.get("username", "") as String).to_lower() == username.to_lower():
+			if u.get("password_hash", "") != auth_hash(old_pw):
+				log.call("❌ Current password is incorrect.")
+				_rm_rf(tmp)
+				return false
+			u["password_hash"] = auth_hash(new_pw)
+			found = true
+			break
+	if not found:
+		_rm_rf(tmp)
+		log.call("❌ User not found.")
+		return false
+	data["users"] = users
+	_auth_save(tmp, data)
+	_git(["add", "accounts.json"], tmp, Callable())
+	_git(["commit", "-m", "auth: change password for " + username], tmp, Callable())
+	var ok := _git(["push", "origin", "main"], tmp, Callable()) == OK
+	_rm_rf(tmp)
+	log.call("✅ Password changed!" if ok else "❌ Push failed.")
+	return ok
+
+static func auth_approve(approver: String, target: String, log: Callable) -> bool:
+	var tmp := _auth_clone(log)
+	if tmp.is_empty():
+		return false
+	var data := _auth_load(tmp)
+	var users: Array = data.get("users", [])
+	var found := false
+	for u: Dictionary in users:
+		if (u.get("username", "") as String).to_lower() == target.to_lower():
+			u["approved"] = true
+			found = true
+			break
+	if not found:
+		log.call("❌ User not found.")
+		_rm_rf(tmp)
+		return false
+	data["users"] = users
+	_auth_save(tmp, data)
+	_git(["add", "accounts.json"], tmp, Callable())
+	_git(["commit", "-m", "auth: " + approver + " approved " + target], tmp, Callable())
+	var ok := _git(["push", "origin", "main"], tmp, Callable()) == OK
+	_rm_rf(tmp)
+	log.call("✅ Approved: " + target if ok else "❌ Push failed.")
+	return ok
+
+static func auth_fetch_pending(log: Callable) -> Array:
+	var tmp := _auth_clone(log)
+	if tmp.is_empty():
+		return []
+	var users: Array = _auth_load(tmp).get("users", [])
+	_rm_rf(tmp)
+	var result: Array = []
+	for u: Dictionary in users:
+		if not u.get("approved", false):
+			result.append(u.get("username", ""))
+	return result
+
+static func auth_bootstrap(log: Callable) -> bool:
+	log.call("🌐 Creating ChillCube/cc-auth repo...")
+	_gh(["repo", "create", "ChillCube/cc-auth", "--private",
+		"--description", "ChillCube Tools authentication (private)"], log)
+	var tmp := _auth_tmp()
+	DirAccess.make_dir_recursive_absolute(tmp)
+	_git(["init", "-q"], tmp, log)
+	_git(["branch", "-m", "main"], tmp, log)
+	var initial := {"users": [{"username": "IceCubeMaker",
+		"password_hash": auth_hash("12345"), "role": "leader", "approved": true}]}
+	_write(tmp + "/accounts.json", JSON.stringify(initial, "\t") + "\n")
+	_write(tmp + "/README.md", "# ChillCube Auth\nPrivate — do not share.\n")
+	_git(["add", "."], tmp, log)
+	_git(["commit", "-m", "auth: initialize with IceCubeMaker"], tmp, log)
+	_git(["remote", "add", "origin", AUTH_SSH], tmp, log)
+	var ok := _git(["push", "-u", "origin", "main"], tmp, log) == OK
+	_rm_rf(tmp)
+	log.call("✅ Auth repo ready! IceCubeMaker / 12345" if ok else "❌ Push failed.")
+	return ok

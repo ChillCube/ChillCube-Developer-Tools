@@ -106,6 +106,14 @@ var _activity_push_btn: Button
 var _activity_status_lbl: Label
 var _activity_thread: Thread = null
 
+var _current_user: Dictionary = {}
+var _login_overlay: Control
+var _login_status_lbl: Label
+var _reg_status_lbl: Label
+var _account_status_lbl: Label
+var _pending_list: VBoxContainer
+var _login_thread: Thread = null
+
 var _thread: Thread = null
 
 # ─── Setup ───────────────────────────────────────────────────────────────────
@@ -127,10 +135,15 @@ func _ready() -> void:
 	_build_vault_tab(tabs)
 	_build_terminal_tab(tabs)
 	_build_activity_tab(tabs)
+	_build_account_tab(tabs)
 
 	_refresh_addons()
 	_vault_connect()
 	_load_activity()
+
+	_login_overlay = _build_login_overlay()
+	_login_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(_login_overlay)
 
 func _exit_tree() -> void:
 	if _thread and _thread.is_started():
@@ -147,6 +160,8 @@ func _exit_tree() -> void:
 		_vault_preview_thread.wait_to_finish()
 	if _activity_thread and _activity_thread.is_started():
 		_activity_thread.wait_to_finish()
+	if _login_thread and _login_thread.is_started():
+		_login_thread.wait_to_finish()
 
 # ─── Tab builders ─────────────────────────────────────────────────────────────
 
@@ -1144,6 +1159,7 @@ func _refresh_bugs() -> void:
 			"source": "feedback",
 			"desc": entry.get("desc", ""),
 			"timestamp": entry.get("timestamp", ""),
+			"game": entry.get("game", ""),
 			"context": entry.get("context", {}),
 			"feedback_idx": fi
 		})
@@ -1208,7 +1224,8 @@ func _refresh_bugs() -> void:
 				desc_lbl.add_theme_color_override("font_color", Color(1.0, 0.75, 0.35))
 			info.add_child(desc_lbl)
 			var loc_lbl := Label.new()
-			loc_lbl.text = "User feedback  " + bug.get("timestamp", "") if is_feedback \
+			var game_tag: String = ("  [" + bug.get("game", "") + "]") if not (bug.get("game", "") as String).is_empty() else ""
+			loc_lbl.text = "👤 User feedback" + game_tag + "  " + bug.get("timestamp", "") if is_feedback \
 				else rel_path + ":" + str(int(bug.get("line", 0)) + 1)
 			loc_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
 			loc_lbl.clip_text = true
@@ -2990,7 +3007,8 @@ func _log_activity(type: String, text: String) -> void:
 	_activity_items.insert(0, {
 		"type": type,
 		"text": text,
-		"timestamp": Time.get_datetime_string_from_system()
+		"timestamp": Time.get_datetime_string_from_system(),
+		"user": _current_user.get("username", "?")
 	})
 	_save_activity()
 	_refresh_activity_list()
@@ -3076,11 +3094,13 @@ func _refresh_activity_list() -> void:
 		text_lbl.pop()
 		row.add_child(text_lbl)
 
-		var time_lbl := Label.new()
-		time_lbl.text = ts.substr(11, 5) if ts.length() >= 16 else ""
-		time_lbl.add_theme_font_size_override("font_size", 11)
-		time_lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
-		row.add_child(time_lbl)
+		var user_str: String = entry.get("user", "")
+		var meta_lbl := Label.new()
+		meta_lbl.text = (("@" + user_str + "  ") if not user_str.is_empty() and user_str != "?" else "") \
+			+ (ts.substr(11, 5) if ts.length() >= 16 else "")
+		meta_lbl.add_theme_font_size_override("font_size", 11)
+		meta_lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
+		row.add_child(meta_lbl)
 
 		if type == "task_completed":
 			var undo_btn := Button.new()
@@ -3119,3 +3139,370 @@ func _activity_color(type: String) -> Color:
 		"addon_synced":   return Color(1.0, 0.85, 0.3)
 		"todo_added":     return Color(0.75, 0.75, 0.75)
 		_:                return Color(0.6, 0.6, 0.6)
+
+# ─── Login overlay ────────────────────────────────────────────────────────────
+
+func _build_login_overlay() -> Control:
+	var overlay := ColorRect.new()
+	overlay.color = Color(0.08, 0.08, 0.08, 0.97)
+
+	var center := VBoxContainer.new()
+	center.set_anchors_preset(Control.PRESET_CENTER)
+	center.custom_minimum_size = Vector2(380, 0)
+	center.add_theme_constant_override("separation", 8)
+	overlay.add_child(center)
+
+	var title := Label.new()
+	title.text = "🧊 ChillCube Tools"
+	title.add_theme_font_size_override("font_size", 20)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	center.add_child(title)
+	center.add_child(HSeparator.new())
+
+	var tabs := TabContainer.new()
+	tabs.custom_minimum_size = Vector2(380, 0)
+	center.add_child(tabs)
+
+	# ── Login tab ──
+	var login_vbox := VBoxContainer.new()
+	login_vbox.name = "Login"
+	login_vbox.add_theme_constant_override("separation", 6)
+	tabs.add_child(login_vbox)
+
+	var lg := GridContainer.new()
+	lg.columns = 2
+	lg.add_theme_constant_override("h_separation", 8)
+	var un_lbl := Label.new(); un_lbl.text = "Username"
+	var un_field := LineEdit.new(); un_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var pw_lbl := Label.new(); pw_lbl.text = "Password"
+	var pw_field := LineEdit.new()
+	pw_field.secret = true; pw_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lg.add_child(un_lbl); lg.add_child(un_field)
+	lg.add_child(pw_lbl); lg.add_child(pw_field)
+	login_vbox.add_child(lg)
+
+	var login_btn := Button.new()
+	login_btn.text = "Login"
+	login_vbox.add_child(login_btn)
+
+	_login_status_lbl = Label.new()
+	_login_status_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_login_status_lbl.add_theme_color_override("font_color", Color(0.9, 0.5, 0.4))
+	login_vbox.add_child(_login_status_lbl)
+
+	var setup_btn := Button.new()
+	setup_btn.text = "⚙ First-time setup (create auth repo)"
+	setup_btn.flat = true
+	setup_btn.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
+	login_vbox.add_child(setup_btn)
+
+	# ── Register tab ──
+	var reg_vbox := VBoxContainer.new()
+	reg_vbox.name = "Register"
+	reg_vbox.add_theme_constant_override("separation", 6)
+	tabs.add_child(reg_vbox)
+
+	var rg := GridContainer.new()
+	rg.columns = 2
+	rg.add_theme_constant_override("h_separation", 8)
+	var run_lbl := Label.new(); run_lbl.text = "Username"
+	var run_field := LineEdit.new(); run_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var rpw_lbl := Label.new(); rpw_lbl.text = "Password"
+	var rpw_field := LineEdit.new()
+	rpw_field.secret = true; rpw_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var rpw2_lbl := Label.new(); rpw2_lbl.text = "Confirm"
+	var rpw2_field := LineEdit.new()
+	rpw2_field.secret = true; rpw2_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	rg.add_child(run_lbl); rg.add_child(run_field)
+	rg.add_child(rpw_lbl); rg.add_child(rpw_field)
+	rg.add_child(rpw2_lbl); rg.add_child(rpw2_field)
+	reg_vbox.add_child(rg)
+
+	var reg_btn := Button.new()
+	reg_btn.text = "Register"
+	reg_vbox.add_child(reg_btn)
+
+	_reg_status_lbl = Label.new()
+	_reg_status_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	reg_vbox.add_child(_reg_status_lbl)
+
+	# ── Wire up ──
+	var submit_login := func():
+		if _login_thread and _login_thread.is_started():
+			return
+		var u := un_field.text.strip_edges()
+		var p := pw_field.text
+		if u.is_empty() or p.is_empty():
+			_login_status_lbl.text = "Enter username and password."
+			return
+		login_btn.disabled = true
+		_login_status_lbl.text = "🔄 Connecting..."
+		_login_thread = Thread.new()
+		_login_thread.start(func():
+			var result := Ops.auth_verify(u, p,
+				func(msg): call_deferred("_set_login_status", msg))
+			call_deferred("_on_login_done", result, login_btn)
+		)
+
+	login_btn.pressed.connect(submit_login)
+	pw_field.text_submitted.connect(func(_t): submit_login.call())
+
+	setup_btn.pressed.connect(func():
+		if _login_thread and _login_thread.is_started():
+			return
+		login_btn.disabled = true
+		setup_btn.disabled = true
+		_login_status_lbl.text = "🔄 Setting up..."
+		_login_thread = Thread.new()
+		_login_thread.start(func():
+			Ops.auth_bootstrap(func(msg): call_deferred("_set_login_status", msg))
+			call_deferred("_on_setup_done", login_btn, setup_btn)
+		)
+	)
+
+	reg_btn.pressed.connect(func():
+		if _login_thread and _login_thread.is_started():
+			return
+		var u := run_field.text.strip_edges()
+		var p := rpw_field.text
+		var p2 := rpw2_field.text
+		if u.is_empty() or p.is_empty():
+			_reg_status_lbl.text = "Fill in all fields."
+			return
+		if p != p2:
+			_reg_status_lbl.text = "Passwords do not match."
+			return
+		reg_btn.disabled = true
+		_reg_status_lbl.text = "🔄 Registering..."
+		_login_thread = Thread.new()
+		_login_thread.start(func():
+			Ops.auth_register(u, p, func(msg): call_deferred("_set_reg_status", msg))
+			call_deferred("_on_reg_done", reg_btn)
+		)
+	)
+
+	return overlay
+
+func _set_login_status(msg: String) -> void:
+	if is_instance_valid(_login_status_lbl):
+		_login_status_lbl.text = msg
+
+func _set_reg_status(msg: String) -> void:
+	if is_instance_valid(_reg_status_lbl):
+		_reg_status_lbl.text = msg
+
+func _on_login_done(user: Dictionary, btn: Button) -> void:
+	if _login_thread:
+		_login_thread.wait_to_finish()
+	_login_thread = null
+	if is_instance_valid(btn):
+		btn.disabled = false
+	if user.is_empty():
+		return
+	_current_user = user
+	if is_instance_valid(_login_overlay):
+		_login_overlay.visible = false
+	_refresh_account_tab()
+
+func _on_reg_done(btn: Button) -> void:
+	if _login_thread:
+		_login_thread.wait_to_finish()
+	_login_thread = null
+	if is_instance_valid(btn):
+		btn.disabled = false
+
+func _on_setup_done(login_btn: Button, setup_btn: Button) -> void:
+	if _login_thread:
+		_login_thread.wait_to_finish()
+	_login_thread = null
+	if is_instance_valid(login_btn):
+		login_btn.disabled = false
+	if is_instance_valid(setup_btn):
+		setup_btn.disabled = false
+
+# ─── Account tab ─────────────────────────────────────────────────────────────
+
+func _build_account_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Account", tabs)
+
+	var info_lbl := Label.new()
+	info_lbl.name = "InfoLbl"
+	info_lbl.text = "Not logged in."
+	info_lbl.add_theme_font_size_override("font_size", 13)
+	root.add_child(info_lbl)
+	root.add_child(HSeparator.new())
+
+	# Change password
+	var cp_heading := Label.new()
+	cp_heading.text = "Change Password"
+	cp_heading.add_theme_font_size_override("font_size", 13)
+	root.add_child(cp_heading)
+
+	var cg := GridContainer.new()
+	cg.columns = 2
+	cg.add_theme_constant_override("h_separation", 8)
+	var cp_cur_lbl := Label.new(); cp_cur_lbl.text = "Current"
+	var cp_cur := LineEdit.new(); cp_cur.secret = true; cp_cur.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var cp_new_lbl := Label.new(); cp_new_lbl.text = "New"
+	var cp_new := LineEdit.new(); cp_new.secret = true; cp_new.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var cp_con_lbl := Label.new(); cp_con_lbl.text = "Confirm"
+	var cp_con := LineEdit.new(); cp_con.secret = true; cp_con.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cg.add_child(cp_cur_lbl); cg.add_child(cp_cur)
+	cg.add_child(cp_new_lbl); cg.add_child(cp_new)
+	cg.add_child(cp_con_lbl); cg.add_child(cp_con)
+	root.add_child(cg)
+
+	var cp_btn := Button.new()
+	cp_btn.text = "Change Password"
+	root.add_child(cp_btn)
+
+	_account_status_lbl = Label.new()
+	_account_status_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	root.add_child(_account_status_lbl)
+
+	cp_btn.pressed.connect(func():
+		if _login_thread and _login_thread.is_started():
+			return
+		var username: String = _current_user.get("username", "")
+		if username.is_empty():
+			_account_status_lbl.text = "Not logged in."
+			return
+		var old_pw := cp_cur.text
+		var new_pw := cp_new.text
+		var con_pw := cp_con.text
+		if old_pw.is_empty() or new_pw.is_empty():
+			_account_status_lbl.text = "Fill in all fields."
+			return
+		if new_pw != con_pw:
+			_account_status_lbl.text = "New passwords do not match."
+			return
+		cp_btn.disabled = true
+		_account_status_lbl.text = "🔄 Changing..."
+		_login_thread = Thread.new()
+		_login_thread.start(func():
+			var ok := Ops.auth_change_password(username, old_pw, new_pw,
+				func(msg): call_deferred("_set_account_status", msg))
+			call_deferred("_on_change_pw_done", cp_btn, ok)
+		)
+	)
+
+	# Pending approvals (shown only for leader after login — refreshed dynamically)
+	root.add_child(HSeparator.new())
+	var ap_heading := Label.new()
+	ap_heading.name = "ApprovalHeading"
+	ap_heading.text = "Pending Approvals"
+	ap_heading.add_theme_font_size_override("font_size", 13)
+	ap_heading.visible = false
+	root.add_child(ap_heading)
+
+	var ap_toolbar := HBoxContainer.new()
+	ap_toolbar.name = "ApprovalBar"
+	ap_toolbar.visible = false
+	var ap_refresh := Button.new()
+	ap_refresh.text = "↺ Refresh"
+	ap_refresh.pressed.connect(_refresh_pending_list)
+	ap_toolbar.add_child(ap_refresh)
+	root.add_child(ap_toolbar)
+
+	var ap_scroll := ScrollContainer.new()
+	ap_scroll.name = "ApprovalScroll"
+	ap_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ap_scroll.visible = false
+	_pending_list = VBoxContainer.new()
+	_pending_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ap_scroll.add_child(_pending_list)
+	root.add_child(ap_scroll)
+
+func _set_account_status(msg: String) -> void:
+	if is_instance_valid(_account_status_lbl):
+		_account_status_lbl.text = msg
+
+func _on_change_pw_done(btn: Button, _ok: bool) -> void:
+	if _login_thread:
+		_login_thread.wait_to_finish()
+	_login_thread = null
+	if is_instance_valid(btn):
+		btn.disabled = false
+
+func _refresh_account_tab() -> void:
+	# Update info label and show/hide leader section
+	var tabs: TabContainer = get_child(1) if get_child_count() > 1 else null
+	if not is_instance_valid(tabs):
+		return
+	for i in range(tabs.get_tab_count()):
+		if tabs.get_tab_title(i) == "Account":
+			var root: Control = tabs.get_tab_control(i)
+			var info: Label = root.get_node_or_null("InfoLbl")
+			if is_instance_valid(info):
+				var uname: String = _current_user.get("username", "")
+				var role: String = _current_user.get("role", "member")
+				info.text = "👤 %s  (%s)" % [uname, role]
+			var is_leader: bool = _current_user.get("role", "") == "leader"
+			for child in root.get_children():
+				if child.name in ["ApprovalHeading", "ApprovalBar", "ApprovalScroll"]:
+					child.visible = is_leader
+			if is_leader:
+				_refresh_pending_list()
+			break
+
+func _refresh_pending_list() -> void:
+	if not is_instance_valid(_pending_list):
+		return
+	for child in _pending_list.get_children():
+		child.queue_free()
+	var loading_lbl := Label.new()
+	loading_lbl.text = "🔄 Loading..."
+	loading_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+	_pending_list.add_child(loading_lbl)
+	if _login_thread and _login_thread.is_started():
+		return
+	var approver: String = _current_user.get("username", "")
+	_login_thread = Thread.new()
+	_login_thread.start(func():
+		var pending := Ops.auth_fetch_pending(Callable())
+		call_deferred("_on_pending_loaded", pending, approver)
+	)
+
+func _on_pending_loaded(pending: Array, approver: String) -> void:
+	if _login_thread:
+		_login_thread.wait_to_finish()
+	_login_thread = null
+	if not is_instance_valid(_pending_list):
+		return
+	for child in _pending_list.get_children():
+		child.queue_free()
+	if pending.is_empty():
+		var lbl := Label.new()
+		lbl.text = "No pending accounts."
+		lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_pending_list.add_child(lbl)
+		return
+	for username: String in pending:
+		var row := HBoxContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var lbl := Label.new()
+		lbl.text = username
+		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var approve_btn := Button.new()
+		approve_btn.text = "✅ Approve"
+		var cap_name := username
+		var cap_approver := approver
+		approve_btn.pressed.connect(func():
+			approve_btn.disabled = true
+			if _login_thread and _login_thread.is_started():
+				return
+			_login_thread = Thread.new()
+			_login_thread.start(func():
+				Ops.auth_approve(cap_approver, cap_name, Callable())
+				call_deferred("_refresh_pending_list")
+				call_deferred("_on_approve_done")
+			)
+		)
+		row.add_child(lbl)
+		row.add_child(approve_btn)
+		_pending_list.add_child(row)
+
+func _on_approve_done() -> void:
+	if _login_thread:
+		_login_thread.wait_to_finish()
+	_login_thread = null
