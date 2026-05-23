@@ -116,6 +116,11 @@ var _vote_create_box: Control
 var _vote_thread: Thread = null
 var _vote_comments_open: Dictionary = {}  # idx -> bool
 
+var _schedule_items: Array = []
+var _schedule_list: VBoxContainer
+var _schedule_status_lbl: Label
+var _schedule_create_box: Control
+
 var _ideas_items: Array = []
 var _ideas_list: VBoxContainer
 var _ideas_status_lbl: Label
@@ -1854,7 +1859,8 @@ func _cc_data_bundle() -> Dictionary:
 		"feedback.json": fb_str,
 		"votes.json": JSON.stringify(_vote_items, "\t") + "\n",
 		"ideas.json": JSON.stringify(_ideas_items, "\t") + "\n",
-		"asset_meta.json": JSON.stringify(_asset_meta, "\t") + "\n"
+		"asset_meta.json": JSON.stringify(_asset_meta, "\t") + "\n",
+		"schedule.json": JSON.stringify(_schedule_items, "\t") + "\n"
 	}
 
 func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
@@ -1878,6 +1884,7 @@ func _build_team_supertab(tabs: TabContainer) -> void:
 	root.add_child(inner_tabs)
 	_build_activity_tab(inner_tabs)
 	_build_votes_tab(inner_tabs)
+	_build_schedule_tab(inner_tabs)
 
 # ─── Votes tab ────────────────────────────────────────────────────────────────
 
@@ -2259,6 +2266,290 @@ func _refresh_vote_list() -> void:
 			cvbox.add_child(add_row)
 
 		_vote_list.add_child(panel)
+
+# ─── Schedule tab ─────────────────────────────────────────────────────────────
+
+func _build_schedule_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Schedule", tabs)
+
+	var toolbar := HBoxContainer.new()
+	var new_btn := Button.new()
+	new_btn.text = "➕ Add Event"
+	new_btn.pressed.connect(func():
+		if is_instance_valid(_schedule_create_box):
+			_schedule_create_box.visible = not _schedule_create_box.visible
+	)
+	_schedule_status_lbl = Label.new()
+	_schedule_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_schedule_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+	toolbar.add_child(new_btn)
+	toolbar.add_child(_schedule_status_lbl)
+	root.add_child(toolbar)
+
+	# ── Create form ───────────────────────────────────────────────────────────
+	_schedule_create_box = VBoxContainer.new()
+	_schedule_create_box.visible = false
+	_schedule_create_box.add_theme_constant_override("separation", 4)
+
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 4)
+
+	var title_lbl := Label.new(); title_lbl.text = "Title *"
+	var title_field := LineEdit.new()
+	title_field.placeholder_text = "Event name"
+	title_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_child(title_lbl); grid.add_child(title_field)
+
+	var date_lbl := Label.new(); date_lbl.text = "Date *"
+	var date_field := LineEdit.new()
+	date_field.placeholder_text = "YYYY-MM-DD"
+	date_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_child(date_lbl); grid.add_child(date_field)
+
+	var time_lbl := Label.new(); time_lbl.text = "Time"
+	var time_field := LineEdit.new()
+	time_field.placeholder_text = "HH:MM (optional)"
+	time_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_child(time_lbl); grid.add_child(time_field)
+
+	var desc_lbl := Label.new(); desc_lbl.text = "Description"
+	var desc_field := TextEdit.new()
+	desc_field.placeholder_text = "Details…"
+	desc_field.custom_minimum_size = Vector2(0, 48)
+	desc_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_child(desc_lbl); grid.add_child(desc_field)
+
+	_schedule_create_box.add_child(grid)
+
+	var create_btn := Button.new()
+	create_btn.text = "Create Event"
+	create_btn.pressed.connect(func():
+		var title := title_field.text.strip_edges()
+		var date := date_field.text.strip_edges()
+		if title.is_empty() or date.is_empty():
+			_schedule_status_lbl.text = "⚠ Title and date are required."
+			return
+		var user := _current_user.get("username", "?")
+		_schedule_items.append({
+			"title": title,
+			"date": date,
+			"time": time_field.text.strip_edges(),
+			"description": desc_field.text.strip_edges(),
+			"created_by": user,
+			"created_at": Time.get_datetime_string_from_system(),
+			"rsvp": {}
+		})
+		_schedule_items.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return (a.get("date", "") + "T" + a.get("time", "")) < (b.get("date", "") + "T" + b.get("time", ""))
+		)
+		_save_schedule()
+		_log_activity("event_created", '%s added event: "%s" on %s' % [user, title, date])
+		title_field.text = ""; date_field.text = ""; time_field.text = ""; desc_field.text = ""
+		_schedule_create_box.visible = false
+		_refresh_schedule_list()
+	)
+	_schedule_create_box.add_child(create_btn)
+	_schedule_create_box.add_child(HSeparator.new())
+	root.add_child(_schedule_create_box)
+
+	# ── Event list ────────────────────────────────────────────────────────────
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_schedule_list = VBoxContainer.new()
+	_schedule_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_schedule_list.add_theme_constant_override("separation", 8)
+	scroll.add_child(_schedule_list)
+	root.add_child(scroll)
+
+	_load_schedule()
+
+func _schedule_file() -> String:
+	return ProjectSettings.globalize_path("user://cc_schedule.json")
+
+func _load_schedule() -> void:
+	_schedule_items = []
+	var path := _schedule_file()
+	if not FileAccess.file_exists(path):
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if not f:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if parsed is Array:
+		_schedule_items = parsed
+	if is_instance_valid(_schedule_list):
+		_refresh_schedule_list()
+
+func _save_schedule() -> void:
+	var fw := FileAccess.open(_schedule_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(_schedule_items, "\t") + "\n")
+		fw.close()
+	_activity_auto_push()
+
+func _refresh_schedule_list() -> void:
+	if not is_instance_valid(_schedule_list):
+		return
+	for c in _schedule_list.get_children():
+		c.queue_free()
+
+	if _schedule_items.is_empty():
+		var hint := Label.new()
+		hint.text = "No events scheduled. Use ➕ Add Event to create one."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_schedule_list.add_child(hint)
+		return
+
+	var me: String = _current_user.get("username", "")
+	var today := Time.get_date_string_from_system()
+
+	for i in range(_schedule_items.size()):
+		var ev: Dictionary = _schedule_items[i]
+		var ev_date: String = ev.get("date", "")
+		var ev_time: String = ev.get("time", "")
+		var is_past := ev_date < today
+
+		var card := PanelContainer.new()
+		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		if is_past:
+			card.modulate = Color(1, 1, 1, 0.5)
+		var cvbox := VBoxContainer.new()
+		cvbox.add_theme_constant_override("separation", 4)
+		card.add_child(cvbox)
+
+		# Header row
+		var header := HBoxContainer.new()
+		var title_lbl := Label.new()
+		title_lbl.text = ev.get("title", "Untitled")
+		title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		title_lbl.add_theme_font_size_override("font_size", 14)
+		if is_past:
+			title_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		header.add_child(title_lbl)
+
+		# Date/time chip
+		var dt_str := ev_date
+		if not ev_time.is_empty():
+			dt_str += "  " + ev_time
+		var dt_lbl := Label.new()
+		dt_lbl.text = dt_str
+		dt_lbl.add_theme_color_override("font_color", Color(0.5, 0.75, 1.0) if not is_past else Color(0.4, 0.4, 0.4))
+		dt_lbl.add_theme_font_size_override("font_size", 12)
+		header.add_child(dt_lbl)
+
+		# Delete button
+		var del_btn := Button.new()
+		del_btn.text = "🗑"
+		del_btn.flat = true
+		del_btn.tooltip_text = "Delete event"
+		var cap_i := i
+		del_btn.pressed.connect(func():
+			var cap_title: String = _schedule_items[cap_i].get("title", "")
+			_schedule_items.remove_at(cap_i)
+			_save_schedule()
+			_log_activity("event_deleted", '%s deleted event: "%s"' % [me if not me.is_empty() else "?", cap_title])
+			_refresh_schedule_list()
+		)
+		header.add_child(del_btn)
+		cvbox.add_child(header)
+
+		# Description
+		var desc: String = ev.get("description", "")
+		if not desc.is_empty():
+			var dl := Label.new()
+			dl.text = desc
+			dl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			dl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+			cvbox.add_child(dl)
+
+		# Creator
+		var meta_lbl := Label.new()
+		meta_lbl.text = "Created by @" + ev.get("created_by", "?")
+		meta_lbl.add_theme_font_size_override("font_size", 11)
+		meta_lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
+		cvbox.add_child(meta_lbl)
+
+		cvbox.add_child(HSeparator.new())
+
+		# RSVP buttons
+		var rsvp: Dictionary = ev.get("rsvp", {})
+		var my_rsvp: String = rsvp.get(me, "")
+		if not is_past and not me.is_empty():
+			var rsvp_row := HBoxContainer.new()
+			rsvp_row.add_theme_constant_override("separation", 6)
+			var rsvp_lbl := Label.new()
+			rsvp_lbl.text = "Your RSVP:"
+			rsvp_lbl.add_theme_font_size_override("font_size", 11)
+			rsvp_row.add_child(rsvp_lbl)
+			for opt_key: String in ["yes", "no", "maybe"]:
+				var opt_text := {"yes": "✅ Can join", "no": "❌ Can't join", "maybe": "🤔 Maybe"}[opt_key]
+				var rbtn := Button.new()
+				rbtn.text = opt_text
+				rbtn.add_theme_font_size_override("font_size", 11)
+				rbtn.flat = my_rsvp != opt_key
+				if my_rsvp == opt_key:
+					rbtn.add_theme_color_override("font_color", Color(0.4, 0.85, 0.5))
+				var cap_i2 := i
+				var cap_opt := opt_key
+				rbtn.pressed.connect(func():
+					var cur: String = _schedule_items[cap_i2].get("rsvp", {}).get(me, "")
+					if cur == cap_opt:
+						(_schedule_items[cap_i2]["rsvp"] as Dictionary).erase(me)
+					else:
+						(_schedule_items[cap_i2]["rsvp"] as Dictionary)[me] = cap_opt
+					_save_schedule()
+					_refresh_schedule_list()
+				)
+				rsvp_row.add_child(rbtn)
+			cvbox.add_child(rsvp_row)
+
+		# Attendee list
+		var yes_list: Array = []
+		var no_list: Array = []
+		var maybe_list: Array = []
+		for uname: String in rsvp:
+			match rsvp[uname]:
+				"yes":   yes_list.append(uname)
+				"no":    no_list.append(uname)
+				"maybe": maybe_list.append(uname)
+
+		if not yes_list.is_empty() or not no_list.is_empty() or not maybe_list.is_empty():
+			var attend_grid := GridContainer.new()
+			attend_grid.columns = 3
+			attend_grid.add_theme_constant_override("h_separation", 12)
+
+			for grp: Array in [[yes_list, "✅ Joining", Color(0.4, 0.9, 0.5)],
+								[maybe_list, "🤔 Maybe", Color(0.9, 0.8, 0.3)],
+								[no_list, "❌ Can't join", Color(0.9, 0.4, 0.4)]]:
+				var col := VBoxContainer.new()
+				col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				var col_hdr := Label.new()
+				col_hdr.text = grp[1]
+				col_hdr.add_theme_font_size_override("font_size", 11)
+				col_hdr.add_theme_color_override("font_color", grp[2])
+				col.add_child(col_hdr)
+				if (grp[0] as Array).is_empty():
+					var none_lbl := Label.new()
+					none_lbl.text = "—"
+					none_lbl.add_theme_font_size_override("font_size", 11)
+					none_lbl.add_theme_color_override("font_color", Color(0.35, 0.35, 0.35))
+					col.add_child(none_lbl)
+				else:
+					for uname: String in grp[0]:
+						var u_lbl := Label.new()
+						u_lbl.text = "@" + uname
+						u_lbl.add_theme_font_size_override("font_size", 11)
+						u_lbl.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
+						col.add_child(u_lbl)
+				attend_grid.add_child(col)
+			cvbox.add_child(attend_grid)
+
+		_schedule_list.add_child(card)
 
 func _build_vault_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Assets", tabs)
@@ -4106,6 +4397,8 @@ func _activity_icon(type: String) -> String:
 		"folder_created":    return "📁"
 		"idea_suggested":    return "💡"
 		"idea_rated":        return "⭐"
+		"event_created":     return "📅"
+		"event_deleted":     return "🗑"
 		_:                   return "•"
 
 func _activity_color(type: String) -> Color:
@@ -4127,6 +4420,8 @@ func _activity_color(type: String) -> Color:
 		"folder_created":    return Color(0.7, 0.7, 1.0)
 		"idea_suggested":    return Color(1.0, 0.95, 0.4)
 		"idea_rated":        return Color(1.0, 0.8, 0.2)
+		"event_created":     return Color(0.5, 0.85, 1.0)
+		"event_deleted":     return Color(1.0, 0.5, 0.4)
 		_:                   return Color(0.6, 0.6, 0.6)
 
 # ─── Login overlay ────────────────────────────────────────────────────────────
