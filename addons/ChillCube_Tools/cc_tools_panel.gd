@@ -125,6 +125,7 @@ var _ideas_items: Array = []
 var _ideas_list: VBoxContainer
 var _ideas_status_lbl: Label
 var _ideas_thread: Thread = null
+var _ideas_comments_open: Dictionary = {}  # orig_idx -> bool
 
 var _current_user: Dictionary = {}
 var _login_overlay: Control
@@ -1239,7 +1240,81 @@ func _refresh_ideas_list() -> void:
 			)
 			meta_row.add_child(star_btn)
 
+		# Comment count / toggle button
+		var idea_comments: Array = idea.get("comments", [])
+		var cmt_btn := Button.new()
+		cmt_btn.text = "💬 %d" % idea_comments.size() if not idea_comments.is_empty() else "💬"
+		cmt_btn.flat = true
+		cmt_btn.add_theme_font_size_override("font_size", 11)
+		cmt_btn.tooltip_text = "Show / hide comments"
+		if _ideas_comments_open.get(orig_idx, false):
+			cmt_btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+		var cap_oidx := orig_idx
+		cmt_btn.pressed.connect(func():
+			_ideas_comments_open[cap_oidx] = not _ideas_comments_open.get(cap_oidx, false)
+			_refresh_ideas_list()
+		)
+		meta_row.add_child(cmt_btn)
+
 		card_vbox.add_child(meta_row)
+
+		# Collapsible comments section
+		if _ideas_comments_open.get(orig_idx, false):
+			card_vbox.add_child(HSeparator.new())
+			var cmts_box := VBoxContainer.new()
+			cmts_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			cmts_box.add_theme_constant_override("separation", 2)
+
+			for comment: Dictionary in idea_comments:
+				var c_row := HBoxContainer.new()
+				c_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				var c_lbl := RichTextLabel.new()
+				c_lbl.bbcode_enabled = true
+				c_lbl.fit_content = true
+				c_lbl.scroll_active = false
+				c_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				c_lbl.push_color(Color(0.7, 0.7, 0.7))
+				c_lbl.append_text("[b]@" + comment.get("user", "?") + "[/b]  " + comment.get("text", ""))
+				c_lbl.pop()
+				c_row.add_child(c_lbl)
+				var c_time := Label.new()
+				c_time.text = (comment.get("timestamp", "")).substr(11, 5)
+				c_time.add_theme_font_size_override("font_size", 10)
+				c_time.add_theme_color_override("font_color", Color(0.35, 0.35, 0.35))
+				c_row.add_child(c_time)
+				cmts_box.add_child(c_row)
+
+			var add_row := HBoxContainer.new()
+			add_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var c_input := LineEdit.new()
+			c_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			c_input.placeholder_text = "Add a comment…"
+			c_input.add_theme_font_size_override("font_size", 11)
+			add_row.add_child(c_input)
+			var post_btn := Button.new()
+			post_btn.text = "Post"
+			post_btn.add_theme_font_size_override("font_size", 11)
+			var cap_post_idx := orig_idx
+			var me := _current_user.get("username", "?")
+			var post_fn := func():
+				var text := c_input.text.strip_edges()
+				if text.is_empty() or cap_post_idx < 0 or cap_post_idx >= _ideas_items.size():
+					return
+				var clist: Array = _ideas_items[cap_post_idx].get("comments", [])
+				clist.append({
+					"user": me,
+					"text": text,
+					"timestamp": Time.get_datetime_string_from_system()
+				})
+				_ideas_items[cap_post_idx]["comments"] = clist
+				_save_ideas()
+				_refresh_ideas_list()
+			post_btn.pressed.connect(post_fn)
+			c_input.text_submitted.connect(func(_t): post_fn.call())
+			add_row.add_child(post_btn)
+			cmts_box.add_child(add_row)
+			card_vbox.add_child(cmts_box)
+
 		_ideas_list.add_child(card)
 
 func _ideas_prompt_new() -> void:
