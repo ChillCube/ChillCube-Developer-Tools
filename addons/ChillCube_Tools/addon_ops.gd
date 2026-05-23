@@ -249,7 +249,7 @@ static func create_addon(root: String, addon_name: String, desc: String, author:
 		var code := _gh(["repo", "create", "ChillCube/" + safe,
 			"--public", "--source=" + target, "--remote=origin", "--push"], log)
 		if code != OK:
-			log.call("⚠️  GitHub creation failed (is gh CLI authenticated?)")
+			log.call("⚠️  GitHub repo was not created — see messages above")
 
 	log.call("✅ Done! addons/" + safe)
 	return true

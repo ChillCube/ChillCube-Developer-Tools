@@ -33,6 +33,11 @@ var _ws_editors: Dictionary = {}
 var _ws_status_lbl: Label
 var _ws_save_btn: Button
 var _ws_dirty: bool = false
+var _ws_known_classes: Array = []
+var _ws_error_panel: VBoxContainer
+var _ws_find_bar: HBoxContainer
+var _ws_find_input: LineEdit
+var _ws_check_gen: Dictionary = {}
 var _registry_entries: Array = []
 
 var _plan_list: VBoxContainer
@@ -617,31 +622,35 @@ func _build_workspace_tab(tabs: TabContainer) -> void:
 	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	root_vbox.add_child(split)
 
-	# Left: addon list
-	var left_scroll := ScrollContainer.new()
-	left_scroll.custom_minimum_size = Vector2(190, 0)
-	left_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_ws_addon_list = VBoxContainer.new()
-	_ws_addon_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	left_scroll.add_child(_ws_addon_list)
-	split.add_child(left_scroll)
+	# Left panel: addon list (top half) + deps (bottom half)
+	var left_panel := VBoxContainer.new()
+	left_panel.custom_minimum_size = Vector2(200, 0)
+	left_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.add_child(left_panel)
 	split.add_child(VSeparator.new())
 
-	# Middle: script editor
+	var addon_scroll := ScrollContainer.new()
+	addon_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	addon_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ws_addon_list = VBoxContainer.new()
+	_ws_addon_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	addon_scroll.add_child(_ws_addon_list)
+	left_panel.add_child(addon_scroll)
+	left_panel.add_child(HSeparator.new())
+
+	var dep_scroll := ScrollContainer.new()
+	dep_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	dep_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ws_dep_area = VBoxContainer.new()
+	_ws_dep_area.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dep_scroll.add_child(_ws_dep_area)
+	left_panel.add_child(dep_scroll)
+
+	# Middle: script editor (full remaining width)
 	_ws_editor_area = VBoxContainer.new()
 	_ws_editor_area.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_ws_editor_area.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	split.add_child(_ws_editor_area)
-	split.add_child(VSeparator.new())
-
-	# Right: dependencies
-	var right_scroll := ScrollContainer.new()
-	right_scroll.custom_minimum_size = Vector2(230, 0)
-	right_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_ws_dep_area = VBoxContainer.new()
-	_ws_dep_area.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	right_scroll.add_child(_ws_dep_area)
-	split.add_child(right_scroll)
 
 	_ws_refresh_list()
 
@@ -690,7 +699,11 @@ func _ws_rebuild_editor() -> void:
 	for child in _ws_editor_area.get_children():
 		child.queue_free()
 	_ws_editors = {}
+	_ws_check_gen = {}
 	_ws_dirty = false
+	_ws_error_panel = null
+	_ws_find_bar = null
+	_ws_find_input = null
 	if is_instance_valid(_ws_save_btn):
 		_ws_save_btn.disabled = true
 	if is_instance_valid(_ws_status_lbl):
@@ -716,10 +729,14 @@ func _ws_rebuild_editor() -> void:
 		_ws_editor_area.add_child(hint)
 		return
 
+	_ws_known_classes = _ws_build_known_classes(addon_path)
+
 	_ws_script_tabs = TabContainer.new()
 	_ws_script_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_ws_script_tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_ws_editor_area.add_child(_ws_script_tabs)
+
+	var err_icon: Texture2D = EditorInterface.get_editor_theme().get_icon("Error", "EditorIcons")
 
 	for script_path: String in scripts:
 		var content := ""
@@ -738,8 +755,17 @@ func _ws_rebuild_editor() -> void:
 		editor.auto_brace_completion_enabled = true
 		editor.indent_automatic = true
 		editor.indent_use_spaces = false
-		editor.minimap_draw = false
+		editor.minimap_draw = true
+		editor.code_completion_enabled = true
+		editor.code_completion_prefixes = PackedStringArray([".", "_", "$"])
 		editor.syntax_highlighter = GDScriptSyntaxHighlighter.new()
+
+		# Custom gutter for dep errors (index 0 in custom gutter space)
+		editor.add_gutter()
+		editor.set_gutter_name(0, "dep_errors")
+		editor.set_gutter_type(0, TextEdit.GUTTER_TYPE_ICON)
+		editor.set_gutter_width(0, 16)
+
 		editor.text_changed.connect(func():
 			if not _ws_dirty:
 				_ws_dirty = true
@@ -748,9 +774,69 @@ func _ws_rebuild_editor() -> void:
 				if is_instance_valid(_ws_status_lbl):
 					_ws_status_lbl.text = "● Unsaved changes"
 					_ws_status_lbl.add_theme_color_override("font_color", Color(1.0, 0.75, 0.3))
+			_ws_schedule_check(editor, addon_path, err_icon)
 		)
+
+		editor.code_completion_requested.connect(func():
+			_ws_provide_completion(editor, addon_path)
+		)
+
+		editor.gui_input.connect(func(event: InputEvent):
+			if not (event is InputEventKey):
+				return
+			var ke := event as InputEventKey
+			if not ke.pressed:
+				return
+			if ke.ctrl_pressed and ke.keycode == KEY_S:
+				get_viewport().set_input_as_handled()
+				_ws_save_scripts()
+			elif ke.ctrl_pressed and ke.keycode == KEY_F:
+				get_viewport().set_input_as_handled()
+				_ws_toggle_find()
+			elif ke.keycode == KEY_ESCAPE:
+				if is_instance_valid(_ws_find_bar) and _ws_find_bar.visible:
+					get_viewport().set_input_as_handled()
+					_ws_find_bar.visible = false
+		)
+
 		_ws_script_tabs.add_child(editor)
 		_ws_editors[script_path] = editor
+		_ws_run_check(editor, addon_path, err_icon)
+
+	# Find bar (hidden by default, shown by Ctrl+F)
+	_ws_find_bar = HBoxContainer.new()
+	_ws_find_bar.visible = false
+	var find_lbl := Label.new()
+	find_lbl.text = "Find:"
+	_ws_find_input = LineEdit.new()
+	_ws_find_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ws_find_input.placeholder_text = "Search in file…"
+	var find_prev_btn := Button.new()
+	find_prev_btn.text = "▲"
+	find_prev_btn.tooltip_text = "Previous match"
+	var find_next_btn := Button.new()
+	find_next_btn.text = "▼"
+	find_next_btn.tooltip_text = "Next match"
+	var find_close_btn := Button.new()
+	find_close_btn.text = "✕"
+	_ws_find_bar.add_child(find_lbl)
+	_ws_find_bar.add_child(_ws_find_input)
+	_ws_find_bar.add_child(find_prev_btn)
+	_ws_find_bar.add_child(find_next_btn)
+	_ws_find_bar.add_child(find_close_btn)
+	_ws_editor_area.add_child(_ws_find_bar)
+	find_prev_btn.pressed.connect(func(): _ws_find_next(true))
+	find_next_btn.pressed.connect(func(): _ws_find_next(false))
+	find_close_btn.pressed.connect(func():
+		if is_instance_valid(_ws_find_bar):
+			_ws_find_bar.visible = false
+	)
+	_ws_find_input.text_submitted.connect(func(_t: String): _ws_find_next(false))
+
+	# Error panel (populated by dep check, hidden when clean)
+	_ws_error_panel = VBoxContainer.new()
+	_ws_error_panel.visible = false
+	_ws_editor_area.add_child(_ws_error_panel)
 
 func _ws_rebuild_deps() -> void:
 	for child in _ws_dep_area.get_children():
@@ -834,6 +920,270 @@ func _ws_save_scripts() -> void:
 			if is_instance_valid(_ws_status_lbl) and not _ws_dirty:
 				_ws_status_lbl.text = ""
 		)
+
+# ─── Workspace: known-class cache ────────────────────────────────────────────
+
+func _ws_build_known_classes(addon_path: String) -> Array:
+	var classes: Array = []
+	for cls: String in ClassDB.get_class_list():
+		classes.append(cls)
+	# Add primitive/script types not always in ClassDB
+	for builtin: String in ["int", "float", "bool", "String", "StringName", "NodePath",
+			"Vector2", "Vector2i", "Vector3", "Vector3i", "Vector4", "Vector4i",
+			"Color", "Rect2", "Rect2i", "Transform2D", "Transform3D", "Basis",
+			"Quaternion", "Plane", "AABB", "RID", "Callable", "Signal",
+			"Array", "Dictionary", "PackedByteArray", "PackedInt32Array",
+			"PackedInt64Array", "PackedFloat32Array", "PackedFloat64Array",
+			"PackedStringArray", "PackedVector2Array", "PackedVector3Array",
+			"PackedColorArray", "Variant"]:
+		if not classes.has(builtin):
+			classes.append(builtin)
+	# Add class_name declarations from declared dep addons
+	var project_root := ProjectSettings.globalize_path("res://").rstrip("/")
+	var deps := Ops.read_dep_urls(addon_path)
+	var cname_re := RegEx.new()
+	cname_re.compile("^class_name\\s+(\\w+)")
+	for dep_url: String in deps:
+		var norm_dep := dep_url.rstrip("/").replace(".git", "")
+		for folder: String in Ops.list_addons(project_root):
+			var dep_folder_path := project_root + "/addons/" + folder
+			var remote := Ops.git_remote(dep_folder_path).rstrip("/").replace(".git", "")
+			if remote == norm_dep:
+				for gf: String in _find_gd_files(dep_folder_path):
+					var gf_file := FileAccess.open(gf, FileAccess.READ)
+					if not gf_file:
+						continue
+					for line: String in gf_file.get_as_text().split("\n"):
+						var m := cname_re.search(line.strip_edges())
+						if m:
+							var cname := m.get_string(1)
+							if not classes.has(cname):
+								classes.append(cname)
+					gf_file.close()
+	return classes
+
+# ─── Workspace: code completion ──────────────────────────────────────────────
+
+const _WS_KEYWORDS: PackedStringArray = PackedStringArray([
+	"var", "const", "func", "class", "class_name", "extends", "return",
+	"if", "elif", "else", "for", "while", "break", "continue", "pass",
+	"and", "or", "not", "in", "is", "as", "null", "true", "false",
+	"self", "super", "static", "signal", "enum", "match", "await",
+	"@tool", "@export", "@export_range", "@export_enum", "@export_flags",
+	"@export_group", "@export_subgroup", "@onready", "@static_unload",
+	"@warning_ignore", "preload", "load", "print", "printerr",
+	"push_error", "push_warning", "get_tree", "get_parent", "add_child",
+	"queue_free", "call_deferred", "set_deferred", "is_instance_valid",
+	"typeof", "len", "abs", "sign", "ceil", "floor", "round", "sqrt",
+	"pow", "max", "min", "clamp", "lerp", "remap", "deg_to_rad",
+	"rad_to_deg", "sin", "cos", "tan", "atan2", "snapped", "randf",
+	"randi", "randf_range", "randi_range", "seed", "randomize",
+	"emit_signal", "connect", "disconnect", "has_signal", "new", "free"
+])
+
+func _ws_provide_completion(editor: CodeEdit, addon_path: String) -> void:
+	# GDScript keywords and builtins
+	for kw: String in _WS_KEYWORDS:
+		editor.add_code_completion_option(CodeEdit.KIND_PLAIN_TEXT, kw, kw)
+
+	# Known classes (Godot built-ins + dep class_names)
+	for cls: String in _ws_known_classes:
+		editor.add_code_completion_option(CodeEdit.KIND_CLASS, cls, cls)
+
+	# Dep API: functions and exported vars from declared dep contracts
+	var project_root := ProjectSettings.globalize_path("res://").rstrip("/")
+	var deps := Ops.read_dep_urls(addon_path)
+	for dep_url: String in deps:
+		var norm_dep := dep_url.rstrip("/").replace(".git", "")
+		for folder: String in Ops.list_addons(project_root):
+			var dep_folder_path := project_root + "/addons/" + folder
+			var remote := Ops.git_remote(dep_folder_path).rstrip("/").replace(".git", "")
+			if remote == norm_dep:
+				for sym: Dictionary in Ops.extract_api(dep_folder_path):
+					var kind_str: String = sym.get("kind", "")
+					var sym_name: String = sym.get("name", "")
+					if sym_name.is_empty():
+						continue
+					if kind_str == "func":
+						var sig_str: String = sym.get("signature", "()")
+						editor.add_code_completion_option(CodeEdit.KIND_FUNCTION,
+							sym_name + sig_str, sym_name + "(")
+					elif kind_str == "export_var":
+						editor.add_code_completion_option(CodeEdit.KIND_VARIABLE,
+							sym_name, sym_name)
+					elif kind_str == "signal":
+						editor.add_code_completion_option(CodeEdit.KIND_SIGNAL,
+							sym_name, sym_name)
+
+	# Functions defined in the current file
+	var cur_text := editor.text
+	var fn_re := RegEx.new()
+	fn_re.compile("^(?:static\\s+)?func\\s+(\\w+)\\s*\\(")
+	for line: String in cur_text.split("\n"):
+		var m := fn_re.search(line.strip_edges())
+		if m:
+			var fn_name := m.get_string(1)
+			editor.add_code_completion_option(CodeEdit.KIND_FUNCTION, fn_name + "()", fn_name + "(")
+
+	editor.update_code_completion_options(true)
+
+# ─── Workspace: dep-class check ──────────────────────────────────────────────
+
+func _ws_schedule_check(editor: CodeEdit, addon_path: String, err_icon: Texture2D) -> void:
+	var gen: int = (_ws_check_gen.get(editor, 0) as int) + 1
+	_ws_check_gen[editor] = gen
+	var cap_gen := gen
+	get_tree().create_timer(0.8).timeout.connect(func():
+		if not is_instance_valid(editor):
+			return
+		if (_ws_check_gen.get(editor, 0) as int) == cap_gen:
+			_ws_run_check(editor, addon_path, err_icon)
+	)
+
+func _ws_run_check(editor: CodeEdit, addon_path: String, err_icon: Texture2D) -> void:
+	# Clear previous gutter markers
+	for i in editor.get_line_count():
+		editor.set_line_gutter_icon(i, 0, null)
+
+	var errors := _ws_check_dep_classes(editor.text, addon_path)
+
+	# Binary syntax check via GDScript compiler
+	var gs := GDScript.new()
+	gs.source_code = editor.text
+	var rc := gs.reload()
+	var syntax_ok := rc == OK
+
+	# Apply gutter markers for dep errors
+	for err: Dictionary in errors:
+		var line_idx: int = err.get("line", 0) as int
+		if line_idx >= 0 and line_idx < editor.get_line_count():
+			editor.set_line_gutter_icon(line_idx, 0, err_icon)
+
+	# Update error panel
+	if is_instance_valid(_ws_error_panel):
+		for child in _ws_error_panel.get_children():
+			child.queue_free()
+		if errors.is_empty() and syntax_ok:
+			_ws_error_panel.visible = false
+		else:
+			_ws_error_panel.visible = true
+			if not syntax_ok:
+				var syn_lbl := Label.new()
+				syn_lbl.text = "⚠ Syntax error — see Output panel for details"
+				syn_lbl.add_theme_color_override("font_color", Color(1.0, 0.6, 0.2))
+				_ws_error_panel.add_child(syn_lbl)
+			for err: Dictionary in errors:
+				var row := HBoxContainer.new()
+				var line_num: int = (err.get("line", 0) as int) + 1
+				var lbl := Label.new()
+				lbl.text = "Line %d: %s" % [line_num, err.get("msg", "")]
+				lbl.add_theme_color_override("font_color", Color(1.0, 0.45, 0.45))
+				lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				lbl.clip_text = true
+				lbl.tooltip_text = lbl.text
+				var jump_btn := Button.new()
+				jump_btn.text = "→"
+				jump_btn.tooltip_text = "Go to line"
+				var cap_line: int = err.get("line", 0) as int
+				jump_btn.pressed.connect(func():
+					editor.set_caret_line(cap_line)
+					editor.scroll_vertical = cap_line
+					editor.grab_focus()
+				)
+				row.add_child(lbl)
+				row.add_child(jump_btn)
+				_ws_error_panel.add_child(row)
+
+func _ws_check_dep_classes(code: String, addon_path: String) -> Array:
+	var errors: Array = []
+	# Patterns that reference a type name
+	var patterns: Array[String] = [
+		"(?:^|[^\\w])(?:var\\s+\\w+|\\w+)\\s*:\\s*([A-Z][A-Za-z0-9_]*)",  # : TypeName
+		"->\\s*([A-Z][A-Za-z0-9_]*)",                                       # -> TypeName
+		"\\bas\\s+([A-Z][A-Za-z0-9_]*)",                                    # as TypeName
+		"([A-Z][A-Za-z0-9_]*)\\.new\\(",                                    # TypeName.new(
+	]
+	var compiled: Array[RegEx] = []
+	for p: String in patterns:
+		var re := RegEx.new()
+		re.compile(p)
+		compiled.append(re)
+
+	var lines := code.split("\n")
+	for line_idx in lines.size():
+		var line: String = lines[line_idx]
+		var stripped := line.strip_edges()
+		# Skip comment lines and annotations
+		if stripped.begins_with("#") or stripped.begins_with("@"):
+			continue
+		# Strip inline comments
+		var comment_pos := line.find("#")
+		var scan_line := line if comment_pos == -1 else line.left(comment_pos)
+
+		var found_on_line: Array[String] = []
+		for re: RegEx in compiled:
+			for m: RegExMatch in re.search_all(scan_line):
+				var type_name := m.get_string(1)
+				if type_name.is_empty():
+					continue
+				if not found_on_line.has(type_name):
+					found_on_line.append(type_name)
+
+		for type_name: String in found_on_line:
+			if not _ws_known_classes.has(type_name):
+				errors.append({
+					"line": line_idx,
+					"msg": "Unknown class '%s' — add it as a dependency or it's not a Godot built-in" % type_name
+				})
+
+	return errors
+
+# ─── Workspace: find bar ─────────────────────────────────────────────────────
+
+func _ws_toggle_find() -> void:
+	if not is_instance_valid(_ws_find_bar):
+		return
+	_ws_find_bar.visible = not _ws_find_bar.visible
+	if _ws_find_bar.visible and is_instance_valid(_ws_find_input):
+		_ws_find_input.grab_focus()
+		_ws_find_input.select_all()
+
+func _ws_get_active_editor() -> CodeEdit:
+	if not is_instance_valid(_ws_script_tabs):
+		return null
+	var idx := _ws_script_tabs.current_tab
+	if idx < 0 or idx >= _ws_script_tabs.get_tab_count():
+		return null
+	var child := _ws_script_tabs.get_child(idx)
+	if child is CodeEdit:
+		return child as CodeEdit
+	return null
+
+func _ws_find_next(backwards: bool) -> void:
+	if not is_instance_valid(_ws_find_input):
+		return
+	var query := _ws_find_input.text
+	if query.is_empty():
+		return
+	var editor := _ws_get_active_editor()
+	if not is_instance_valid(editor):
+		return
+	var flags := 0  # TextEdit.SearchFlags
+	if backwards:
+		flags |= TextEdit.SEARCH_BACKWARDS
+	var from_line := editor.get_caret_line()
+	var from_col := editor.get_caret_column() + (0 if backwards else 1)
+	var result := editor.search(query, flags, from_line, from_col)
+	if result == Vector2i(-1, -1):
+		# Wrap around
+		var wrap_line := editor.get_line_count() - 1 if backwards else 0
+		var wrap_col := editor.get_line(wrap_line).length() if backwards else 0
+		result = editor.search(query, flags, wrap_line, wrap_col)
+	if result != Vector2i(-1, -1):
+		editor.set_caret_line(result.y)
+		editor.set_caret_column(result.x)
+		editor.select(result.y, result.x, result.y, result.x + query.length())
+		editor.scroll_vertical = result.y
 
 func _build_planning_tab(tabs: TabContainer) -> void:
 	var outer := _vbox("Planning", tabs)
