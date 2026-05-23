@@ -43,7 +43,6 @@ var _bug_editing_idx: int = -1
 
 var _todo_list: VBoxContainer
 var _todo_input: LineEdit
-var _todo_push_btn: Button
 var _todo_status_lbl: Label
 var _todo_items: Array = []
 var _todo_thread: Thread = null
@@ -558,15 +557,10 @@ func _build_planned_subtab(tabs: TabContainer) -> void:
 	var new_btn := Button.new()
 	new_btn.text = "➕ New"
 	new_btn.pressed.connect(_plan_new)
-	var push_btn := Button.new()
-	push_btn.text = "⬆ Push"
-	push_btn.tooltip_text = "Push all CC Tools data (todos, planning, activity, bugs) to ChillCube/vault."
-	push_btn.pressed.connect(_plan_push)
 	_plan_status_lbl = Label.new()
 	_plan_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_plan_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
 	toolbar.add_child(new_btn)
-	toolbar.add_child(push_btn)
 	toolbar.add_child(_plan_status_lbl)
 	root.add_child(toolbar)
 
@@ -625,6 +619,7 @@ func _save_planned() -> void:
 	if fw:
 		fw.store_string(JSON.stringify(_planned_addons, "\t"))
 		fw.close()
+	_activity_auto_push()
 
 func _get_in_dev_folders() -> Array[String]:
 	var result: Array[String] = []
@@ -643,25 +638,6 @@ func _plan_new() -> void:
 	_save_planned()
 	_refresh_plan_list()
 
-func _plan_push() -> void:
-	if _plan_thread and _plan_thread.is_started():
-		return
-	_plan_status_lbl.text = "Pushing…"
-	_plan_thread = Thread.new()
-	_plan_thread.start(func():
-		var ok := Ops.cc_data_push(_cc_data_bundle(), Callable())
-		var msg := "✅ Pushed to vault!" if ok else "❌ Push failed"
-		call_deferred("_plan_on_pushed", msg)
-	)
-
-func _plan_on_pushed(msg: String = "✅ Pushed!") -> void:
-	if _plan_thread and _plan_thread.is_started():
-		_plan_thread.wait_to_finish()
-	_plan_thread = null
-	_plan_status_lbl.text = msg
-	get_tree().create_timer(2.5).timeout.connect(func():
-		if is_instance_valid(_plan_status_lbl): _plan_status_lbl.text = ""
-	)
 
 func _plan_create_repo(idx: int) -> void:
 	if _thread and _thread.is_started():
@@ -1339,15 +1315,10 @@ func _build_todo_subtab(tabs: TabContainer) -> void:
 	var add_btn := Button.new()
 	add_btn.text = "➕ Add"
 	add_btn.pressed.connect(_todo_add)
-	_todo_push_btn = Button.new()
-	_todo_push_btn.text = "⬆ Push"
-	_todo_push_btn.tooltip_text = "Push all CC Tools data (todos, planning, activity, bugs) to ChillCube/vault."
-	_todo_push_btn.pressed.connect(_todo_push)
 	_todo_status_lbl = Label.new()
 	_todo_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
 	toolbar.add_child(_todo_input)
 	toolbar.add_child(add_btn)
-	toolbar.add_child(_todo_push_btn)
 	toolbar.add_child(_todo_status_lbl)
 	root.add_child(toolbar)
 	root.add_child(HSeparator.new())
@@ -1853,22 +1824,10 @@ func _cc_data_bundle() -> Dictionary:
 		"ideas.json": JSON.stringify(_ideas_items, "\t") + "\n"
 	}
 
-func _todo_push() -> void:
-	if _todo_thread and _todo_thread.is_started():
-		return
-	_todo_push_btn.disabled = true
-	_todo_status_lbl.text = "Pushing…"
-	_todo_thread = Thread.new()
-	_todo_thread.start(func():
-		var ok := Ops.cc_data_push(_cc_data_bundle(), Callable())
-		call_deferred("_todo_on_pushed", "✅ Pushed to vault!" if ok else "❌ Push failed")
-	)
-
 func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
 	if _todo_thread and _todo_thread.is_started():
 		_todo_thread.wait_to_finish()
 	_todo_thread = null
-	_todo_push_btn.disabled = false
 	_todo_status_lbl.text = msg
 	get_tree().create_timer(2.5).timeout.connect(func():
 		if is_instance_valid(_todo_status_lbl):
@@ -1900,11 +1859,6 @@ func _build_votes_tab(tabs: TabContainer) -> void:
 			_vote_create_box.visible = not _vote_create_box.visible
 	)
 	toolbar.add_child(new_btn)
-	var push_btn := Button.new()
-	push_btn.text = "⬆ Push"
-	push_btn.tooltip_text = "Push votes to ChillCube/vault."
-	push_btn.pressed.connect(_vote_push)
-	toolbar.add_child(push_btn)
 	_vote_status_lbl = Label.new()
 	_vote_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	toolbar.add_child(_vote_status_lbl)
@@ -2080,34 +2034,7 @@ func _on_vote_member_count(vote_idx: int, member_count: int) -> void:
 				'Vote "%s" closed by majority — result: %s (%d/%d voted)' % [
 				vote.get("title", ""), vote.get("result", ""), cast_count, member_count])
 			_refresh_vote_list()
-	_vote_thread = Thread.new()
-	_vote_thread.start(func():
-		Ops.cc_data_push(_cc_data_bundle(), Callable())
-		call_deferred("_vote_push_done", false)
-	)
 
-func _vote_push() -> void:
-	if _vote_thread and _vote_thread.is_started():
-		return
-	if is_instance_valid(_vote_status_lbl):
-		_vote_status_lbl.text = "Pushing…"
-	_vote_thread = Thread.new()
-	_vote_thread.start(func():
-		var ok := Ops.cc_data_push(_cc_data_bundle(), Callable())
-		call_deferred("_vote_push_done", ok)
-	)
-
-func _vote_push_done(show_result: bool) -> void:
-	if _vote_thread:
-		_vote_thread.wait_to_finish()
-	_vote_thread = null
-	if not show_result or not is_instance_valid(_vote_status_lbl):
-		return
-	_vote_status_lbl.text = "✅ Pushed!"
-	get_tree().create_timer(2.5).timeout.connect(func():
-		if is_instance_valid(_vote_status_lbl):
-			_vote_status_lbl.text = ""
-	)
 
 func _refresh_vote_list() -> void:
 	if not is_instance_valid(_vote_list):
@@ -2547,13 +2474,29 @@ func _vault_navigate(rel: String) -> void:
 		_vault_browser.add_child(up_btn)
 
 	for folder: String in folders:
+		var cap_folder := prefix + folder
+		var folder_row := HBoxContainer.new()
+		folder_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		var btn := Button.new()
 		btn.text = "📁 " + folder
 		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var cap := prefix + folder
-		btn.pressed.connect(func(): _vault_navigate(cap))
-		_vault_browser.add_child(btn)
+		btn.flat = true
+		btn.pressed.connect(func(): _vault_navigate(cap_folder))
+		folder_row.add_child(btn)
+		var ren_folder_btn := Button.new()
+		ren_folder_btn.text = "✏"
+		ren_folder_btn.tooltip_text = "Rename folder"
+		ren_folder_btn.flat = true
+		ren_folder_btn.custom_minimum_size = Vector2(26, 0)
+		ren_folder_btn.pressed.connect(func():
+			_vault_remote_sel = cap_folder
+			_vault_move_dest_input.text = cap_folder
+			_vault_move_dialog.title = "Rename Folder"
+			_vault_move_dialog.popup_centered()
+		)
+		folder_row.add_child(ren_folder_btn)
+		_vault_browser.add_child(folder_row)
 
 	for file: String in files:
 		var rel_file := prefix + file
@@ -2594,6 +2537,7 @@ func _vault_navigate(rel: String) -> void:
 		ren_btn.pressed.connect(func():
 			_vault_remote_sel = cap_rel
 			_vault_move_dest_input.text = cap_rel
+			_vault_move_dialog.title = "Rename / Move File"
 			_vault_move_dialog.popup_centered()
 		)
 		row.add_child(ren_btn)
@@ -2861,7 +2805,7 @@ func _vault_do_move() -> void:
 		Ops.vault_move_file(src, cap_dest, log_fn)
 		Ops.vault_refresh(cache, log_fn)
 		call_deferred("_vault_after_manage_named", "asset_renamed",
-			'Renamed "%s" → "%s" in assets' % [src.get_file(), cap_dest.get_file()])
+			'Renamed "%s" → "%s"' % [src.get_file(), cap_dest.get_file()])
 	)
 
 func _vault_do_mkdir() -> void:
