@@ -65,10 +65,11 @@ var _vault_browser: VBoxContainer
 var _vault_current_dir: String = ""
 var _vault_remote_sel: String = ""
 var _vault_local_sel: String = ""
-var _vault_local_sel_lbl: Label
-var _vault_remote_sel_lbl: Label
-var _vault_upload_dest: LineEdit
-var _vault_download_dest: LineEdit
+var _vault_pending_delete: String = ""
+var _vault_delete_dialog: ConfirmationDialog
+var _vault_download_dest_path: String = ""
+var _vault_download_dest_btn: Button
+var _vault_dir_dialog: EditorFileDialog
 var _vault_status_lbl: Label
 var _vault_refresh_btn: Button
 var _vault_log: TextEdit
@@ -111,6 +112,11 @@ var _vote_list: VBoxContainer
 var _vote_status_lbl: Label
 var _vote_create_box: Control
 var _vote_thread: Thread = null
+
+var _ideas_items: Array = []
+var _ideas_list: VBoxContainer
+var _ideas_status_lbl: Label
+var _ideas_thread: Thread = null
 
 var _current_user: Dictionary = {}
 var _login_overlay: Control
@@ -169,6 +175,8 @@ func _exit_tree() -> void:
 		_activity_thread.wait_to_finish()
 	if _vote_thread and _vote_thread.is_started():
 		_vote_thread.wait_to_finish()
+	if _ideas_thread and _ideas_thread.is_started():
+		_ideas_thread.wait_to_finish()
 	if _login_thread and _login_thread.is_started():
 		_login_thread.wait_to_finish()
 
@@ -539,6 +547,7 @@ func _build_planning_tab(tabs: TabContainer) -> void:
 	inner_tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	outer.add_child(inner_tabs)
 	_build_planned_subtab(inner_tabs)
+	_build_ideas_subtab(inner_tabs)
 	_build_bugs_subtab(inner_tabs)
 	_build_todo_subtab(inner_tabs)
 
@@ -1059,6 +1068,235 @@ func _refresh_plan_editor() -> void:
 		_refresh_plan_editor()
 	)
 	_plan_editor.add_child(fn_add)
+
+func _build_ideas_subtab(tabs: TabContainer) -> void:
+	var root := _vbox("Game Ideas", tabs)
+
+	var toolbar := HBoxContainer.new()
+	var suggest_btn := Button.new()
+	suggest_btn.text = "💡 Suggest Idea"
+	suggest_btn.pressed.connect(_ideas_prompt_new)
+	_ideas_status_lbl = Label.new()
+	_ideas_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ideas_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+	toolbar.add_child(suggest_btn)
+	toolbar.add_child(_ideas_status_lbl)
+	root.add_child(toolbar)
+
+	var hint := Label.new()
+	hint.text = "Rate ideas from 1–5 ⭐. Top-rated ideas appear first."
+	hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+	hint.add_theme_font_size_override("font_size", 11)
+	root.add_child(hint)
+
+	root.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ideas_list = VBoxContainer.new()
+	_ideas_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ideas_list.add_theme_constant_override("separation", 6)
+	scroll.add_child(_ideas_list)
+	root.add_child(scroll)
+
+	_load_ideas()
+
+func _ideas_file() -> String:
+	return ProjectSettings.globalize_path("user://cc_ideas.json")
+
+func _load_ideas() -> void:
+	_ideas_items = []
+	var path := _ideas_file()
+	if not FileAccess.file_exists(path):
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if not f:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if parsed is Array:
+		_ideas_items = parsed
+	if is_instance_valid(_ideas_list):
+		_refresh_ideas_list()
+
+func _save_ideas() -> void:
+	var fw := FileAccess.open(_ideas_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(_ideas_items, "\t") + "\n")
+		fw.close()
+
+func _ideas_avg_score(idea: Dictionary) -> float:
+	var ratings: Array = idea.get("ratings", [])
+	if ratings.is_empty():
+		return 0.0
+	var total := 0.0
+	for r: Dictionary in ratings:
+		total += float(r.get("score", 0))
+	return total / ratings.size()
+
+func _ideas_user_rating(idea: Dictionary) -> int:
+	var user := _current_user.get("username", "")
+	if user.is_empty():
+		return 0
+	for r: Dictionary in idea.get("ratings", []):
+		if r.get("user", "") == user:
+			return int(r.get("score", 0))
+	return 0
+
+func _refresh_ideas_list() -> void:
+	if not is_instance_valid(_ideas_list):
+		return
+	for c in _ideas_list.get_children():
+		c.queue_free()
+
+	var sorted := _ideas_items.duplicate()
+	sorted.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return _ideas_avg_score(a) > _ideas_avg_score(b)
+	)
+
+	if sorted.is_empty():
+		var empty_lbl := Label.new()
+		empty_lbl.text = "No ideas yet. Be the first to suggest one!"
+		empty_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_ideas_list.add_child(empty_lbl)
+		return
+
+	for idea: Dictionary in sorted:
+		var orig_idx := _ideas_items.find(idea)
+		var card := PanelContainer.new()
+		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var card_vbox := VBoxContainer.new()
+		card_vbox.add_theme_constant_override("separation", 4)
+		card.add_child(card_vbox)
+
+		var top_row := HBoxContainer.new()
+		var title_lbl := Label.new()
+		title_lbl.text = idea.get("title", "Untitled")
+		title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		title_lbl.add_theme_font_size_override("font_size", 13)
+		top_row.add_child(title_lbl)
+
+		var avg := _ideas_avg_score(idea)
+		var count := (idea.get("ratings", []) as Array).size()
+		var score_lbl := Label.new()
+		score_lbl.text = "%.1f ⭐ (%d)" % [avg, count]
+		score_lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.2))
+		top_row.add_child(score_lbl)
+
+		var del_btn := Button.new()
+		del_btn.text = "🗑"
+		del_btn.flat = true
+		del_btn.tooltip_text = "Delete idea"
+		var cap_idx := orig_idx
+		del_btn.pressed.connect(func():
+			if cap_idx >= 0 and cap_idx < _ideas_items.size():
+				_ideas_items.remove_at(cap_idx)
+				_save_ideas()
+				_refresh_ideas_list()
+				_activity_auto_push()
+		)
+		top_row.add_child(del_btn)
+		card_vbox.add_child(top_row)
+
+		var desc := idea.get("description", "")
+		if not desc.is_empty():
+			var desc_lbl := Label.new()
+			desc_lbl.text = desc
+			desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			desc_lbl.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
+			card_vbox.add_child(desc_lbl)
+
+		var meta_row := HBoxContainer.new()
+		var by_lbl := Label.new()
+		by_lbl.text = "by @" + idea.get("author", "?") + "  " + idea.get("timestamp", "").substr(0, 10)
+		by_lbl.add_theme_font_size_override("font_size", 11)
+		by_lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
+		by_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		meta_row.add_child(by_lbl)
+
+		var my_rating := _ideas_user_rating(idea)
+		var rate_lbl := Label.new()
+		rate_lbl.text = "Your rating:"
+		rate_lbl.add_theme_font_size_override("font_size", 11)
+		meta_row.add_child(rate_lbl)
+
+		for star: int in range(1, 6):
+			var star_btn := Button.new()
+			star_btn.text = "★" if star <= my_rating else "☆"
+			star_btn.flat = true
+			star_btn.custom_minimum_size = Vector2(22, 0)
+			if star <= my_rating:
+				star_btn.add_theme_color_override("font_color", Color(1.0, 0.85, 0.1))
+			var cap_star := star
+			var cap_idea_idx := orig_idx
+			star_btn.pressed.connect(func():
+				if cap_idea_idx < 0 or cap_idea_idx >= _ideas_items.size():
+					return
+				var user := _current_user.get("username", "")
+				if user.is_empty():
+					return
+				var ratings: Array = _ideas_items[cap_idea_idx].get("ratings", [])
+				var found := false
+				for i in range(ratings.size()):
+					if (ratings[i] as Dictionary).get("user", "") == user:
+						ratings[i] = {"user": user, "score": cap_star}
+						found = true
+						break
+				if not found:
+					ratings.append({"user": user, "score": cap_star})
+				_ideas_items[cap_idea_idx]["ratings"] = ratings
+				_save_ideas()
+				_refresh_ideas_list()
+				var idea_title: String = _ideas_items[cap_idea_idx].get("title", "")
+				_log_activity("idea_rated", '%s rated "%s" %d/5' % [user, idea_title, cap_star])
+			)
+			meta_row.add_child(star_btn)
+
+		card_vbox.add_child(meta_row)
+		_ideas_list.add_child(card)
+
+func _ideas_prompt_new() -> void:
+	var dialog := AcceptDialog.new()
+	dialog.title = "Suggest a Game Idea"
+	dialog.size = Vector2i(440, 200)
+	var vbox: VBoxContainer = dialog.get_vbox()
+
+	var title_lbl := Label.new()
+	title_lbl.text = "Title:"
+	vbox.add_child(title_lbl)
+	var title_edit := LineEdit.new()
+	title_edit.placeholder_text = "Short catchy title…"
+	title_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_child(title_edit)
+
+	var desc_lbl := Label.new()
+	desc_lbl.text = "Description (optional):"
+	vbox.add_child(desc_lbl)
+	var desc_edit := TextEdit.new()
+	desc_edit.custom_minimum_size = Vector2(0, 60)
+	desc_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	desc_edit.placeholder_text = "What's the core concept?"
+	vbox.add_child(desc_edit)
+
+	dialog.confirmed.connect(func():
+		var title := title_edit.text.strip_edges()
+		if title.is_empty():
+			return
+		var user := _current_user.get("username", "?")
+		_ideas_items.append({
+			"title": title,
+			"description": desc_edit.text.strip_edges(),
+			"author": user,
+			"timestamp": Time.get_datetime_string_from_system(),
+			"ratings": []
+		})
+		_save_ideas()
+		_refresh_ideas_list()
+		_log_activity("idea_suggested", '%s suggested game idea: "%s"' % [user, title])
+	)
+	add_child(dialog)
+	dialog.popup_centered()
 
 func _build_bugs_subtab(tabs: TabContainer) -> void:
 	var root := _vbox("Bugs", tabs)
@@ -1608,7 +1846,8 @@ func _cc_data_bundle() -> Dictionary:
 		"planned.json": JSON.stringify(_planned_addons, "\t") + "\n",
 		"activity.json": JSON.stringify(_activity_items, "\t") + "\n",
 		"feedback.json": fb_str,
-		"votes.json": JSON.stringify(_vote_items, "\t") + "\n"
+		"votes.json": JSON.stringify(_vote_items, "\t") + "\n",
+		"ideas.json": JSON.stringify(_ideas_items, "\t") + "\n"
 	}
 
 func _todo_push() -> void:
@@ -1987,23 +2226,22 @@ func _refresh_vote_list() -> void:
 		_vote_list.add_child(panel)
 
 func _build_vault_tab(tabs: TabContainer) -> void:
-	var root := _vbox("Vault", tabs)
+	var root := _vbox("Assets", tabs)
 
 	# ── Top bar ───────────────────────────────────────────────────────────────
 	var top := HBoxContainer.new()
 	var repo_lbl := Label.new()
-	repo_lbl.text = "🔒 ChillCube/vault"
+	repo_lbl.text = "🔒 ChillCube/assets"
 	repo_lbl.add_theme_color_override("font_color", Color(0.5, 0.7, 1.0))
 	repo_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_vault_refresh_btn = Button.new()
 	_vault_refresh_btn.text = "🔄 Refresh"
-	_vault_refresh_btn.tooltip_text = "Pull latest from ChillCube/vault"
+	_vault_refresh_btn.tooltip_text = "Pull latest file list from ChillCube/assets"
 	_vault_refresh_btn.pressed.connect(_vault_connect)
-	var connect_btn := _vault_refresh_btn
 	_vault_status_lbl = Label.new()
 	_vault_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
 	top.add_child(repo_lbl)
-	top.add_child(connect_btn)
+	top.add_child(_vault_refresh_btn)
 	top.add_child(_vault_status_lbl)
 	root.add_child(top)
 
@@ -2012,75 +2250,66 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
-	# Left: browser
+	# ── Left: browser ─────────────────────────────────────────────────────────
 	var left := VBoxContainer.new()
-	left.custom_minimum_size = Vector2(180, 0)
+	left.custom_minimum_size = Vector2(220, 0)
 	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
+	# Path + action buttons row
 	var path_row := HBoxContainer.new()
 	_vault_path_lbl = Label.new()
 	_vault_path_lbl.text = "/"
 	_vault_path_lbl.add_theme_color_override("font_color", Color(0.5, 0.7, 1.0))
 	_vault_path_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_vault_path_lbl.clip_text = true
+	var upload_btn := Button.new()
+	upload_btn.text = "⬆"
+	upload_btn.tooltip_text = "Upload a file to the current folder"
+	upload_btn.pressed.connect(_vault_open_picker)
 	var newdir_btn := Button.new()
 	newdir_btn.text = "📁+"
-	newdir_btn.tooltip_text = "Create new folder in vault"
+	newdir_btn.tooltip_text = "Create new folder"
 	newdir_btn.pressed.connect(func():
-		var pre := _vault_current_dir + ("/" if not _vault_current_dir.is_empty() else "") + "new-folder"
+		var pre := (_vault_current_dir + "/") if not _vault_current_dir.is_empty() else ""
 		_vault_newdir_input.text = pre
 		_vault_newdir_dialog.popup_centered()
 	)
 	path_row.add_child(_vault_path_lbl)
+	path_row.add_child(upload_btn)
 	path_row.add_child(newdir_btn)
 	left.add_child(path_row)
+	left.add_child(HSeparator.new())
 
+	# File browser
 	var browser_scroll := ScrollContainer.new()
 	browser_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	browser_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_vault_browser = VBoxContainer.new()
 	_vault_browser.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vault_browser.add_theme_constant_override("separation", 2)
 	browser_scroll.add_child(_vault_browser)
 	left.add_child(browser_scroll)
 
-	_vault_remote_sel_lbl = Label.new()
-	_vault_remote_sel_lbl.text = "Selected: (none)"
-	_vault_remote_sel_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
-	_vault_remote_sel_lbl.clip_text = true
-	left.add_child(_vault_remote_sel_lbl)
-
-	var action_row := HBoxContainer.new()
-	var move_btn := Button.new()
-	move_btn.text = "🗂 Move/Rename"
-	move_btn.pressed.connect(func():
-		if _vault_remote_sel.is_empty():
-			_vault_log.text = "⚠ Select a file first."
-			return
-		_vault_move_dest_input.text = _vault_remote_sel
-		_vault_move_dialog.popup_centered()
-	)
-	action_row.add_child(move_btn)
-	left.add_child(action_row)
-
+	left.add_child(HSeparator.new())
+	# Download destination row
 	var dl_row := HBoxContainer.new()
 	var dl_lbl := Label.new()
-	dl_lbl.text = "To:"
-	_vault_download_dest = LineEdit.new()
-	_vault_download_dest.text = "res://"
-	_vault_download_dest.placeholder_text = "res://assets/"
-	_vault_download_dest.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var dl_btn := Button.new()
-	dl_btn.text = "⬇ Download"
-	dl_btn.pressed.connect(_vault_download)
+	dl_lbl.text = "⬇ To:"
+	dl_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	_vault_download_dest_btn = Button.new()
+	_vault_download_dest_btn.text = "📁 Choose folder…"
+	_vault_download_dest_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vault_download_dest_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_vault_download_dest_btn.tooltip_text = "Choose where to save downloaded files"
+	_vault_download_dest_btn.pressed.connect(func(): _vault_dir_dialog.popup_centered_ratio(0.7))
 	dl_row.add_child(dl_lbl)
-	dl_row.add_child(_vault_download_dest)
-	dl_row.add_child(dl_btn)
+	dl_row.add_child(_vault_download_dest_btn)
 	left.add_child(dl_row)
 
 	split.add_child(left)
 	split.add_child(VSeparator.new())
 
-	# Center: preview
+	# ── Right: preview ────────────────────────────────────────────────────────
 	_vault_preview_panel = VBoxContainer.new()
 	_vault_preview_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_vault_preview_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -2164,78 +2393,48 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	preview_inner.add_child(_vault_preview_unsupported)
 
 	split.add_child(_vault_preview_panel)
-	split.add_child(VSeparator.new())
-
-	# Right: upload
-	var right := VBoxContainer.new()
-	right.custom_minimum_size = Vector2(200, 0)
-	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
-
-	var up_title := Label.new()
-	up_title.text = "Upload to Vault"
-	up_title.add_theme_color_override("font_color", Color(0.7, 0.9, 1.0))
-	right.add_child(up_title)
-
-	_vault_local_sel_lbl = Label.new()
-	_vault_local_sel_lbl.text = "No file selected"
-	_vault_local_sel_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
-	_vault_local_sel_lbl.clip_text = true
-	right.add_child(_vault_local_sel_lbl)
-
-	var pick_btn := Button.new()
-	pick_btn.text = "📂 Select File…"
-	pick_btn.pressed.connect(_vault_open_picker)
-	right.add_child(pick_btn)
-
-	var up_dest_row := HBoxContainer.new()
-	var up_dest_lbl := Label.new()
-	up_dest_lbl.text = "Folder:"
-	_vault_upload_dest = LineEdit.new()
-	_vault_upload_dest.text = "/"
-	_vault_upload_dest.placeholder_text = "assets/"
-	_vault_upload_dest.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	up_dest_row.add_child(up_dest_lbl)
-	up_dest_row.add_child(_vault_upload_dest)
-	right.add_child(up_dest_row)
-
-	var up_btn := Button.new()
-	up_btn.text = "⬆ Upload"
-	up_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	up_btn.pressed.connect(_vault_upload)
-	right.add_child(up_btn)
-
-	split.add_child(right)
 	root.add_child(split)
 
 	# ── Log ───────────────────────────────────────────────────────────────────
 	_vault_log = TextEdit.new()
-	_vault_log.custom_minimum_size = Vector2(0, 90)
+	_vault_log.custom_minimum_size = Vector2(0, 60)
 	_vault_log.editable = false
 	_vault_log.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	root.add_child(_vault_log)
 
-	# Audio player (must be in scene tree, not visual layout)
+	# Audio player (must be in scene tree)
 	_vault_audio_player = AudioStreamPlayer.new()
 	_vault_audio_player.finished.connect(func(): _vault_audio_play_btn.text = "▶ Play")
 	add_child(_vault_audio_player)
 
-	# File picker dialog
+	# File picker — selecting a file auto-uploads to current directory
 	_vault_file_dialog = EditorFileDialog.new()
 	_vault_file_dialog.file_mode = EditorFileDialog.FILE_MODE_OPEN_FILE
 	_vault_file_dialog.access = EditorFileDialog.ACCESS_FILESYSTEM
 	_vault_file_dialog.file_selected.connect(func(path: String):
 		_vault_local_sel = path
-		_vault_local_sel_lbl.text = path.get_file()
+		_vault_upload()
 	)
 	add_child(_vault_file_dialog)
 
+	# Directory picker — choose download destination
+	_vault_dir_dialog = EditorFileDialog.new()
+	_vault_dir_dialog.file_mode = EditorFileDialog.FILE_MODE_OPEN_DIR
+	_vault_dir_dialog.access = EditorFileDialog.ACCESS_FILESYSTEM
+	_vault_dir_dialog.dir_selected.connect(func(path: String):
+		_vault_download_dest_path = path
+		var short := path.get_file()
+		_vault_download_dest_btn.text = "📁 " + (short if not short.is_empty() else path)
+	)
+	add_child(_vault_dir_dialog)
+
 	# Move/rename dialog
 	_vault_move_dialog = AcceptDialog.new()
-	_vault_move_dialog.title = "Move / Rename File"
+	_vault_move_dialog.title = "Rename / Move File"
 	_vault_move_dialog.size = Vector2i(420, 120)
 	var move_vbox: VBoxContainer = _vault_move_dialog.get_vbox()
 	var move_hint := Label.new()
-	move_hint.text = "Destination path (e.g. images/photo.png):"
+	move_hint.text = "New path (e.g. images/photo.png):"
 	move_vbox.add_child(move_hint)
 	_vault_move_dest_input = LineEdit.new()
 	_vault_move_dest_input.placeholder_text = "folder/filename.ext"
@@ -2243,6 +2442,13 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	move_vbox.add_child(_vault_move_dest_input)
 	_vault_move_dialog.confirmed.connect(_vault_do_move)
 	add_child(_vault_move_dialog)
+
+	# Delete confirm dialog
+	_vault_delete_dialog = ConfirmationDialog.new()
+	_vault_delete_dialog.title = "Delete File"
+	_vault_delete_dialog.dialog_text = "Are you sure? This cannot be undone."
+	_vault_delete_dialog.confirmed.connect(_vault_do_delete)
+	add_child(_vault_delete_dialog)
 
 	# New folder dialog
 	_vault_newdir_dialog = AcceptDialog.new()
@@ -2344,23 +2550,58 @@ func _vault_navigate(rel: String) -> void:
 
 	for file: String in files:
 		var rel_file := prefix + file
-		var btn := Button.new()
-		btn.text = _vault_file_icon(file) + " " + file
-		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		btn.flat = true
-		if rel_file == _vault_remote_sel:
-			btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
 		var cap_rel := rel_file
-		btn.pressed.connect(func():
+		var row := HBoxContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var file_btn := Button.new()
+		file_btn.text = _vault_file_icon(file) + " " + file
+		file_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		file_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		file_btn.flat = rel_file != _vault_remote_sel
+		if rel_file == _vault_remote_sel:
+			file_btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+		file_btn.pressed.connect(func():
 			_vault_remote_sel = cap_rel
-			_vault_remote_sel_lbl.text = "Selected: " + cap_rel
 			_vault_navigate(_vault_current_dir)
 			_vault_request_preview(cap_rel)
 		)
-		_vault_browser.add_child(btn)
+		row.add_child(file_btn)
 
-	_vault_upload_dest.text = "/" + prefix
+		var dl_btn := Button.new()
+		dl_btn.text = "⬇"
+		dl_btn.tooltip_text = "Download to selected folder"
+		dl_btn.flat = true
+		dl_btn.custom_minimum_size = Vector2(26, 0)
+		dl_btn.pressed.connect(func():
+			_vault_remote_sel = cap_rel
+			_vault_download()
+		)
+		row.add_child(dl_btn)
+
+		var ren_btn := Button.new()
+		ren_btn.text = "✏"
+		ren_btn.tooltip_text = "Rename / move"
+		ren_btn.flat = true
+		ren_btn.custom_minimum_size = Vector2(26, 0)
+		ren_btn.pressed.connect(func():
+			_vault_remote_sel = cap_rel
+			_vault_move_dest_input.text = cap_rel
+			_vault_move_dialog.popup_centered()
+		)
+		row.add_child(ren_btn)
+
+		var del_btn := Button.new()
+		del_btn.text = "🗑"
+		del_btn.tooltip_text = "Delete"
+		del_btn.flat = true
+		del_btn.custom_minimum_size = Vector2(26, 0)
+		del_btn.pressed.connect(func():
+			_vault_confirm_delete(cap_rel)
+		)
+		row.add_child(del_btn)
+
+		_vault_browser.add_child(row)
 
 func _vault_file_icon(filename: String) -> String:
 	var ext := filename.get_extension().to_lower()
@@ -2391,12 +2632,13 @@ func _vault_upload() -> void:
 	_vault_thread = Thread.new()
 	var cache := _vault_cache
 	var local := _vault_local_sel
-	var dest := _vault_upload_dest.text
+	var dest := _vault_current_dir
+	var fname := local.get_file()
 	_vault_thread.start(func():
 		var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
 		Ops.vault_upload_file(local, dest, log_fn)
 		Ops.vault_refresh(cache, log_fn)
-		call_deferred("_vault_after_op", "")
+		call_deferred("_vault_after_op", fname, dest)
 	)
 
 func _vault_download() -> void:
@@ -2406,6 +2648,9 @@ func _vault_download() -> void:
 	if _vault_remote_sel.is_empty():
 		_vault_log.text = "⚠️ No file selected in the browser."
 		return
+	if _vault_download_dest_path.is_empty():
+		_vault_log.text = "⚠️ No download folder selected. Use the ⬇ To: button."
+		return
 	_vault_log.text = ""
 	_vault_status_lbl.text = "Downloading…"
 	if _vault_thread and _vault_thread.is_started():
@@ -2413,21 +2658,24 @@ func _vault_download() -> void:
 	_vault_thread = Thread.new()
 	var cache := _vault_cache
 	var remote := _vault_remote_sel
-	var dest := _vault_download_dest.text
+	var dest := _vault_download_dest_path
 	_vault_thread.start(func():
 		var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
 		Ops.vault_download_file(cache, remote, dest, log_fn)
-		call_deferred("_vault_after_op", "")
+		call_deferred("_vault_after_op", "", "")
 	)
 
-func _vault_after_op(status: String) -> void:
+func _vault_after_op(uploaded_name: String, upload_dir: String) -> void:
 	if _vault_thread and _vault_thread.is_started():
 		_vault_thread.wait_to_finish()
 	_vault_thread = null
-	_vault_status_lbl.text = status
+	_vault_status_lbl.text = ""
 	_vault_files = Ops.vault_list_files(_vault_cache)
 	_vault_navigate(_vault_current_dir)
 	EditorInterface.get_resource_filesystem().scan()
+	if not uploaded_name.is_empty():
+		var path := (upload_dir + "/" + uploaded_name).lstrip("/") if not upload_dir.is_empty() else uploaded_name
+		_log_activity("asset_uploaded", 'Uploaded "%s" to assets' % path)
 
 func _vault_request_preview(rel_path: String) -> void:
 	if _vault_preview_thread and _vault_preview_thread.is_started():
@@ -2599,12 +2847,14 @@ func _vault_do_move() -> void:
 	_vault_status_lbl.text = "Moving…"
 	_vault_thread = Thread.new()
 	var src := _vault_remote_sel
+	var cap_dest := dest
 	var cache := _vault_cache
 	var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
 	_vault_thread.start(func():
-		Ops.vault_move_file(src, dest, log_fn)
+		Ops.vault_move_file(src, cap_dest, log_fn)
 		Ops.vault_refresh(cache, log_fn)
-		call_deferred("_vault_after_manage")
+		call_deferred("_vault_after_manage_named", "asset_renamed",
+			'Renamed "%s" → "%s" in assets' % [src.get_file(), cap_dest.get_file()])
 	)
 
 func _vault_do_mkdir() -> void:
@@ -2617,12 +2867,37 @@ func _vault_do_mkdir() -> void:
 	_vault_log.text = ""
 	_vault_status_lbl.text = "Creating folder…"
 	_vault_thread = Thread.new()
+	var cap_name := name
 	var cache := _vault_cache
 	var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
 	_vault_thread.start(func():
-		Ops.vault_mkdir(name, log_fn)
+		Ops.vault_mkdir(cap_name, log_fn)
 		Ops.vault_refresh(cache, log_fn)
-		call_deferred("_vault_after_manage")
+		call_deferred("_vault_after_manage_named", "folder_created", 'Created folder "%s" in assets' % cap_name)
+	)
+
+func _vault_confirm_delete(rel_path: String) -> void:
+	_vault_pending_delete = rel_path
+	_vault_delete_dialog.dialog_text = 'Delete "%s"? This cannot be undone.' % rel_path.get_file()
+	_vault_delete_dialog.popup_centered()
+
+func _vault_do_delete() -> void:
+	if _vault_pending_delete.is_empty():
+		return
+	if _vault_thread and _vault_thread.is_started():
+		_vault_log.text = "⚠ Another operation is running."
+		return
+	var target := _vault_pending_delete
+	_vault_pending_delete = ""
+	_vault_log.text = ""
+	_vault_status_lbl.text = "Deleting…"
+	_vault_thread = Thread.new()
+	var cache := _vault_cache
+	var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
+	_vault_thread.start(func():
+		Ops.vault_delete_file(target, log_fn)
+		Ops.vault_refresh(cache, log_fn)
+		call_deferred("_vault_after_manage_named", "asset_deleted", 'Deleted "%s" from assets' % target.get_file())
 	)
 
 func _vault_after_manage() -> void:
@@ -2633,6 +2908,16 @@ func _vault_after_manage() -> void:
 	_vault_remote_sel = ""
 	_vault_files = Ops.vault_list_files(_vault_cache)
 	_vault_navigate(_vault_current_dir)
+
+func _vault_after_manage_named(log_type: String, log_text: String) -> void:
+	if _vault_thread and _vault_thread.is_started():
+		_vault_thread.wait_to_finish()
+	_vault_thread = null
+	_vault_status_lbl.text = ""
+	_vault_remote_sel = ""
+	_vault_files = Ops.vault_list_files(_vault_cache)
+	_vault_navigate(_vault_current_dir)
+	_log_activity(log_type, log_text)
 
 func _build_terminal_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Terminal", tabs)
@@ -3480,6 +3765,12 @@ func _activity_icon(type: String) -> String:
 		"vote_closed":       return "🏁"
 		"account_approved":  return "👤"
 		"account_removed":   return "🚫"
+		"asset_uploaded":    return "⬆"
+		"asset_deleted":     return "🗑"
+		"asset_renamed":     return "✏"
+		"folder_created":    return "📁"
+		"idea_suggested":    return "💡"
+		"idea_rated":        return "⭐"
 		_:                   return "•"
 
 func _activity_color(type: String) -> Color:
@@ -3495,6 +3786,12 @@ func _activity_color(type: String) -> Color:
 		"vote_closed":       return Color(0.9, 0.75, 0.3)
 		"account_approved":  return Color(0.4, 0.9, 0.5)
 		"account_removed":   return Color(1.0, 0.4, 0.4)
+		"asset_uploaded":    return Color(0.5, 0.9, 0.6)
+		"asset_deleted":     return Color(1.0, 0.5, 0.4)
+		"asset_renamed":     return Color(0.9, 0.8, 0.4)
+		"folder_created":    return Color(0.7, 0.7, 1.0)
+		"idea_suggested":    return Color(1.0, 0.95, 0.4)
+		"idea_rated":        return Color(1.0, 0.8, 0.2)
 		_:                   return Color(0.6, 0.6, 0.6)
 
 # ─── Login overlay ────────────────────────────────────────────────────────────

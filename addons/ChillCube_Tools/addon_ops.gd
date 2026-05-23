@@ -1319,6 +1319,26 @@ static func vault_move_file(src_rel: String, dest_rel: String, log: Callable) ->
 	log.call("✅ Moved!" if ok else "⚠️  Push failed.")
 	return ok
 
+static func vault_delete_file(remote_rel: String, log: Callable) -> bool:
+	var tmp := OS.get_temp_dir() + "/.cc_vaultdel_" + str(int(Time.get_unix_time_from_system()))
+	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+		log.call("❌ Could not clone assets.")
+		_rm_rf(tmp)
+		return false
+	var rpath := remote_rel.strip_edges().lstrip("/")
+	var full := tmp + "/" + rpath
+	if not FileAccess.file_exists(full):
+		log.call("❌ File not found.")
+		_rm_rf(tmp)
+		return false
+	DirAccess.remove_absolute(full)
+	_git(["add", "-A"], tmp, Callable())
+	_git(["commit", "-m", "assets: delete " + rpath], tmp, Callable())
+	var ok := _git(["push", "origin", "HEAD"], tmp, Callable()) == OK
+	_rm_rf(tmp)
+	log.call("✅ Deleted." if ok else "❌ Push failed.")
+	return ok
+
 static func vault_mkdir(dir_path: String, log: Callable) -> bool:
 	var tmp := OS.get_temp_dir() + "/.cc_vaultmkdir_" + str(int(Time.get_unix_time_from_system()))
 	log.call("📥 Preparing (shallow clone)...")
