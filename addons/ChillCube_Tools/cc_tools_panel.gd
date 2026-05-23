@@ -34,6 +34,7 @@ var _ws_status_lbl: Label
 var _ws_save_btn: Button
 var _ws_dirty: bool = false
 var _ws_known_classes: Array = []
+var _ws_completion_cache: Array = []
 var _ws_error_panel: VBoxContainer
 var _ws_find_bar: HBoxContainer
 var _ws_find_input: LineEdit
@@ -730,6 +731,7 @@ func _ws_rebuild_editor() -> void:
 		return
 
 	_ws_known_classes = _ws_build_known_classes(addon_path)
+	_ws_completion_cache = _ws_build_completion_cache(addon_path)
 
 	_ws_script_tabs = TabContainer.new()
 	_ws_script_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -756,8 +758,8 @@ func _ws_rebuild_editor() -> void:
 		editor.indent_automatic = true
 		editor.indent_use_spaces = false
 		editor.minimap_draw = true
+		editor.draw_tabs = true
 		editor.code_completion_enabled = true
-		editor.code_completion_prefixes = PackedStringArray([".", "_", "$"])
 		editor.syntax_highlighter = GDScriptSyntaxHighlighter.new()
 
 		# Custom gutter for dep errors (index 0 in custom gutter space)
@@ -767,18 +769,15 @@ func _ws_rebuild_editor() -> void:
 		editor.set_gutter_width(0, 16)
 
 		editor.text_changed.connect(func():
-			if not _ws_dirty:
-				_ws_dirty = true
-				if is_instance_valid(_ws_save_btn):
-					_ws_save_btn.disabled = false
-				if is_instance_valid(_ws_status_lbl):
-					_ws_status_lbl.text = "● Unsaved changes"
-					_ws_status_lbl.add_theme_color_override("font_color", Color(1.0, 0.75, 0.3))
+			_ws_dirty = true
+			if is_instance_valid(_ws_save_btn):
+				_ws_save_btn.disabled = false
 			_ws_schedule_check(editor, addon_path, err_icon)
+			editor.request_code_completion()
 		)
 
 		editor.code_completion_requested.connect(func():
-			_ws_provide_completion(editor, addon_path)
+			_ws_provide_completion(editor)
 		)
 
 		editor.gui_input.connect(func(event: InputEvent):
@@ -962,6 +961,38 @@ func _ws_build_known_classes(addon_path: String) -> Array:
 					gf_file.close()
 	return classes
 
+# ─── Workspace: completion cache (built once per addon selection) ─────────────
+
+func _ws_build_completion_cache(addon_path: String) -> Array:
+	var cache: Array = []
+	for kw: String in _WS_KEYWORDS:
+		cache.append({"k": CodeEdit.KIND_PLAIN_TEXT, "d": kw, "i": kw})
+	for cls: String in _ws_known_classes:
+		cache.append({"k": CodeEdit.KIND_CLASS, "d": cls, "i": cls})
+	var project_root := ProjectSettings.globalize_path("res://").rstrip("/")
+	var deps := Ops.read_dep_urls(addon_path)
+	for dep_url: String in deps:
+		var norm_dep := dep_url.rstrip("/").replace(".git", "")
+		for folder: String in Ops.list_addons(project_root):
+			var dep_folder_path := project_root + "/addons/" + folder
+			var remote := Ops.git_remote(dep_folder_path).rstrip("/").replace(".git", "")
+			if remote != norm_dep:
+				continue
+			for sym: Dictionary in Ops.extract_api(dep_folder_path):
+				var kind_str: String = sym.get("kind", "")
+				var sym_name: String = sym.get("name", "")
+				if sym_name.is_empty():
+					continue
+				if kind_str == "func":
+					var sig_str: String = sym.get("signature", "()")
+					cache.append({"k": CodeEdit.KIND_FUNCTION,
+						"d": sym_name + sig_str, "i": sym_name + "("})
+				elif kind_str == "export_var":
+					cache.append({"k": CodeEdit.KIND_VARIABLE, "d": sym_name, "i": sym_name})
+				elif kind_str == "signal":
+					cache.append({"k": CodeEdit.KIND_SIGNAL, "d": sym_name, "i": sym_name})
+	return cache
+
 # ─── Workspace: code completion ──────────────────────────────────────────────
 
 var _WS_KEYWORDS: PackedStringArray = PackedStringArray([
@@ -981,50 +1012,17 @@ var _WS_KEYWORDS: PackedStringArray = PackedStringArray([
 	"emit_signal", "connect", "disconnect", "has_signal", "new", "free"
 ])
 
-func _ws_provide_completion(editor: CodeEdit, addon_path: String) -> void:
-	# GDScript keywords and builtins
-	for kw: String in _WS_KEYWORDS:
-		editor.add_code_completion_option(CodeEdit.KIND_PLAIN_TEXT, kw, kw)
-
-	# Known classes (Godot built-ins + dep class_names)
-	for cls: String in _ws_known_classes:
-		editor.add_code_completion_option(CodeEdit.KIND_CLASS, cls, cls)
-
-	# Dep API: functions and exported vars from declared dep contracts
-	var project_root := ProjectSettings.globalize_path("res://").rstrip("/")
-	var deps := Ops.read_dep_urls(addon_path)
-	for dep_url: String in deps:
-		var norm_dep := dep_url.rstrip("/").replace(".git", "")
-		for folder: String in Ops.list_addons(project_root):
-			var dep_folder_path := project_root + "/addons/" + folder
-			var remote := Ops.git_remote(dep_folder_path).rstrip("/").replace(".git", "")
-			if remote == norm_dep:
-				for sym: Dictionary in Ops.extract_api(dep_folder_path):
-					var kind_str: String = sym.get("kind", "")
-					var sym_name: String = sym.get("name", "")
-					if sym_name.is_empty():
-						continue
-					if kind_str == "func":
-						var sig_str: String = sym.get("signature", "()")
-						editor.add_code_completion_option(CodeEdit.KIND_FUNCTION,
-							sym_name + sig_str, sym_name + "(")
-					elif kind_str == "export_var":
-						editor.add_code_completion_option(CodeEdit.KIND_VARIABLE,
-							sym_name, sym_name)
-					elif kind_str == "signal":
-						editor.add_code_completion_option(CodeEdit.KIND_SIGNAL,
-							sym_name, sym_name)
-
-	# Functions defined in the current file
-	var cur_text := editor.text
+func _ws_provide_completion(editor: CodeEdit) -> void:
+	for item: Dictionary in _ws_completion_cache:
+		editor.add_code_completion_option(item["k"] as int, item["d"], item["i"])
+	# Also include functions defined in the current file
 	var fn_re := RegEx.new()
 	fn_re.compile("^(?:static\\s+)?func\\s+(\\w+)\\s*\\(")
-	for line: String in cur_text.split("\n"):
+	for line: String in editor.text.split("\n"):
 		var m := fn_re.search(line.strip_edges())
 		if m:
 			var fn_name := m.get_string(1)
 			editor.add_code_completion_option(CodeEdit.KIND_FUNCTION, fn_name + "()", fn_name + "(")
-
 	editor.update_code_completion_options(true)
 
 # ─── Workspace: dep-class check ──────────────────────────────────────────────
@@ -1060,25 +1058,34 @@ func _ws_run_check(editor: CodeEdit, addon_path: String, err_icon: Texture2D) ->
 	var rc := gs.reload()
 	var syntax_ok := rc == OK
 
-	# Apply gutter markers for dep errors
+	# Gutter markers for dep errors
 	for err: Dictionary in errors:
 		var line_idx: int = err.get("line", 0) as int
 		if line_idx >= 0 and line_idx < editor.get_line_count():
 			editor.set_line_gutter_icon(line_idx, 0, err_icon)
 
-	# Update error panel
+	# Status label: syntax error takes priority, then dep-error count
+	if is_instance_valid(_ws_status_lbl):
+		if not syntax_ok:
+			_ws_status_lbl.text = "⚠ Syntax error"
+			_ws_status_lbl.add_theme_color_override("font_color", Color(1.0, 0.55, 0.15))
+		elif not errors.is_empty():
+			_ws_status_lbl.text = "⚠ %d dep error(s)" % errors.size()
+			_ws_status_lbl.add_theme_color_override("font_color", Color(1.0, 0.45, 0.45))
+		elif _ws_dirty:
+			_ws_status_lbl.text = "● Unsaved changes"
+			_ws_status_lbl.add_theme_color_override("font_color", Color(1.0, 0.75, 0.3))
+		else:
+			_ws_status_lbl.text = ""
+
+	# Error panel: dep errors only (these have real line numbers)
 	if is_instance_valid(_ws_error_panel):
 		for child in _ws_error_panel.get_children():
 			child.queue_free()
-		if errors.is_empty() and syntax_ok:
+		if errors.is_empty():
 			_ws_error_panel.visible = false
 		else:
 			_ws_error_panel.visible = true
-			if not syntax_ok:
-				var syn_lbl := Label.new()
-				syn_lbl.text = "⚠ Syntax error — see Output panel for details"
-				syn_lbl.add_theme_color_override("font_color", Color(1.0, 0.6, 0.2))
-				_ws_error_panel.add_child(syn_lbl)
 			for err: Dictionary in errors:
 				var row := HBoxContainer.new()
 				var line_num: int = (err.get("line", 0) as int) + 1
