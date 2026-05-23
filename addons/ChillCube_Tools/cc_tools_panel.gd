@@ -7,6 +7,7 @@ const Ops = preload("res://addons/ChillCube_Tools/addon_ops.gd")
 
 var _addon_list: VBoxContainer
 var _installed_log: TextEdit
+var _installed_search_input: LineEdit
 var _create_name: LineEdit
 var _create_desc: TextEdit
 var _create_author: LineEdit
@@ -241,6 +242,18 @@ func _build_addons_tab(tabs: TabContainer) -> void:
 	header.add_child(_push_btn)
 	header.add_child(_update_plugin_btn)
 	root.add_child(header)
+
+	var search_row := HBoxContainer.new()
+	search_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var search_icon := Label.new()
+	search_icon.text = "🔍"
+	_installed_search_input = LineEdit.new()
+	_installed_search_input.placeholder_text = "Search installed addons..."
+	_installed_search_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_installed_search_input.text_changed.connect(func(_t: String): _refresh_addons())
+	search_row.add_child(search_icon)
+	search_row.add_child(_installed_search_input)
+	root.add_child(search_row)
 
 	var split := HBoxContainer.new()
 	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -4010,6 +4023,10 @@ func _refresh_addons() -> void:
 		_addon_list.add_child(lbl)
 		return
 
+	var query := ""
+	if is_instance_valid(_installed_search_input):
+		query = _installed_search_input.text.strip_edges().to_lower()
+
 	var dependents: Dictionary = Ops.get_dependents(root)
 	var in_dev := _get_in_dev_folders()
 
@@ -4017,6 +4034,11 @@ func _refresh_addons() -> void:
 		if folder in in_dev:
 			continue
 		var cfg := Ops.parse_cfg(root + "/addons/" + folder + "/plugin.cfg")
+		if not query.is_empty():
+			var name_lower: String = (cfg.get("name", folder) as String).to_lower()
+			var desc_lower: String = (cfg.get("description", "") as String).to_lower()
+			if not (query in name_lower or query in desc_lower or query in folder.to_lower()):
+				continue
 		var row := HBoxContainer.new()
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
