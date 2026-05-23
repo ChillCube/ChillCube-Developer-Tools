@@ -1950,10 +1950,10 @@ func _vault_request_preview(rel_path: String) -> void:
 	_vault_clear_preview()
 	_vault_preview_name_lbl.text = rel_path.get_file()
 	var ext := rel_path.get_extension().to_lower()
-	const IMAGE_EXTS := ["png", "jpg", "jpeg", "webp", "bmp", "tga", "svg"]
-	const AUDIO_EXTS := ["ogg", "mp3", "wav"]
-	const VIDEO_EXTS := ["ogv", "webm", "mp4"]
-	const TEXT_EXTS  := ["txt", "md", "json", "csv", "gd", "cfg", "ini", "toml", "yaml", "yml", "xml", "html", "shader", "glsl"]
+	var IMAGE_EXTS := ["png", "jpg", "jpeg", "webp", "bmp", "tga", "svg"]
+	var AUDIO_EXTS := ["ogg", "mp3", "wav"]
+	var VIDEO_EXTS := ["ogv", "webm", "mp4"]
+	var TEXT_EXTS  := ["txt", "md", "json", "csv", "gd", "cfg", "ini", "toml", "yaml", "yml", "xml", "html", "shader", "glsl"]
 	if ext not in IMAGE_EXTS and ext not in AUDIO_EXTS and ext not in VIDEO_EXTS and ext not in TEXT_EXTS:
 		_vault_preview_unsupported.text = "No preview available for ." + ext + " files."
 		_vault_preview_unsupported.visible = true
@@ -1978,9 +1978,9 @@ func _vault_on_preview_ready(tmp_path: String, ext: String) -> void:
 		_vault_preview_unsupported.text = "Preview extraction failed."
 		_vault_preview_unsupported.visible = true
 		return
-	const IMAGE_EXTS := ["png", "jpg", "jpeg", "webp", "bmp", "tga", "svg"]
-	const AUDIO_EXTS := ["ogg", "mp3", "wav"]
-	const VIDEO_EXTS := ["ogv", "webm", "mp4"]
+	var IMAGE_EXTS := ["png", "jpg", "jpeg", "webp", "bmp", "tga", "svg"]
+	var AUDIO_EXTS := ["ogg", "mp3", "wav"]
+	var VIDEO_EXTS := ["ogv", "webm", "mp4"]
 	if ext in IMAGE_EXTS:
 		_vault_show_image(tmp_path)
 	elif ext in AUDIO_EXTS:
