@@ -102,9 +102,9 @@ var _registry_installed: Dictionary  # url -> folder name
 
 var _activity_items: Array = []
 var _activity_list: VBoxContainer
-var _activity_push_btn: Button
 var _activity_status_lbl: Label
 var _activity_thread: Thread = null
+var _activity_push_pending: bool = false
 
 var _vote_items: Array = []
 var _vote_list: VBoxContainer
@@ -138,10 +138,9 @@ func _ready() -> void:
 
 	_build_addons_supertab(tabs)
 	_build_planning_tab(tabs)
-	_build_votes_tab(tabs)
+	_build_team_supertab(tabs)
 	_build_vault_tab(tabs)
 	_build_terminal_tab(tabs)
-	_build_activity_tab(tabs)
 	_build_account_tab(tabs)
 
 	_refresh_addons()
@@ -1633,6 +1632,18 @@ func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
 		if is_instance_valid(_todo_status_lbl):
 			_todo_status_lbl.text = ""
 	)
+
+# ─── Team supertab (Activity + Votes) ────────────────────────────────────────
+
+func _build_team_supertab(tabs: TabContainer) -> void:
+	var root := _vbox("Team", tabs)
+	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var inner_tabs := TabContainer.new()
+	inner_tabs.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	inner_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_child(inner_tabs)
+	_build_activity_tab(inner_tabs)
+	_build_votes_tab(inner_tabs)
 
 # ─── Votes tab ────────────────────────────────────────────────────────────────
 
@@ -3309,17 +3320,10 @@ func _open_script_editor(folder: String, addon_name: String) -> void:
 func _build_activity_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Activity", tabs)
 
-	var toolbar := HBoxContainer.new()
-	_activity_push_btn = Button.new()
-	_activity_push_btn.text = "⬆ Push"
-	_activity_push_btn.tooltip_text = "Manually commit and push the activity log to GitHub."
-	_activity_push_btn.pressed.connect(_activity_manual_push)
 	_activity_status_lbl = Label.new()
-	_activity_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_activity_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
-	toolbar.add_child(_activity_push_btn)
-	toolbar.add_child(_activity_status_lbl)
-	root.add_child(toolbar)
+	_activity_status_lbl.add_theme_font_size_override("font_size", 11)
+	root.add_child(_activity_status_lbl)
 	root.add_child(HSeparator.new())
 
 	var scroll := ScrollContainer.new()
@@ -3368,33 +3372,28 @@ func _log_activity(type: String, text: String) -> void:
 
 func _activity_auto_push() -> void:
 	if _activity_thread and _activity_thread.is_started():
+		_activity_push_pending = true
 		return
+	_activity_push_pending = false
 	_activity_thread = Thread.new()
 	_activity_thread.start(func():
 		var pushed := Ops.cc_data_push(_cc_data_bundle(), Callable())
 		call_deferred("_activity_on_pushed", pushed)
 	)
 
-func _activity_manual_push() -> void:
-	if _activity_thread and _activity_thread.is_started():
-		return
-	if is_instance_valid(_activity_push_btn):
-		_activity_push_btn.disabled = true
-	_activity_auto_push()
-
 func _activity_on_pushed(pushed: bool) -> void:
 	if _activity_thread:
 		_activity_thread.wait_to_finish()
 	_activity_thread = null
-	if is_instance_valid(_activity_push_btn):
-		_activity_push_btn.disabled = false
-	if not is_instance_valid(_activity_status_lbl):
-		return
-	_activity_status_lbl.text = "✅ Backed up" if pushed else "✨ Nothing new to push"
-	get_tree().create_timer(3.0).timeout.connect(func():
-		if is_instance_valid(_activity_status_lbl):
-			_activity_status_lbl.text = ""
-	)
+	if is_instance_valid(_activity_status_lbl):
+		_activity_status_lbl.text = "✅ Synced" if pushed else ""
+		if pushed:
+			get_tree().create_timer(3.0).timeout.connect(func():
+				if is_instance_valid(_activity_status_lbl):
+					_activity_status_lbl.text = ""
+			)
+	if _activity_push_pending:
+		_activity_auto_push()
 
 func _refresh_activity_list() -> void:
 	if not is_instance_valid(_activity_list):
