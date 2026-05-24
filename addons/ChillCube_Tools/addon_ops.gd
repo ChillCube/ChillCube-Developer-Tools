@@ -1516,6 +1516,7 @@ static func _auth_save(tmp: String, data: Dictionary) -> void:
 	_write(tmp + "/accounts.json", JSON.stringify(data, "\t") + "\n")
 
 static func _auth_clone(log: Callable) -> String:
+	if not log.is_valid(): log = func(_m): pass
 	var tmp := _auth_tmp()
 	if _git(["clone", "--depth=1", "--quiet", AUTH_SSH, tmp], "", Callable()) != OK:
 		log.call("❌ Cannot reach auth server. Check SSH/git access.")
