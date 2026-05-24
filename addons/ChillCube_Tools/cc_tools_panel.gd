@@ -125,6 +125,7 @@ var _docs_editor: TextEdit
 var _docs_view_panel: VBoxContainer
 var _docs_edit_btn: Button
 var _docs_delete_header_btn: Button
+var _docs_archive_suggest_btn: Button
 var _docs_save_btn: Button
 var _docs_cancel_btn: Button
 var _docs_status_lbl: Label
@@ -3101,6 +3102,7 @@ func _refresh_vote_list() -> void:
 		var no_n := no_list.size()
 		var total_n := yes_n + no_n
 		var is_perm: bool = s.get("type", "") == "permission_change"
+		var is_archive: bool = s.get("type", "") == "archive_request"
 		var panel := PanelContainer.new()
 		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		var cvbox := VBoxContainer.new()
@@ -3112,15 +3114,15 @@ func _refresh_vote_list() -> void:
 		title_lbl.bbcode_enabled = true
 		title_lbl.fit_content = true
 		title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var kind := "🔒 Permission Change" if is_perm else "📄 " + doc_name
+		var kind := "🔒 Permission Change" if is_perm else ("📦 Archive Request" if is_archive else "📄 " + doc_name)
 		title_lbl.text = "[b]%s[/b]  [color=#aaaaff][DOC VOTE][/color]  [color=#42a5f5][OPEN][/color]" % kind
 		header.add_child(title_lbl)
 		var diff_btn := Button.new()
 		diff_btn.text = "📊 View Diff"
 		diff_btn.flat = false
-		if is_perm:
+		if is_perm or is_archive:
 			diff_btn.disabled = true
-			diff_btn.tooltip_text = "Permission change — no content diff"
+			diff_btn.tooltip_text = "No content diff for this vote type"
 		else:
 			diff_btn.pressed.connect(func(): _docs_open_diff_dialog(cap_si))
 		header.add_child(diff_btn)
@@ -4892,6 +4894,40 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 			_docs_pending_delete = _docs_sel_path
 			_docs_delete_dialog.popup_centered()
 	)
+	_docs_archive_suggest_btn = Button.new()
+	_docs_archive_suggest_btn.text = "📦 Suggest Archive"
+	_docs_archive_suggest_btn.tooltip_text = "Propose archiving this document (requires a vote)"
+	_docs_archive_suggest_btn.visible = false
+	_docs_archive_suggest_btn.pressed.connect(func():
+		if _docs_sel_path.is_empty():
+			return
+		for s: Dictionary in _docs_suggestions:
+			if s.get("doc_path", "") == _docs_sel_path and s.get("type", "") == "archive_request" and s.get("status", "") == "pending":
+				_docs_status_lbl.text = "⚠ Archive vote already pending."
+				return
+		var me := _current_user.get("username", "?")
+		var perm: Dictionary = _docs_permissions.get(_docs_sel_path, {})
+		var sugg: Dictionary = {
+			"id": str(Time.get_unix_time_from_system()) + "_" + me,
+			"doc_path": _docs_sel_path,
+			"author": me,
+			"timestamp": Time.get_datetime_string_from_system(),
+			"type": "archive_request",
+			"vote_required": true,
+			"vote_threshold": perm.get("vote_threshold", "1/2"),
+			"votes": {"yes": [], "no": []},
+			"status": "pending"
+		}
+		_docs_suggestions.append(sugg)
+		_save_doc_suggestions()
+		var doc_name := _docs_sel_path.get_file().get_basename()
+		_log_activity("doc_suggestion", '"%s" proposed archiving: "%s"' % [me, doc_name])
+		_refresh_vote_list()
+		_docs_status_lbl.text = "✅ Archive vote submitted"
+		get_tree().create_timer(3.0).timeout.connect(func():
+			if is_instance_valid(_docs_status_lbl): _docs_status_lbl.text = ""
+		)
+	)
 	_docs_save_btn = Button.new()
 	_docs_save_btn.text = "💾 Save"
 	_docs_save_btn.visible = false
@@ -4923,6 +4959,7 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	doc_header.add_child(_docs_edit_btn)
 	doc_header.add_child(_docs_suggest_btn)
 	doc_header.add_child(_docs_delete_header_btn)
+	doc_header.add_child(_docs_archive_suggest_btn)
 	doc_header.add_child(_docs_save_btn)
 	doc_header.add_child(_docs_suggest_submit_btn)
 	doc_header.add_child(_docs_cancel_btn)
@@ -5329,16 +5366,17 @@ func _docs_navigate(rel: String) -> void:
 			)
 			row.add_child(ren_btn)
 
-			var del_btn := Button.new()
-			del_btn.text = "🗑"
-			del_btn.flat = true
-			del_btn.custom_minimum_size = Vector2(26, 0)
-			del_btn.tooltip_text = "Archive"
-			del_btn.pressed.connect(func():
-				_docs_pending_delete = cap_full
-				_docs_delete_dialog.popup_centered()
-			)
-			row.add_child(del_btn)
+			if _docs_can_edit(cap_full) and not _docs_requires_vote(cap_full):
+				var del_btn := Button.new()
+				del_btn.text = "🗑"
+				del_btn.flat = true
+				del_btn.custom_minimum_size = Vector2(26, 0)
+				del_btn.tooltip_text = "Archive"
+				del_btn.pressed.connect(func():
+					_docs_pending_delete = cap_full
+					_docs_delete_dialog.popup_centered()
+				)
+				row.add_child(del_btn)
 
 		_docs_browser.add_child(row)
 
@@ -5379,6 +5417,7 @@ func _docs_select(full_path: String) -> void:
 	_docs_edit_btn.visible = false
 	_docs_suggest_btn.visible = false
 	_docs_delete_header_btn.visible = false
+	_docs_archive_suggest_btn.visible = false
 	_docs_perm_btn.visible = false
 	_docs_review_btn.visible = false
 	_docs_save_btn.visible = false
@@ -5423,6 +5462,7 @@ func _docs_enter_edit() -> void:
 	_docs_edit_btn.visible = false
 	_docs_suggest_btn.visible = false
 	_docs_delete_header_btn.visible = false
+	_docs_archive_suggest_btn.visible = false
 	_docs_review_btn.visible = false
 	_docs_perm_btn.visible = false
 	_docs_save_btn.visible = true
@@ -5824,6 +5864,7 @@ func _docs_show_view_buttons(full_path: String) -> void:
 		_docs_edit_btn.visible = false
 		_docs_suggest_btn.visible = false
 		_docs_delete_header_btn.visible = false
+		_docs_archive_suggest_btn.visible = false
 		_docs_perm_btn.visible = false
 		_docs_review_btn.visible = false
 		_docs_save_btn.visible = false
@@ -5835,6 +5876,7 @@ func _docs_show_view_buttons(full_path: String) -> void:
 	var req_vote := _docs_requires_vote(full_path)
 	_docs_edit_btn.visible = can_edit and not req_vote
 	_docs_delete_header_btn.visible = can_edit and not req_vote
+	_docs_archive_suggest_btn.visible = can_edit and req_vote
 	_docs_suggest_btn.visible = not full_path.is_empty() and (not can_edit or req_vote)
 	_docs_perm_btn.visible = can_edit and not full_path.is_empty()
 	var pending := _docs_pending_suggestions(full_path)
@@ -5907,6 +5949,7 @@ func _docs_review_build(full_path: String) -> void:
 		var status: String = s.get("status", "pending")
 		var is_vote: bool = s.get("vote_required", false)
 		var is_perm_change: bool = s.get("type", "") == "permission_change"
+		var is_archive_req: bool = s.get("type", "") == "archive_request"
 		var cap_i := i
 		var card := PanelContainer.new()
 		var card_vbox := VBoxContainer.new()
@@ -5914,7 +5957,7 @@ func _docs_review_build(full_path: String) -> void:
 		# ── Title row ────────────────────────────────────────────────────────
 		var top_row := HBoxContainer.new()
 		var status_icon := {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(status, "?")
-		var kind_icon := "🗳" if is_vote else ("🔒" if is_perm_change else "💡")
+		var kind_icon := "🗳" if is_vote else ("🔒" if is_perm_change else ("📦" if is_archive_req else "💡"))
 		var info_lbl := Label.new()
 		info_lbl.text = status_icon + " " + kind_icon + " " + s.get("author", "?") + "  —  " + s.get("timestamp", "")
 		info_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -5925,6 +5968,11 @@ func _docs_review_build(full_path: String) -> void:
 			var what_lbl := Label.new()
 			what_lbl.text = "Permission change"
 			what_lbl.add_theme_color_override("font_color", Color(0.8, 0.7, 1.0))
+			top_row.add_child(what_lbl)
+		elif is_archive_req:
+			var what_lbl := Label.new()
+			what_lbl.text = "📦 Archive request"
+			what_lbl.add_theme_color_override("font_color", Color(1.0, 0.75, 0.4))
 			top_row.add_child(what_lbl)
 		else:
 			var diff_btn := Button.new()
@@ -6008,6 +6056,25 @@ func _docs_review_approve(idx: int) -> void:
 	_docs_suggestions[idx] = sugg
 	_save_doc_suggestions()
 	_docs_review_dialog.hide()
+	# Archive request: move doc to archive directory
+	if sugg.get("type", "") == "archive_request":
+		var doc_path: String = sugg["doc_path"]
+		var rel := _docs_rel(doc_path)
+		var dest := DOCS_PREFIX + "/" + DOCS_ARCHIVE_REL + "/" + rel
+		var cache := _vault_cache
+		var cap_src := doc_path
+		var cap_dest := dest
+		var me := sugg.get("approved_by", "?")
+		var doc_name2 := doc_path.get_file().get_basename()
+		_log_activity("doc_suggestion", '"%s" approved archive of: "%s"' % [me, doc_name2])
+		_docs_status_lbl.text = "Archiving…"
+		_docs_thread = Thread.new()
+		_docs_thread.start(func():
+			Ops.vault_move_file(cap_src, cap_dest, Callable())
+			Ops.vault_refresh(cache, Callable())
+			call_deferred("_docs_on_archived", cap_src, cap_dest)
+		)
+		return
 	# Permission-change suggestion: apply new_permissions, no vault upload needed
 	if sugg.get("type", "") == "permission_change":
 		var doc_path: String = sugg["doc_path"]
