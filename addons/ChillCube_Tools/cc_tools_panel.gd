@@ -120,6 +120,7 @@ var _docs_current_dir: String = ""
 var _docs_sel_path: String = ""
 var _docs_files: Array[String] = []
 var _docs_view: RichTextLabel
+var _docs_view_scroll: ScrollContainer
 var _docs_editor: TextEdit
 var _docs_view_panel: VBoxContainer
 var _docs_edit_btn: Button
@@ -4626,7 +4627,8 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	_docs_view_panel.add_child(doc_header)
 	_docs_view_panel.add_child(HSeparator.new())
 
-	var view_scroll := ScrollContainer.new()
+	_docs_view_scroll = ScrollContainer.new()
+	var view_scroll := _docs_view_scroll
 	view_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	view_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_docs_view = RichTextLabel.new()
@@ -4858,7 +4860,7 @@ func _docs_select(full_path: String) -> void:
 	_docs_status_lbl.text = "Loading…"
 	_docs_view.text = ""
 	_docs_editor.visible = false
-	_docs_view.visible = true
+	_docs_view_scroll.visible = true
 	var cache := _vault_cache
 	var tmp_dir := OS.get_temp_dir() + "/cc_docs_preview"
 	DirAccess.make_dir_recursive_absolute(tmp_dir)
@@ -4889,7 +4891,7 @@ func _docs_on_loaded(tmp_file: String) -> void:
 
 func _docs_enter_edit() -> void:
 	_docs_editor.text = _docs_loaded_content
-	_docs_view.visible = false
+	_docs_view_scroll.visible = false
 	_docs_editor.visible = true
 	_docs_edit_btn.visible = false
 	_docs_save_btn.visible = true
@@ -4897,7 +4899,7 @@ func _docs_enter_edit() -> void:
 
 func _docs_exit_edit() -> void:
 	_docs_editor.visible = false
-	_docs_view.visible = true
+	_docs_view_scroll.visible = true
 	_docs_edit_btn.visible = true
 	_docs_save_btn.visible = false
 	_docs_cancel_btn.visible = false
@@ -5014,7 +5016,7 @@ func _docs_on_created(full_path: String, content: String) -> void:
 	_docs_title_lbl.add_theme_color_override("font_color", Color(0.9, 0.9, 0.9))
 	_docs_loaded_content = content
 	_docs_view.parse_bbcode(_md_to_bbcode(content))
-	_docs_view.visible = true
+	_docs_view_scroll.visible = true
 	_docs_editor.visible = false
 	_docs_edit_btn.visible = true
 	_docs_save_btn.visible = false
