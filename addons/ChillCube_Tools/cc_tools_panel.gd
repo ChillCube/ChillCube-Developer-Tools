@@ -188,10 +188,12 @@ var _activity_comments_open: Dictionary = {}  # idx -> bool
 
 var _vote_items: Array = []
 var _vote_list: VBoxContainer
+var _decision_log_list: VBoxContainer
 var _vote_status_lbl: Label
 var _vote_create_box: Control
 var _vote_thread: Thread = null
 var _vote_comments_open: Dictionary = {}  # idx -> bool
+const REVOTE_TIMEOUT_HOURS := 24
 
 var _schedule_items: Array = []
 var _schedule_list: VBoxContainer
@@ -2702,6 +2704,7 @@ func _build_team_supertab(tabs: TabContainer) -> void:
 	root.add_child(inner_tabs)
 	_build_activity_tab(inner_tabs)
 	_build_votes_tab(inner_tabs)
+	_build_decision_log_tab(inner_tabs)
 	_build_schedule_tab(inner_tabs)
 	_build_forum_tab(inner_tabs)
 	_build_docs_tab(inner_tabs)
@@ -2888,6 +2891,7 @@ func _on_vote_member_count(vote_idx: int, member_count: int) -> void:
 			vote["closed"] = true
 			vote["result"] = _vote_leading_option(vote)
 			vote["closed_at"] = Time.get_datetime_string_from_system()
+			vote["closed_at_unix"] = int(Time.get_unix_time_from_system())
 			vote["close_reason"] = "majority"
 			_vote_items[vote_idx] = vote
 			_save_votes()
@@ -2915,6 +2919,7 @@ func _refresh_vote_list() -> void:
 			vote["closed"] = true
 			vote["result"] = _vote_leading_option(vote)
 			vote["closed_at"] = Time.get_datetime_string_from_system()
+			vote["closed_at_unix"] = int(Time.get_unix_time_from_system())
 			vote["close_reason"] = "deadline"
 			_vote_items[i] = vote
 			is_closed = true
@@ -2922,6 +2927,8 @@ func _refresh_vote_list() -> void:
 			_log_activity("vote_closed",
 				'Vote "%s" closed — deadline reached. Result: %s' % [
 				title, vote.get("result", "")])
+		if is_closed:
+			continue  # concluded votes live in the Decision Log
 		var result: String = vote.get("result", "")
 		var total: int = votes_dict.size()
 		# Card
@@ -3188,15 +3195,6 @@ func _refresh_vote_list() -> void:
 			change_btn.pressed.connect(func(): _docs_vote_cast(cap_si, not already_yes))
 			voted_row.add_child(change_btn)
 			cvbox.add_child(voted_row)
-		# Editor controls
-		if _docs_can_edit(doc_path):
-			var force_row := HBoxContainer.new()
-			force_row.alignment = BoxContainer.ALIGNMENT_END
-			var force_no := Button.new()
-			force_no.text = "❌ Reject"
-			force_no.pressed.connect(func(): _docs_review_reject(cap_si))
-			force_row.add_child(force_no)
-			cvbox.add_child(force_row)
 		_vote_list.add_child(panel)
 
 	# ── Election pending votes ────────────────────────────────────────────────
@@ -3294,14 +3292,189 @@ func _refresh_vote_list() -> void:
 				cvbox.add_child(voted_row)
 		_vote_list.add_child(panel)
 
-	# Show hint if truly empty
-	if _vote_items.is_empty() and doc_votes.is_empty() and el_pvotes.is_empty():
+	# Show hint if no open votes remain
+	var open_votes := 0
+	for v: Dictionary in _vote_items:
+		if not v.get("closed", false):
+			open_votes += 1
+	if open_votes == 0 and doc_votes.is_empty() and el_pvotes.is_empty():
 		for c in _vote_list.get_children():
 			c.queue_free()
 		var hint := Label.new()
-		hint.text = "No votes yet. Use + New Vote to start one."
+		var has_closed := _vote_items.any(func(v: Dictionary) -> bool: return v.get("closed", false))
+		hint.text = "All votes concluded — see Decision Log." if has_closed else "No votes yet. Use + New Vote to start one."
 		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 		_vote_list.add_child(hint)
+	_refresh_decision_log()
+
+# ─── Decision Log tab ─────────────────────────────────────────────────────────
+
+func _build_decision_log_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Log", tabs)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_decision_log_list = VBoxContainer.new()
+	_decision_log_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_decision_log_list.add_theme_constant_override("separation", 8)
+	scroll.add_child(_decision_log_list)
+	root.add_child(scroll)
+
+func _refresh_decision_log() -> void:
+	if not is_instance_valid(_decision_log_list):
+		return
+	for c in _decision_log_list.get_children():
+		c.queue_free()
+
+	var closed_votes: Array = []
+	for i in range(_vote_items.size()):
+		if (_vote_items[i] as Dictionary).get("closed", false):
+			closed_votes.append({"vote": _vote_items[i], "idx": i})
+	closed_votes.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return (a["vote"].get("closed_at", "") as String) > (b["vote"].get("closed_at", "") as String)
+	)
+
+	if closed_votes.is_empty():
+		var hint := Label.new()
+		hint.text = "No concluded votes yet."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_decision_log_list.add_child(hint)
+		return
+
+	var me: String = _current_user.get("username", "")
+
+	for entry: Dictionary in closed_votes:
+		var vote: Dictionary = entry["vote"]
+		var cap_i: int = entry["idx"]
+		var title: String = vote.get("title", "Untitled")
+		var result: String = vote.get("result", "")
+		var closed_at: String = vote.get("closed_at", "")
+		var close_reason: String = vote.get("close_reason", "")
+		var revote_count: int = int(vote.get("revote_count", 0))
+		var requesters: Array = vote.get("revote_requesters", [])
+		var history: Array = vote.get("history", [])
+		var threshold: int = revote_count + 1
+
+		var panel := PanelContainer.new()
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var cvbox := VBoxContainer.new()
+		cvbox.add_theme_constant_override("separation", 4)
+		panel.add_child(cvbox)
+
+		# Title + current result
+		var header_lbl := RichTextLabel.new()
+		header_lbl.bbcode_enabled = true
+		header_lbl.fit_content = true
+		var rv_tag := (" [color=#888](revote #%d)[/color]" % revote_count) if revote_count > 0 else ""
+		header_lbl.text = "[b]%s[/b]%s  →  [color=#66bb6a]%s[/color]" % [title, rv_tag, result]
+		cvbox.add_child(header_lbl)
+
+		# Meta
+		var close_note := "majority vote" if close_reason == "majority" else "deadline"
+		var meta_lbl := Label.new()
+		meta_lbl.text = "Decided by %s  ·  %s" % [close_note, closed_at.substr(0, 16)]
+		meta_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+		meta_lbl.add_theme_font_size_override("font_size", 11)
+		cvbox.add_child(meta_lbl)
+
+		# History of previous decisions
+		if not history.is_empty():
+			var hist_header := Label.new()
+			hist_header.text = "Previous:"
+			hist_header.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+			hist_header.add_theme_font_size_override("font_size", 11)
+			cvbox.add_child(hist_header)
+			for h: Dictionary in history:
+				var hl := Label.new()
+				hl.text = "  • %s  (%s)" % [h.get("result", "?"), (h.get("closed_at", "") as String).substr(0, 16)]
+				hl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+				hl.add_theme_font_size_override("font_size", 11)
+				cvbox.add_child(hl)
+
+		# Revote section
+		var already_requested: bool = me in requesters
+		var closed_at_unix: int = int(vote.get("closed_at_unix", 0))
+		var can_revote := true
+		var hours_left := 0.0
+		if closed_at_unix > 0:
+			var elapsed := float(int(Time.get_unix_time_from_system()) - closed_at_unix) / 3600.0
+			if elapsed < float(REVOTE_TIMEOUT_HOURS):
+				can_revote = false
+				hours_left = float(REVOTE_TIMEOUT_HOURS) - elapsed
+
+		var revote_row := HBoxContainer.new()
+		if not can_revote:
+			var wait_lbl := Label.new()
+			wait_lbl.text = "⏳ Revote available in %.0fh" % ceili(hours_left)
+			wait_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+			wait_lbl.add_theme_font_size_override("font_size", 11)
+			revote_row.add_child(wait_lbl)
+		else:
+			var tally_lbl := Label.new()
+			tally_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			tally_lbl.add_theme_font_size_override("font_size", 11)
+			if requesters.is_empty():
+				tally_lbl.text = "Need %d to revote" % threshold
+			else:
+				tally_lbl.text = "%d/%d requested revote" % [requesters.size(), threshold]
+			tally_lbl.add_theme_color_override("font_color",
+				Color(0.4, 0.8, 0.5) if already_requested else Color(0.5, 0.5, 0.5))
+			revote_row.add_child(tally_lbl)
+
+			if not already_requested:
+				var revote_btn := Button.new()
+				revote_btn.text = "🔄 Revote"
+				revote_btn.add_theme_font_size_override("font_size", 11)
+				revote_btn.disabled = me.is_empty()
+				revote_btn.tooltip_text = "Log in to request a revote" if me.is_empty() else \
+					"Request a revote (need %d, have %d)" % [threshold, requesters.size()]
+				var cap_idx := cap_i
+				revote_btn.pressed.connect(func():
+					if me.is_empty():
+						return
+					var v: Dictionary = _vote_items[cap_idx]
+					var req: Array = v.get("revote_requesters", [])
+					if me in req:
+						return
+					req.append(me)
+					v["revote_requesters"] = req
+					var thresh: int = int(v.get("revote_count", 0)) + 1
+					if req.size() >= thresh:
+						# Quorum reached — reopen the vote
+						var hist: Array = v.get("history", [])
+						hist.append({
+							"result": v.get("result", ""),
+							"closed_at": v.get("closed_at", ""),
+							"close_reason": v.get("close_reason", "")
+						})
+						v["history"] = hist
+						v["revote_count"] = int(v.get("revote_count", 0)) + 1
+						v["closed"] = false
+						v["result"] = ""
+						v["closed_at"] = ""
+						v["closed_at_unix"] = 0
+						v["close_reason"] = ""
+						v["votes"] = {}
+						v["revote_requesters"] = []
+						_vote_items[cap_idx] = v
+						_save_votes()
+						_log_activity("vote_revote",
+							'Vote "%s" reopened for revote #%d (triggered by %s)' % [
+							v.get("title", ""), v.get("revote_count", 0), me])
+						_refresh_vote_list()
+					else:
+						v["revote_requesters"] = req
+						_vote_items[cap_idx] = v
+						_save_votes()
+						_log_activity("vote_revote_request",
+							'%s requested a revote on "%s" (%d/%d)' % [
+							me, v.get("title", ""), req.size(), thresh])
+						_refresh_decision_log()
+				)
+				revote_row.add_child(revote_btn)
+
+		cvbox.add_child(revote_row)
+		_decision_log_list.add_child(panel)
 
 # ─── Schedule tab ─────────────────────────────────────────────────────────────
 
@@ -6022,11 +6195,6 @@ func _docs_review_build(full_path: String) -> void:
 				change_btn.flat = true
 				change_btn.pressed.connect(func(): _docs_vote_cast(cap_i, not already_yes))
 				vote_row.add_child(change_btn)
-			if can_edit:
-				var force_no := Button.new()
-				force_no.text = "❌ Reject"
-				force_no.pressed.connect(func(): _docs_review_reject(cap_i))
-				vote_row.add_child(force_no)
 			card_vbox.add_child(vote_row)
 		elif status == "pending" and can_edit:
 			var act_row := HBoxContainer.new()
