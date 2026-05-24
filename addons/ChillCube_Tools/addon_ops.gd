@@ -46,7 +46,14 @@ static func _exec(cmd: String, args: Array, log: Callable) -> int:
 				log.call(line)
 	return code
 
+static func _fix_git_perms(repo: String) -> void:
+	var obj_dir := repo + "/.git/objects"
+	if DirAccess.dir_exists_absolute(obj_dir):
+		OS.execute("chmod", ["-R", "u+rw", obj_dir], [], true)
+
 static func _git(args: Array, cwd: String, log: Callable) -> int:
+	if not cwd.is_empty():
+		_fix_git_perms(cwd)
 	var full := ["-C", cwd] + args if not cwd.is_empty() else args
 	return _exec("git", full, log)
 
