@@ -1214,6 +1214,75 @@ static func _update_tree(root: String, log: Callable) -> void:
 		if int(layers.get(id, 0)) > max_layer:
 			max_layer = int(layers.get(id, 0))
 
+	# Barycenter heuristic — sort nodes within each layer to minimise crossing arrows.
+	# For each layer (bottom-up), assign each node a position = average position of
+	# its dependencies in the layer below, then sort by that value.
+	var by_layer: Dictionary = {}
+	for id: String in has_edge:
+		var l: int = int(layers.get(id, 0))
+		if l not in by_layer:
+			by_layer[l] = []
+		(by_layer[l] as Array).append(id)
+
+	var pos: Dictionary = {}  # id -> float horizontal position
+	# Layer 0: alphabetical seed
+	if 0 in by_layer:
+		var l0: Array = (by_layer[0] as Array).duplicate()
+		l0.sort()
+		for i in range(l0.size()):
+			pos[l0[i]] = float(i)
+		by_layer[0] = l0
+
+	# Sweep upward, then downward for a second pass
+	for _pass in range(2):
+		for l in range(1, max_layer + 1):
+			if l not in by_layer:
+				continue
+			var l_nodes: Array = (by_layer[l] as Array).duplicate()
+			var bary: Dictionary = {}
+			for id: String in l_nodes:
+				var deps: Array = deps_map.get(id, [])
+				var sum_p := 0.0
+				var cnt := 0
+				for dep: String in deps:
+					if dep in pos:
+						sum_p += float(pos[dep])
+						cnt += 1
+				bary[id] = sum_p / float(cnt) if cnt > 0 else -1.0
+			l_nodes.sort_custom(func(a: String, b: String) -> bool:
+				return float(bary.get(a, -1.0)) < float(bary.get(b, -1.0))
+			)
+			for i in range(l_nodes.size()):
+				pos[l_nodes[i]] = float(i)
+			by_layer[l] = l_nodes
+		# Downward pass: re-sort lower layers by average position of dependents above
+		var rev_deps: Dictionary = {}  # id -> [ids that depend on it]
+		for id: String in deps_map:
+			for dep: String in (deps_map[id] as Array):
+				if dep not in rev_deps:
+					rev_deps[dep] = []
+				(rev_deps[dep] as Array).append(id)
+		for l in range(max_layer - 1, -1, -1):
+			if l not in by_layer:
+				continue
+			var l_nodes: Array = (by_layer[l] as Array).duplicate()
+			var bary2: Dictionary = {}
+			for id: String in l_nodes:
+				var ups: Array = rev_deps.get(id, [])
+				var sum_p := 0.0
+				var cnt := 0
+				for up: String in ups:
+					if up in pos:
+						sum_p += float(pos[up])
+						cnt += 1
+				bary2[id] = sum_p / float(cnt) if cnt > 0 else float(pos.get(id, -1.0))
+			l_nodes.sort_custom(func(a: String, b: String) -> bool:
+				return float(bary2.get(a, -1.0)) < float(bary2.get(b, -1.0))
+			)
+			for i in range(l_nodes.size()):
+				pos[l_nodes[i]] = float(i)
+			by_layer[l] = l_nodes
+
 	# Build Mermaid
 	var m := "\n" + s_mark + "\n## 🌳 Dependency Tree\n\n"
 	m += "```mermaid\n"
@@ -1224,11 +1293,7 @@ static func _update_tree(root: String, log: Callable) -> void:
 	m += "    classDef external fill:#fd9644,stroke:#e67e22,color:#fff\n\n"
 
 	for l in range(max_layer + 1):
-		var ids: Array[String] = []
-		for id: String in has_edge:
-			if int(layers.get(id, 0)) == l:
-				ids.append(id)
-		ids.sort()
+		var ids: Array[String] = by_layer.get(l, [])
 		if ids.is_empty():
 			continue
 		m += '    subgraph Layer_%d["%s"]\n' % [l, "🧱 Layer 0 — Foundation" if l == 0 else "Layer %d" % l]
