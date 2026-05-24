@@ -5459,9 +5459,9 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	view_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_docs_view = RichTextLabel.new()
 	_docs_view.bbcode_enabled = true
-	_docs_view.fit_content = false
+	_docs_view.fit_content = true
 	_docs_view.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_docs_view.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_docs_view.size_flags_vertical = Control.SIZE_FILL
 	_docs_view.scroll_active = false
 	_docs_view.meta_clicked.connect(_docs_on_link_clicked)
 	view_scroll.add_child(_docs_view)
