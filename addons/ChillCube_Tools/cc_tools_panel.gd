@@ -113,6 +113,30 @@ var _vault_move_dest_input: LineEdit
 var _vault_newdir_dialog: AcceptDialog
 var _vault_newdir_input: LineEdit
 
+var _docs_browser: VBoxContainer
+var _docs_path_lbl: Label
+var _docs_title_lbl: Label
+var _docs_current_dir: String = ""
+var _docs_sel_path: String = ""
+var _docs_files: Array[String] = []
+var _docs_view: RichTextLabel
+var _docs_editor: TextEdit
+var _docs_view_panel: VBoxContainer
+var _docs_edit_btn: Button
+var _docs_save_btn: Button
+var _docs_cancel_btn: Button
+var _docs_status_lbl: Label
+var _docs_thread: Thread = null
+var _docs_loaded_content: String = ""
+var _docs_new_dialog: AcceptDialog
+var _docs_new_input: LineEdit
+var _docs_newdir_dialog: AcceptDialog
+var _docs_newdir_input: LineEdit
+var _docs_delete_dialog: ConfirmationDialog
+var _docs_pending_delete: String = ""
+var _docs_move_dialog: AcceptDialog
+var _docs_move_input: LineEdit
+
 var _http: HTTPRequest
 var _registry_list: VBoxContainer
 var _registry_status: Label
@@ -185,6 +209,7 @@ func _ready() -> void:
 	_build_planning_tab(tabs)
 	_build_team_supertab(tabs)
 	_build_vault_tab(tabs)
+	_build_docs_tab(tabs)
 	_build_terminal_tab(tabs)
 	_build_account_tab(tabs)
 
@@ -213,6 +238,8 @@ func _exit_tree() -> void:
 		_vault_thread.wait_to_finish()
 	if _vault_preview_thread and _vault_preview_thread.is_started():
 		_vault_preview_thread.wait_to_finish()
+	if _docs_thread and _docs_thread.is_started():
+		_docs_thread.wait_to_finish()
 	if _activity_thread and _activity_thread.is_started():
 		_activity_thread.wait_to_finish()
 	if _vote_thread and _vote_thread.is_started():
@@ -3878,6 +3905,8 @@ func _vault_on_connected(ok: bool) -> void:
 		_vault_remote_sel = ""
 		_vault_files = Ops.vault_list_files(_vault_cache)
 		_vault_navigate("")
+		_docs_files = _docs_filter_files(_vault_files)
+		_docs_navigate(_docs_current_dir)
 
 func _vault_navigate(rel: String) -> void:
 	_vault_current_dir = rel
@@ -3897,7 +3926,8 @@ func _vault_navigate(rel: String) -> void:
 	var folders: Array[String] = []
 	var files: Array[String] = []
 	for path: String in _vault_files:
-		if path.begins_with("_cc_tools/") or path == "_cc_tools":
+		if path.begins_with("_cc_tools/") or path == "_cc_tools" \
+				or path.begins_with("_docs/") or path == "_docs":
 			continue
 		if not path.begins_with(prefix):
 			continue
@@ -4416,6 +4446,687 @@ func _asset_meta_edit(rel_path: String) -> void:
 	add_child(dialog)
 	dialog.popup_centered()
 
+# ─── Docs tab ────────────────────────────────────────────────────────────────
+
+const DOCS_PREFIX := "_docs"
+
+func _build_docs_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Docs", tabs)
+
+	var top := HBoxContainer.new()
+	var title_lbl := Label.new()
+	title_lbl.text = "📖 Documentation"
+	title_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 1.0))
+	title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var refresh_btn := Button.new()
+	refresh_btn.text = "🔄 Refresh"
+	refresh_btn.tooltip_text = "Re-fetch file list from vault"
+	refresh_btn.pressed.connect(func():
+		if not _vault_cache.is_empty():
+			_vault_connect()
+	)
+	_docs_status_lbl = Label.new()
+	_docs_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+	top.add_child(title_lbl)
+	top.add_child(refresh_btn)
+	top.add_child(_docs_status_lbl)
+	root.add_child(top)
+
+	var split := HBoxContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	# ── Left: folder browser ──────────────────────────────────────────────────
+	var left := VBoxContainer.new()
+	left.custom_minimum_size = Vector2(200, 0)
+	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
+	var path_row := HBoxContainer.new()
+	_docs_path_lbl = Label.new()
+	_docs_path_lbl.text = "/"
+	_docs_path_lbl.add_theme_color_override("font_color", Color(0.5, 0.7, 1.0))
+	_docs_path_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_path_lbl.clip_text = true
+	var new_doc_btn := Button.new()
+	new_doc_btn.text = "📄+"
+	new_doc_btn.tooltip_text = "New document"
+	new_doc_btn.pressed.connect(func():
+		var pre := (_docs_current_dir + "/") if not _docs_current_dir.is_empty() else ""
+		_docs_new_input.text = pre
+		_docs_new_dialog.popup_centered()
+	)
+	var new_dir_btn := Button.new()
+	new_dir_btn.text = "📁+"
+	new_dir_btn.tooltip_text = "New folder"
+	new_dir_btn.pressed.connect(func():
+		var pre := (_docs_current_dir + "/") if not _docs_current_dir.is_empty() else ""
+		_docs_newdir_input.text = pre
+		_docs_newdir_dialog.popup_centered()
+	)
+	path_row.add_child(_docs_path_lbl)
+	path_row.add_child(new_doc_btn)
+	path_row.add_child(new_dir_btn)
+	left.add_child(path_row)
+	left.add_child(HSeparator.new())
+
+	var browser_scroll := ScrollContainer.new()
+	browser_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	browser_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_browser = VBoxContainer.new()
+	_docs_browser.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_browser.add_theme_constant_override("separation", 2)
+	browser_scroll.add_child(_docs_browser)
+	left.add_child(browser_scroll)
+
+	split.add_child(left)
+	split.add_child(VSeparator.new())
+
+	# ── Right: viewer / editor ────────────────────────────────────────────────
+	_docs_view_panel = VBoxContainer.new()
+	_docs_view_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_view_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
+	var doc_header := HBoxContainer.new()
+	_docs_title_lbl = Label.new()
+	_docs_title_lbl.text = "Select a document"
+	_docs_title_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+	_docs_title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_title_lbl.clip_text = true
+	_docs_edit_btn = Button.new()
+	_docs_edit_btn.text = "✏️ Edit"
+	_docs_edit_btn.visible = false
+	_docs_edit_btn.pressed.connect(_docs_enter_edit)
+	_docs_save_btn = Button.new()
+	_docs_save_btn.text = "💾 Save"
+	_docs_save_btn.visible = false
+	_docs_save_btn.pressed.connect(_docs_save)
+	_docs_cancel_btn = Button.new()
+	_docs_cancel_btn.text = "✕"
+	_docs_cancel_btn.visible = false
+	_docs_cancel_btn.pressed.connect(_docs_exit_edit)
+	doc_header.add_child(_docs_title_lbl)
+	doc_header.add_child(_docs_edit_btn)
+	doc_header.add_child(_docs_save_btn)
+	doc_header.add_child(_docs_cancel_btn)
+	_docs_view_panel.add_child(doc_header)
+	_docs_view_panel.add_child(HSeparator.new())
+
+	var view_scroll := ScrollContainer.new()
+	view_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	view_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_view = RichTextLabel.new()
+	_docs_view.bbcode_enabled = true
+	_docs_view.fit_content = false
+	_docs_view.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_view.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_docs_view.scroll_active = false
+	_docs_view.meta_clicked.connect(_docs_on_link_clicked)
+	view_scroll.add_child(_docs_view)
+	_docs_view_panel.add_child(view_scroll)
+
+	_docs_editor = TextEdit.new()
+	_docs_editor.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_editor.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_docs_editor.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	_docs_editor.visible = false
+	var code_font: Font = EditorInterface.get_editor_theme().get_font("source", "EditorFonts")
+	if code_font:
+		_docs_editor.add_theme_font_override("font", code_font)
+	_docs_view_panel.add_child(_docs_editor)
+
+	split.add_child(_docs_view_panel)
+	root.add_child(split)
+
+	# ── Dialogs ───────────────────────────────────────────────────────────────
+	_docs_new_dialog = AcceptDialog.new()
+	_docs_new_dialog.title = "New Document"
+	_docs_new_dialog.size = Vector2i(420, 110)
+	var new_vbox := VBoxContainer.new()
+	new_vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_docs_new_dialog.add_child(new_vbox)
+	var new_hint := Label.new()
+	new_hint.text = "Path (e.g. guides/Getting Started — no .md needed):"
+	new_vbox.add_child(new_hint)
+	_docs_new_input = LineEdit.new()
+	_docs_new_input.placeholder_text = "My Document"
+	_docs_new_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	new_vbox.add_child(_docs_new_input)
+	_docs_new_dialog.confirmed.connect(func():
+		var path := _docs_new_input.text.strip_edges()
+		if not path.is_empty():
+			_docs_do_create(path)
+	)
+	add_child(_docs_new_dialog)
+
+	_docs_newdir_dialog = AcceptDialog.new()
+	_docs_newdir_dialog.title = "New Folder"
+	_docs_newdir_dialog.size = Vector2i(380, 110)
+	var dir_vbox := VBoxContainer.new()
+	dir_vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_docs_newdir_dialog.add_child(dir_vbox)
+	var dir_hint := Label.new()
+	dir_hint.text = "Folder path (e.g. guides/tutorials):"
+	dir_vbox.add_child(dir_hint)
+	_docs_newdir_input = LineEdit.new()
+	_docs_newdir_input.placeholder_text = "my-folder"
+	_docs_newdir_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dir_vbox.add_child(_docs_newdir_input)
+	_docs_newdir_dialog.confirmed.connect(func():
+		var path := _docs_newdir_input.text.strip_edges()
+		if not path.is_empty():
+			_docs_do_mkdir(path)
+	)
+	add_child(_docs_newdir_dialog)
+
+	_docs_delete_dialog = ConfirmationDialog.new()
+	_docs_delete_dialog.title = "Delete Document"
+	_docs_delete_dialog.dialog_text = "Delete this document? This cannot be undone."
+	_docs_delete_dialog.confirmed.connect(_docs_do_delete)
+	add_child(_docs_delete_dialog)
+
+	_docs_move_dialog = AcceptDialog.new()
+	_docs_move_dialog.title = "Rename / Move Document"
+	_docs_move_dialog.size = Vector2i(440, 110)
+	var move_vbox := VBoxContainer.new()
+	move_vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_docs_move_dialog.add_child(move_vbox)
+	var move_hint := Label.new()
+	move_hint.text = "New path relative to docs root (e.g. guides/new-name.md):"
+	move_vbox.add_child(move_hint)
+	_docs_move_input = LineEdit.new()
+	_docs_move_input.placeholder_text = "folder/document.md"
+	_docs_move_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	move_vbox.add_child(_docs_move_input)
+	_docs_move_dialog.confirmed.connect(func():
+		var dest := _docs_move_input.text.strip_edges()
+		if not dest.is_empty():
+			_docs_do_move(dest)
+	)
+	add_child(_docs_move_dialog)
+
+	_docs_navigate("")
+
+# ─── Docs logic ───────────────────────────────────────────────────────────────
+
+func _docs_filter_files(all_files: Array[String]) -> Array[String]:
+	var result: Array[String] = []
+	for f: String in all_files:
+		if f.begins_with(DOCS_PREFIX + "/") and f.get_extension() == "md":
+			result.append(f)
+	return result
+
+func _docs_rel(full_path: String) -> String:
+	return full_path.substr(DOCS_PREFIX.length() + 1)
+
+func _docs_full(rel_path: String) -> String:
+	return DOCS_PREFIX + "/" + rel_path
+
+func _docs_navigate(rel: String) -> void:
+	_docs_current_dir = rel
+	_docs_path_lbl.text = "/" + rel
+
+	for c in _docs_browser.get_children():
+		c.queue_free()
+
+	if _vault_cache.is_empty() or not DirAccess.dir_exists_absolute(_vault_cache):
+		var hint := Label.new()
+		hint.text = "Not connected. Use the Assets tab to connect first."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_docs_browser.add_child(hint)
+		return
+
+	var prefix := (rel + "/") if not rel.is_empty() else ""
+	var folders: Array[String] = []
+	var files: Array[String] = []
+
+	for full_path: String in _docs_files:
+		var doc_rel := _docs_rel(full_path)
+		if not doc_rel.begins_with(prefix):
+			continue
+		var rest := doc_rel.substr(prefix.length())
+		if "/" in rest:
+			var folder := rest.split("/")[0]
+			if folder not in folders:
+				folders.append(folder)
+		else:
+			files.append(rest)
+	folders.sort()
+	files.sort()
+
+	if not rel.is_empty():
+		var up_btn := Button.new()
+		up_btn.text = "📁 .."
+		up_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		up_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var parent := rel.rstrip("/").get_base_dir()
+		if parent == ".":
+			parent = ""
+		up_btn.pressed.connect(func(): _docs_navigate(parent))
+		_docs_browser.add_child(up_btn)
+
+	for folder: String in folders:
+		var cap_folder := (prefix + folder).rstrip("/")
+		var btn := Button.new()
+		btn.text = "📁 " + folder
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.flat = true
+		btn.pressed.connect(func(): _docs_navigate(cap_folder))
+		_docs_browser.add_child(btn)
+
+	for file: String in files:
+		var rel_file := prefix + file
+		var full_file := _docs_full(rel_file)
+		var cap_rel := rel_file
+		var cap_full := full_file
+
+		var row := HBoxContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var file_btn := Button.new()
+		file_btn.text = "📄 " + file.get_basename()
+		file_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		file_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		file_btn.flat = cap_full != _docs_sel_path
+		if cap_full == _docs_sel_path:
+			file_btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+		file_btn.pressed.connect(func():
+			_docs_sel_path = cap_full
+			_docs_navigate(_docs_current_dir)
+			_docs_select(cap_full)
+		)
+		row.add_child(file_btn)
+
+		var ren_btn := Button.new()
+		ren_btn.text = "✏"
+		ren_btn.flat = true
+		ren_btn.custom_minimum_size = Vector2(26, 0)
+		ren_btn.tooltip_text = "Rename / move"
+		ren_btn.pressed.connect(func():
+			_docs_move_input.text = cap_rel
+			_docs_move_dialog.popup_centered()
+		)
+		row.add_child(ren_btn)
+
+		var del_btn := Button.new()
+		del_btn.text = "🗑"
+		del_btn.flat = true
+		del_btn.custom_minimum_size = Vector2(26, 0)
+		del_btn.tooltip_text = "Delete"
+		del_btn.pressed.connect(func():
+			_docs_pending_delete = cap_full
+			_docs_delete_dialog.popup_centered()
+		)
+		row.add_child(del_btn)
+
+		_docs_browser.add_child(row)
+
+	if folders.is_empty() and files.is_empty():
+		var hint := Label.new()
+		if rel.is_empty():
+			hint.text = "No documents yet.\nClick 📄+ to create one."
+		else:
+			hint.text = "Empty folder."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_docs_browser.add_child(hint)
+
+func _docs_select(full_path: String) -> void:
+	if _docs_thread and _docs_thread.is_started():
+		return
+	_docs_title_lbl.text = full_path.get_file().get_basename()
+	_docs_title_lbl.add_theme_color_override("font_color", Color(0.9, 0.9, 0.9))
+	_docs_edit_btn.visible = false
+	_docs_save_btn.visible = false
+	_docs_cancel_btn.visible = false
+	_docs_status_lbl.text = "Loading…"
+	_docs_view.text = ""
+	_docs_editor.visible = false
+	_docs_view.visible = true
+	var cache := _vault_cache
+	var tmp_dir := OS.get_temp_dir() + "/cc_docs_preview"
+	DirAccess.make_dir_recursive_absolute(tmp_dir)
+	var cap_path := full_path
+	_docs_thread = Thread.new()
+	_docs_thread.start(func():
+		Ops.vault_download_file(cache, cap_path, tmp_dir, Callable())
+		var tmp_file := tmp_dir + "/" + cap_path.get_file()
+		call_deferred("_docs_on_loaded", tmp_file)
+	)
+
+func _docs_on_loaded(tmp_file: String) -> void:
+	if _docs_thread and _docs_thread.is_started():
+		_docs_thread.wait_to_finish()
+	_docs_thread = null
+	_docs_status_lbl.text = ""
+	if not FileAccess.file_exists(tmp_file):
+		_docs_view.parse_bbcode("[color=#f88]Failed to load document.[/color]")
+		return
+	var f := FileAccess.open(tmp_file, FileAccess.READ)
+	if not f:
+		_docs_view.parse_bbcode("[color=#f88]Could not read document.[/color]")
+		return
+	_docs_loaded_content = f.get_as_text()
+	f.close()
+	_docs_view.parse_bbcode(_md_to_bbcode(_docs_loaded_content))
+	_docs_edit_btn.visible = true
+
+func _docs_enter_edit() -> void:
+	_docs_editor.text = _docs_loaded_content
+	_docs_view.visible = false
+	_docs_editor.visible = true
+	_docs_edit_btn.visible = false
+	_docs_save_btn.visible = true
+	_docs_cancel_btn.visible = true
+
+func _docs_exit_edit() -> void:
+	_docs_editor.visible = false
+	_docs_view.visible = true
+	_docs_edit_btn.visible = true
+	_docs_save_btn.visible = false
+	_docs_cancel_btn.visible = false
+
+func _docs_save() -> void:
+	if _docs_sel_path.is_empty() or (_docs_thread and _docs_thread.is_started()):
+		return
+	var new_content := _docs_editor.text
+	_docs_save_btn.disabled = true
+	_docs_status_lbl.text = "Saving…"
+	var tmp_dir := OS.get_temp_dir() + "/cc_docs_save"
+	DirAccess.make_dir_recursive_absolute(tmp_dir)
+	var filename := _docs_sel_path.get_file()
+	var tmp_file := tmp_dir + "/" + filename
+	var f := FileAccess.open(tmp_file, FileAccess.WRITE)
+	if not f:
+		_docs_status_lbl.text = "❌ Could not write temp file."
+		_docs_save_btn.disabled = false
+		return
+	f.store_string(new_content)
+	f.close()
+	var remote_dir := _docs_sel_path.get_base_dir()
+	var cache := _vault_cache
+	var cap_path := _docs_sel_path
+	var cap_content := new_content
+	_docs_thread = Thread.new()
+	_docs_thread.start(func():
+		Ops.vault_upload_file(tmp_file, remote_dir, Callable())
+		Ops.vault_refresh(cache, Callable())
+		call_deferred("_docs_on_saved", cap_path, cap_content)
+	)
+
+func _docs_on_saved(full_path: String, new_content: String) -> void:
+	if _docs_thread and _docs_thread.is_started():
+		_docs_thread.wait_to_finish()
+	_docs_thread = null
+	_docs_save_btn.disabled = false
+	_docs_status_lbl.text = "✅ Saved"
+	_docs_loaded_content = new_content
+	_docs_view.parse_bbcode(_md_to_bbcode(new_content))
+	_docs_exit_edit()
+	var doc_name := full_path.get_file().get_basename()
+	var me: String = _current_user.get("username", "?")
+	_log_activity("doc_edited", '"%s" edited document: "%s"' % [me, doc_name])
+	_vault_files = Ops.vault_list_files(_vault_cache)
+	_docs_files = _docs_filter_files(_vault_files)
+
+func _docs_on_link_clicked(meta: Variant) -> void:
+	var m := str(meta)
+	if m.begins_with("wiki:"):
+		var target := m.substr(5).strip_edges()
+		var found := _docs_find_by_name(target)
+		if not found.is_empty():
+			_docs_sel_path = found
+			var folder := _docs_rel(found).get_base_dir()
+			if folder == ".":
+				folder = ""
+			_docs_navigate(folder)
+			_docs_select(found)
+		else:
+			_docs_status_lbl.text = '⚠️ Doc not found: "' + target + '"'
+
+func _docs_find_by_name(name: String) -> String:
+	var lower := name.to_lower()
+	for path: String in _docs_files:
+		if path.get_file().get_basename().to_lower() == lower:
+			return path
+	return ""
+
+func _docs_do_create(doc_path: String) -> void:
+	if _docs_thread and _docs_thread.is_started():
+		return
+	var path := doc_path.strip_edges().lstrip("/")
+	if not path.ends_with(".md"):
+		path += ".md"
+	var full_remote := DOCS_PREFIX + "/" + path
+	var title := path.get_file().get_basename()
+	var content := "# " + title + "\n\nWrite your documentation here.\n"
+	var tmp_dir := OS.get_temp_dir() + "/cc_docs_new"
+	DirAccess.make_dir_recursive_absolute(tmp_dir)
+	var tmp_file := tmp_dir + "/" + path.get_file()
+	var f := FileAccess.open(tmp_file, FileAccess.WRITE)
+	if not f:
+		_docs_status_lbl.text = "❌ Could not create temp file."
+		return
+	f.store_string(content)
+	f.close()
+	var remote_dir := full_remote.get_base_dir()
+	var cache := _vault_cache
+	var cap_full := full_remote
+	_docs_status_lbl.text = "Creating…"
+	_docs_thread = Thread.new()
+	_docs_thread.start(func():
+		Ops.vault_upload_file(tmp_file, remote_dir, Callable())
+		Ops.vault_refresh(cache, Callable())
+		call_deferred("_docs_on_created", cap_full)
+	)
+
+func _docs_on_created(full_path: String) -> void:
+	if _docs_thread and _docs_thread.is_started():
+		_docs_thread.wait_to_finish()
+	_docs_thread = null
+	_docs_status_lbl.text = "✅ Created"
+	_vault_files = Ops.vault_list_files(_vault_cache)
+	_docs_files = _docs_filter_files(_vault_files)
+	_docs_sel_path = full_path
+	var folder := _docs_rel(full_path).get_base_dir()
+	if folder == ".":
+		folder = ""
+	_docs_navigate(folder)
+	_docs_select(full_path)
+
+func _docs_do_mkdir(dir_path: String) -> void:
+	if _docs_thread and _docs_thread.is_started():
+		return
+	var rdir := DOCS_PREFIX + "/" + dir_path.strip_edges().lstrip("/").rstrip("/")
+	var cache := _vault_cache
+	_docs_status_lbl.text = "Creating folder…"
+	_docs_thread = Thread.new()
+	_docs_thread.start(func():
+		Ops.vault_mkdir(rdir, Callable())
+		Ops.vault_refresh(cache, Callable())
+		call_deferred("_docs_on_mkdir_done")
+	)
+
+func _docs_on_mkdir_done() -> void:
+	if _docs_thread and _docs_thread.is_started():
+		_docs_thread.wait_to_finish()
+	_docs_thread = null
+	_docs_status_lbl.text = "✅ Folder created"
+	_vault_files = Ops.vault_list_files(_vault_cache)
+	_docs_files = _docs_filter_files(_vault_files)
+	_docs_navigate(_docs_current_dir)
+
+func _docs_do_delete() -> void:
+	if _docs_pending_delete.is_empty() or (_docs_thread and _docs_thread.is_started()):
+		return
+	var cache := _vault_cache
+	var cap_path := _docs_pending_delete
+	_docs_pending_delete = ""
+	_docs_status_lbl.text = "Deleting…"
+	_docs_thread = Thread.new()
+	_docs_thread.start(func():
+		Ops.vault_delete_file(cap_path, Callable())
+		Ops.vault_refresh(cache, Callable())
+		call_deferred("_docs_on_deleted", cap_path)
+	)
+
+func _docs_on_deleted(full_path: String) -> void:
+	if _docs_thread and _docs_thread.is_started():
+		_docs_thread.wait_to_finish()
+	_docs_thread = null
+	_docs_status_lbl.text = "✅ Deleted"
+	_vault_files = Ops.vault_list_files(_vault_cache)
+	_docs_files = _docs_filter_files(_vault_files)
+	if _docs_sel_path == full_path:
+		_docs_sel_path = ""
+		_docs_title_lbl.text = "Select a document"
+		_docs_title_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+		_docs_view.text = ""
+		_docs_edit_btn.visible = false
+	_docs_navigate(_docs_current_dir)
+
+func _docs_do_move(dest_rel: String) -> void:
+	if _docs_sel_path.is_empty() or (_docs_thread and _docs_thread.is_started()):
+		return
+	var src := _docs_sel_path
+	var dest_full := DOCS_PREFIX + "/" + dest_rel.strip_edges().lstrip("/")
+	if not dest_full.ends_with(".md"):
+		dest_full += ".md"
+	var cache := _vault_cache
+	var cap_src := src
+	var cap_dest := dest_full
+	_docs_status_lbl.text = "Moving…"
+	_docs_thread = Thread.new()
+	_docs_thread.start(func():
+		Ops.vault_move_file(cap_src, cap_dest, Callable())
+		Ops.vault_refresh(cache, Callable())
+		call_deferred("_docs_on_moved", cap_src, cap_dest)
+	)
+
+func _docs_on_moved(old_path: String, new_path: String) -> void:
+	if _docs_thread and _docs_thread.is_started():
+		_docs_thread.wait_to_finish()
+	_docs_thread = null
+	_docs_status_lbl.text = "✅ Moved"
+	_vault_files = Ops.vault_list_files(_vault_cache)
+	_docs_files = _docs_filter_files(_vault_files)
+	if _docs_sel_path == old_path:
+		_docs_sel_path = new_path
+	var folder := _docs_rel(new_path).get_base_dir()
+	if folder == ".":
+		folder = ""
+	_docs_navigate(folder)
+
+# ─── Markdown renderer ────────────────────────────────────────────────────────
+
+func _md_to_bbcode(md: String) -> String:
+	var lines := md.split("\n")
+	var out: PackedStringArray = []
+	var in_code_block := false
+
+	for raw_line: String in lines:
+		var line: String = raw_line
+
+		if line.begins_with("```"):
+			if in_code_block:
+				out.append("[/code]")
+				in_code_block = false
+			else:
+				in_code_block = true
+				out.append("[code]")
+			continue
+
+		if in_code_block:
+			out.append(line.xml_escape())
+			continue
+
+		var stripped := line.strip_edges()
+
+		if line.begins_with("### "):
+			out.append("[font_size=14][b]" + _md_inline(line.substr(4)) + "[/b][/font_size]")
+			continue
+		if line.begins_with("## "):
+			out.append("[font_size=17][b]" + _md_inline(line.substr(3)) + "[/b][/font_size]")
+			continue
+		if line.begins_with("# "):
+			out.append("[font_size=21][b]" + _md_inline(line.substr(2)) + "[/b][/font_size]")
+			continue
+
+		if stripped.length() >= 3 and (stripped.replace("-", "").is_empty() \
+				or stripped.replace("*", "").is_empty() \
+				or stripped.replace("_", "").is_empty()):
+			out.append("[color=#555]" + "─".repeat(40) + "[/color]")
+			continue
+
+		if line.begins_with("> "):
+			out.append("[indent][color=#aaa]" + _md_inline(line.substr(2)) + "[/color][/indent]")
+			continue
+
+		var lstripped := line.lstrip("\t ")
+		if lstripped.begins_with("- ") or lstripped.begins_with("* "):
+			var depth := clampi((line.length() - lstripped.length()) / 2 + 1, 1, 4)
+			out.append("[indent]".repeat(depth) + "• " + _md_inline(lstripped.substr(2)) + "[/indent]".repeat(depth))
+			continue
+
+		if stripped.is_empty():
+			out.append("")
+			continue
+
+		out.append(_md_inline(line))
+
+	if in_code_block:
+		out.append("[/code]")
+
+	return "\n".join(out)
+
+func _md_inline(text: String) -> String:
+	# Inline code first so its content isn't processed for formatting
+	var code_re := RegEx.new()
+	code_re.compile("`([^`]+)`")
+	text = code_re.sub(text, "[code]$1[/code]", true)
+
+	# Wikilinks [[Link|Alias]] and [[Link]]
+	var result := ""
+	var i := 0
+	while i < text.length():
+		if i + 1 < text.length() and text[i] == "[" and text[i + 1] == "[":
+			var end := text.find("]]", i + 2)
+			if end != -1:
+				var inner := text.substr(i + 2, end - i - 2)
+				var pipe := inner.find("|")
+				var target: String
+				var label: String
+				if pipe != -1:
+					target = inner.substr(0, pipe).strip_edges()
+					label = inner.substr(pipe + 1).strip_edges()
+				else:
+					target = inner.strip_edges()
+					label = target
+				result += "[url=wiki:" + target + "][color=#6af]" + label + "[/color][/url]"
+				i = end + 2
+				continue
+		result += text[i]
+		i += 1
+	text = result
+
+	# Standard Markdown links [text](url)
+	var link_re := RegEx.new()
+	link_re.compile("\\[([^\\]]+)\\]\\(([^)]+)\\)")
+	text = link_re.sub(text, "[url=$2][color=#8af]$1[/color][/url]", true)
+
+	# Bold **text**
+	var bold_re := RegEx.new()
+	bold_re.compile("\\*\\*(.+?)\\*\\*")
+	text = bold_re.sub(text, "[b]$1[/b]", true)
+
+	# Italic *text* (single star, no content with stars)
+	var ital_re := RegEx.new()
+	ital_re.compile("\\*([^*\n]+)\\*")
+	text = ital_re.sub(text, "[i]$1[/i]", true)
+
+	return text
+
 func _build_terminal_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Terminal", tabs)
 
@@ -4750,7 +5461,6 @@ func _refresh_addons() -> void:
 						func(msg): call_deferred("_append_log", _installed_log, msg)
 					)
 					call_deferred("_refresh_addons")
-					call_deferred("_log_activity", "addon_removed", "Removed addon: " + captured_rm_name)
 				)
 			)
 		else:
@@ -4817,7 +5527,8 @@ func _start_push() -> void:
 		Ops.push_all(
 			ProjectSettings.globalize_path("res://").rstrip("/"),
 			func(msg): call_deferred("_append_log", _installed_log, msg),
-			[self_folder]
+			[self_folder],
+			func(addon_name): call_deferred("_log_activity", "addon_pushed", "Pushed addon update: " + addon_name)
 		)
 	)
 
@@ -4934,6 +5645,7 @@ func _on_registry_fetched(result: int, response_code: int, _headers: PackedStrin
 
 func _parse_registry(content: String) -> Array:
 	var result := []
+	var url_idx: Dictionary = {}
 	var category := "Uncategorized"
 	var in_tree := false
 	for line: String in content.split("\n"):
@@ -4956,7 +5668,13 @@ func _parse_registry(content: String) -> Array:
 				continue
 			var url := rest.substr(0, cp)
 			var desc := rest.substr(cp + 1).strip_edges().lstrip("-").strip_edges()
-			result.append({"category": category, "name": name, "url": url, "desc": desc})
+			if url in url_idx:
+				var cats: Array = result[url_idx[url]].get("categories", [])
+				if category not in cats:
+					cats.append(category)
+			else:
+				url_idx[url] = result.size()
+				result.append({"categories": [category], "name": name, "url": url, "desc": desc})
 	return result
 
 func _build_installed_url_map() -> void:
@@ -4973,9 +5691,9 @@ func _browse_build_tag_bar() -> void:
 
 	var cats: Array[String] = []
 	for entry: Dictionary in _registry_entries:
-		var cat: String = entry.get("category", "Uncategorized")
-		if cat not in cats:
-			cats.append(cat)
+		for cat: String in entry.get("categories", ["Uncategorized"]):
+			if cat not in cats:
+				cats.append(cat)
 	cats.sort()
 
 	var all_btn := Button.new()
@@ -5008,9 +5726,10 @@ func _browse_filter_and_render() -> void:
 		query = _browse_search_input.text.strip_edges().to_lower()
 	var filtered: Array = []
 	for entry: Dictionary in _registry_entries:
-		var cat: String = entry.get("category", "Uncategorized")
-		if not _browse_active_tag.is_empty() and cat != _browse_active_tag:
-			continue
+		if not _browse_active_tag.is_empty():
+			var cats: Array = entry.get("categories", [])
+			if _browse_active_tag not in cats:
+				continue
 		if not query.is_empty():
 			var name_lower: String = (entry.get("name", "") as String).to_lower()
 			var desc_lower: String = (entry.get("desc", "") as String).to_lower()
@@ -5042,11 +5761,12 @@ func _populate_registry(entries: Array) -> void:
 		name_lbl.text = entry.get("name", "")
 		name_row.add_child(name_lbl)
 
-		var cat_chip := Label.new()
-		cat_chip.text = " " + entry.get("category", "Uncategorized") + " "
-		cat_chip.add_theme_color_override("font_color", Color(0.5, 0.8, 1.0))
-		cat_chip.add_theme_font_size_override("font_size", 10)
-		name_row.add_child(cat_chip)
+		for cat: String in entry.get("categories", ["Uncategorized"]):
+			var cat_chip := Label.new()
+			cat_chip.text = " " + cat + " "
+			cat_chip.add_theme_color_override("font_color", Color(0.5, 0.8, 1.0))
+			cat_chip.add_theme_font_size_override("font_size", 10)
+			name_row.add_child(cat_chip)
 		info.add_child(name_row)
 
 		var desc_lbl := Label.new()
@@ -5072,9 +5792,9 @@ func _populate_registry(entries: Array) -> void:
 func _populate_category_dropdown(entries: Array) -> void:
 	var seen: Array[String] = []
 	for entry: Dictionary in entries:
-		var cat: String = entry.get("category", "Uncategorized")
-		if cat not in seen:
-			seen.append(cat)
+		for cat: String in entry.get("categories", ["Uncategorized"]):
+			if cat not in seen:
+				seen.append(cat)
 	_create_category.clear()
 	for cat in seen:
 		_create_category.add_item(cat)
@@ -5531,8 +6251,9 @@ func _activity_icon(type: String) -> String:
 		"task_completed":    return "✅"
 		"addon_created":     return "✨"
 		"addon_cloned":      return "📥"
-		"addon_removed":     return "🗑"
+		"addon_pushed":      return "🚀"
 		"addon_synced":      return "↺"
+		"doc_edited":        return "📝"
 		"todo_added":        return "➕"
 		"vote_created":      return "🗳"
 		"vote_cast":         return "🗳"
@@ -5556,8 +6277,9 @@ func _activity_color(type: String) -> Color:
 		"task_completed":    return Color(0.4, 0.9, 0.4)
 		"addon_created":     return Color(0.4, 0.8, 1.0)
 		"addon_cloned":      return Color(0.6, 0.6, 1.0)
-		"addon_removed":     return Color(1.0, 0.5, 0.4)
+		"addon_pushed":      return Color(0.5, 0.9, 0.6)
 		"addon_synced":      return Color(1.0, 0.85, 0.3)
+		"doc_edited":        return Color(0.7, 0.85, 1.0)
 		"todo_added":        return Color(0.75, 0.75, 0.75)
 		"vote_created":      return Color(0.6, 0.8, 1.0)
 		"vote_cast":         return Color(0.6, 0.8, 1.0)

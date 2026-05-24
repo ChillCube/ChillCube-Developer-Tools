@@ -592,7 +592,7 @@ static func update_plugin(root: String, log: Callable) -> bool:
 
 # ─── PUSH ALL ADDONS ─────────────────────────────────────────────────────────
 
-static func push_all(root: String, log: Callable, exclude: Array[String] = []) -> bool:
+static func push_all(root: String, log: Callable, exclude: Array[String] = [], on_pushed: Callable = Callable()) -> bool:
 	var addons_dir := root + "/addons"
 	if not DirAccess.dir_exists_absolute(addons_dir):
 		log.call("❌ No addons/ directory.")
@@ -627,6 +627,8 @@ static func push_all(root: String, log: Callable, exclude: Array[String] = []) -
 				log.call("📦 Processing: " + name)
 				if _process_one(root, name, class_to_repo, class_to_addon, dependents_of, log):
 					updated += 1
+					if on_pushed.is_valid():
+						on_pushed.call(name)
 		name = dir.get_next()
 	dir.list_dir_end()
 
