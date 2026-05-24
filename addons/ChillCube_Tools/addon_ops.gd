@@ -1294,12 +1294,10 @@ static func _update_tree(root: String, log: Callable) -> void:
 
 	for l in range(max_layer + 1):
 		var ids: Array[String] = by_layer.get(l, [])
-		if ids.is_empty():
-			continue
-		m += '    subgraph Layer_%d["%s"]\n' % [l, "🧱 Layer 0 — Foundation" if l == 0 else "Layer %d" % l]
 		for id: String in ids:
-			m += '        %s["%s"]\n' % [id, (nodes.get(id, {}) as Dictionary).get("label", id)]
-		m += "    end\n"
+			var label: String = (nodes.get(id, {}) as Dictionary).get("label", id)
+			var layer_tag: String = "L0 · Foundation" if l == 0 else "L%d" % l
+			m += '    %s["%s\n%s"]\n' % [id, label, layer_tag]
 	m += "\n"
 
 	for edge: Array in edges:
