@@ -138,6 +138,8 @@ var _docs_delete_dialog: ConfirmationDialog
 var _docs_pending_delete: String = ""
 var _docs_move_dialog: AcceptDialog
 var _docs_move_input: LineEdit
+var _docs_move_folder_btn: OptionButton
+var _docs_move_folder_items: Array[String] = []
 var _docs_new_doc_btn: Button
 var _docs_new_dir_btn: Button
 
@@ -227,6 +229,24 @@ var _login_thread: Thread = null
 
 var _thread: Thread = null
 
+# ─── Elections ────────────────────────────────────────────────────────────────
+var _election_data: Dictionary = {}
+var _election_sel_role: String = ""
+var _election_members: Array = []
+var _election_thread: Thread = null
+var _election_status_lbl: Label
+var _election_role_opt: OptionButton
+var _election_member_list: VBoxContainer
+var _election_desc_rtl: RichTextLabel
+var _election_desc_edit: TextEdit
+var _election_edit_desc_btn: Button
+var _election_save_desc_btn: Button
+var _election_cancel_desc_btn: Button
+var _election_candidate_btn: Button
+var _election_pending_lbl: Label
+var _election_settings_dialog: AcceptDialog
+var _election_settings_inner: VBoxContainer
+
 # ─── Setup ───────────────────────────────────────────────────────────────────
 
 func _ready() -> void:
@@ -256,6 +276,7 @@ func _ready() -> void:
 	_load_contracts()
 	_load_doc_permissions()
 	_load_doc_suggestions()
+	_load_elections()
 
 	_login_overlay = _build_login_overlay()
 	_login_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -285,6 +306,8 @@ func _exit_tree() -> void:
 		_ideas_thread.wait_to_finish()
 	if _login_thread and _login_thread.is_started():
 		_login_thread.wait_to_finish()
+	if _election_thread and _election_thread.is_started():
+		_election_thread.wait_to_finish()
 
 # ─── Tab builders ─────────────────────────────────────────────────────────────
 
@@ -1273,7 +1296,6 @@ func _build_planning_tab(tabs: TabContainer) -> void:
 	_build_ideas_subtab(inner_tabs)
 	_build_bugs_subtab(inner_tabs)
 	_build_todo_subtab(inner_tabs)
-	_build_contracts_subtab(inner_tabs)
 
 func _build_planned_subtab(tabs: TabContainer) -> void:
 	var root := _vbox("Addons", tabs)
@@ -2654,7 +2676,8 @@ func _cc_data_bundle() -> Dictionary:
 		"contracts.json": JSON.stringify(_contract_items, "\t") + "\n",
 		"deps.json": JSON.stringify(_deps_items, "\t") + "\n",
 		"doc_permissions.json": JSON.stringify(_docs_permissions, "\t") + "\n",
-		"doc_suggestions.json": JSON.stringify(_docs_suggestions, "\t") + "\n"
+		"doc_suggestions.json": JSON.stringify(_docs_suggestions, "\t") + "\n",
+		"elections.json": JSON.stringify(_election_data, "\t") + "\n"
 	}
 
 func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
@@ -2681,6 +2704,7 @@ func _build_team_supertab(tabs: TabContainer) -> void:
 	_build_schedule_tab(inner_tabs)
 	_build_forum_tab(inner_tabs)
 	_build_docs_tab(inner_tabs)
+	_build_elections_tab(inner_tabs)
 
 # ─── Votes tab ────────────────────────────────────────────────────────────────
 
@@ -3176,8 +3200,104 @@ func _refresh_vote_list() -> void:
 			force_row.add_child(force_no)
 			cvbox.add_child(force_row)
 		_vote_list.add_child(panel)
+
+	# ── Election pending votes ────────────────────────────────────────────────
+	var el_pvotes: Array = _election_pending_votes()
+	for elv: Dictionary in el_pvotes:
+		var cap_id: String = elv.get("id", "")
+		var elv_title: String = elv.get("title", "Election vote")
+		var elv_desc: String = elv.get("description", "")
+		var is_closed: bool = elv.get("closed", false)
+		var result: String = elv.get("result", "")
+		var thresh: String = elv.get("threshold", "2/3")
+		var votes_d: Dictionary = elv.get("votes", {"yes": [], "no": []})
+		var yes_list: Array = votes_d.get("yes", [])
+		var no_list: Array = votes_d.get("no", [])
+		var yes_n := yes_list.size()
+		var no_n := no_list.size()
+		var total_n := yes_n + no_n
+		var already_yes: bool = username in yes_list
+		var already_no: bool = username in no_list
+
+		var panel := PanelContainer.new()
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var cvbox := VBoxContainer.new()
+		cvbox.add_theme_constant_override("separation", 4)
+		panel.add_child(cvbox)
+
+		var header := HBoxContainer.new()
+		var title_lbl := RichTextLabel.new()
+		title_lbl.bbcode_enabled = true
+		title_lbl.fit_content = true
+		title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var sc := "66bb6a" if is_closed else "ffaa44"
+		var st := ("CLOSED — " + result.to_upper() if is_closed else "OPEN")
+		title_lbl.text = "[b]%s[/b]  [color=#ffaa44][ELECTION][/color]  [color=#%s][%s][/color]" % [elv_title, sc, st]
+		header.add_child(title_lbl)
+		cvbox.add_child(header)
+
+		if not elv_desc.is_empty():
+			var desc_lbl := Label.new()
+			desc_lbl.text = elv_desc
+			desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			desc_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+			desc_lbl.add_theme_font_size_override("font_size", 11)
+			cvbox.add_child(desc_lbl)
+
+		var sub_lbl := Label.new()
+		sub_lbl.text = "Proposed by %s  |  Threshold: %s" % [elv.get("created_by", "?"), thresh]
+		sub_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+		sub_lbl.add_theme_font_size_override("font_size", 11)
+		cvbox.add_child(sub_lbl)
+
+		var tally_row := HBoxContainer.new()
+		for pair: Array in [["👍 For", yes_n, Color(0.4, 0.9, 0.5)], ["👎 Against", no_n, Color(0.9, 0.4, 0.4)]]:
+			var opt_lbl := Label.new()
+			opt_lbl.text = pair[0] as String
+			opt_lbl.custom_minimum_size = Vector2(90, 0)
+			opt_lbl.add_theme_color_override("font_color", pair[2] as Color)
+			tally_row.add_child(opt_lbl)
+			var pbar := ProgressBar.new()
+			pbar.min_value = 0
+			pbar.max_value = max(total_n, 1)
+			pbar.value = pair[1] as int
+			pbar.show_percentage = false
+			pbar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			pbar.custom_minimum_size = Vector2(0, 16)
+			tally_row.add_child(pbar)
+			var n_lbl := Label.new()
+			n_lbl.text = " %d" % (pair[1] as int)
+			tally_row.add_child(n_lbl)
+		cvbox.add_child(tally_row)
+
+		if not is_closed:
+			if not already_yes and not already_no:
+				var btn_row := HBoxContainer.new()
+				var yes_btn := Button.new()
+				yes_btn.text = "👍 For"
+				yes_btn.pressed.connect(func(): _election_cast_vote(cap_id, true))
+				var no_btn := Button.new()
+				no_btn.text = "👎 Against"
+				no_btn.pressed.connect(func(): _election_cast_vote(cap_id, false))
+				btn_row.add_child(yes_btn)
+				btn_row.add_child(no_btn)
+				cvbox.add_child(btn_row)
+			else:
+				var voted_row := HBoxContainer.new()
+				var voted_lbl := Label.new()
+				voted_lbl.text = "Your vote: " + ("👍 For" if already_yes else "👎 Against")
+				voted_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+				voted_row.add_child(voted_lbl)
+				var change_btn := Button.new()
+				change_btn.text = "Change"
+				change_btn.flat = true
+				change_btn.pressed.connect(func(): _election_cast_vote(cap_id, not already_yes))
+				voted_row.add_child(change_btn)
+				cvbox.add_child(voted_row)
+		_vote_list.add_child(panel)
+
 	# Show hint if truly empty
-	if _vote_items.is_empty() and doc_votes.is_empty():
+	if _vote_items.is_empty() and doc_votes.is_empty() and el_pvotes.is_empty():
 		for c in _vote_list.get_children():
 			c.queue_free()
 		var hint := Label.new()
@@ -4890,22 +5010,32 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	add_child(_docs_delete_dialog)
 
 	_docs_move_dialog = AcceptDialog.new()
-	_docs_move_dialog.title = "Rename / Move Document"
-	_docs_move_dialog.size = Vector2i(440, 110)
+	_docs_move_dialog.title = "Move / Rename Document"
+	_docs_move_dialog.size = Vector2i(440, 180)
 	var move_vbox := VBoxContainer.new()
 	move_vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_docs_move_dialog.add_child(move_vbox)
-	var move_hint := Label.new()
-	move_hint.text = "New path relative to docs root (e.g. guides/new-name.md):"
-	move_vbox.add_child(move_hint)
+	var folder_lbl := Label.new()
+	folder_lbl.text = "Destination folder:"
+	move_vbox.add_child(folder_lbl)
+	_docs_move_folder_btn = OptionButton.new()
+	_docs_move_folder_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	move_vbox.add_child(_docs_move_folder_btn)
+	var name_lbl := Label.new()
+	name_lbl.text = "Document name:"
+	move_vbox.add_child(name_lbl)
 	_docs_move_input = LineEdit.new()
-	_docs_move_input.placeholder_text = "folder/document.md"
+	_docs_move_input.placeholder_text = "document-name"
 	_docs_move_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	move_vbox.add_child(_docs_move_input)
 	_docs_move_dialog.confirmed.connect(func():
-		var dest := _docs_move_input.text.strip_edges()
-		if not dest.is_empty():
-			_docs_do_move(dest)
+		var name := _docs_move_input.text.strip_edges()
+		if name.is_empty():
+			return
+		var sel := _docs_move_folder_btn.selected
+		var folder := _docs_move_folder_items[sel] if sel >= 0 and sel < _docs_move_folder_items.size() else ""
+		var dest := (folder + "/" if not folder.is_empty() else "") + name
+		_docs_do_move(dest)
 	)
 	add_child(_docs_move_dialog)
 
@@ -5069,9 +5199,22 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 func _docs_filter_files(all_files: Array[String]) -> Array[String]:
 	var result: Array[String] = []
 	for f: String in all_files:
-		if f.begins_with(DOCS_PREFIX + "/") and f.get_extension() == "md":
-			result.append(f)
+		if f.begins_with(DOCS_PREFIX + "/"):
+			if f.get_extension() == "md" or f.get_file() == ".gitkeep":
+				result.append(f)
 	return result
+
+func _docs_get_folders() -> Array[String]:
+	var folders: Array[String] = [""]
+	for full_path: String in _docs_files:
+		if _docs_is_archived(full_path) or full_path.get_file() == ".gitkeep":
+			continue
+		var rel := _docs_rel(full_path)
+		var dir := rel.get_base_dir()
+		if dir != "." and not dir.is_empty() and dir not in folders:
+			folders.append(dir)
+	folders.sort()
+	return folders
 
 func _docs_rel(full_path: String) -> String:
 	return full_path.substr(DOCS_PREFIX.length() + 1)
@@ -5115,7 +5258,8 @@ func _docs_navigate(rel: String) -> void:
 			if folder not in folders:
 				folders.append(folder)
 		else:
-			files.append(rest)
+			if full_path.get_file() != ".gitkeep":
+				files.append(rest)
 	folders.sort()
 	files.sort()
 
@@ -5172,7 +5316,19 @@ func _docs_navigate(rel: String) -> void:
 			ren_btn.custom_minimum_size = Vector2(26, 0)
 			ren_btn.tooltip_text = "Rename / move"
 			ren_btn.pressed.connect(func():
-				_docs_move_input.text = cap_rel
+				_docs_move_folder_btn.clear()
+				_docs_move_folder_items = _docs_get_folders()
+				var cur_dir := cap_rel.get_base_dir()
+				if cur_dir == ".":
+					cur_dir = ""
+				var sel_idx := 0
+				for fi: int in range(_docs_move_folder_items.size()):
+					var f: String = _docs_move_folder_items[fi]
+					_docs_move_folder_btn.add_item("/ (root)" if f.is_empty() else f)
+					if f == cur_dir:
+						sel_idx = fi
+				_docs_move_folder_btn.select(sel_idx)
+				_docs_move_input.text = cap_rel.get_file().get_basename()
 				_docs_move_dialog.popup_centered()
 			)
 			row.add_child(ren_btn)
@@ -5209,7 +5365,7 @@ func _docs_navigate(rel: String) -> void:
 		var arc_btn := Button.new()
 		var arc_count := 0
 		for f: String in _docs_files:
-			if _docs_is_archived(f):
+			if _docs_is_archived(f) and f.get_file() != ".gitkeep":
 				arc_count += 1
 		arc_btn.text = "📦 Archive" + (" (%d)" % arc_count if arc_count > 0 else "")
 		arc_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -8165,3 +8321,931 @@ func _on_approve_done() -> void:
 	if _login_thread:
 		_login_thread.wait_to_finish()
 	_login_thread = null
+
+# ─── Elections ────────────────────────────────────────────────────────────────
+
+func _load_elections() -> void:
+	_election_data = {}
+	var path := ProjectSettings.globalize_path("user://cc_elections.json")
+	if FileAccess.file_exists(path):
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f:
+			var parsed: Variant = JSON.parse_string(f.get_as_text())
+			f.close()
+			if parsed is Dictionary:
+				_election_data = parsed
+	for key: String in ["roles", "holders", "holder_since", "candidates", "scores", "snapshots", "pending_takeovers"]:
+		if not (key in _election_data):
+			_election_data[key] = {}
+	if not ("settings" in _election_data):
+		_election_data["settings"] = {}
+	if not ("pending_votes" in _election_data):
+		_election_data["pending_votes"] = []
+	_election_rebuild_role_opt()
+	_refresh_vote_list()
+	if not _vault_cache.is_empty() and DirAccess.dir_exists_absolute(_vault_cache):
+		_election_load_members()
+
+func _save_elections() -> void:
+	var path := ProjectSettings.globalize_path("user://cc_elections.json")
+	var fw := FileAccess.open(path, FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(_election_data, "\t") + "\n")
+		fw.close()
+	_activity_auto_push()
+
+func _election_settings() -> Dictionary:
+	var s: Variant = _election_data.get("settings", {})
+	if not (s is Dictionary):
+		return {}
+	return s as Dictionary
+
+func _election_setting(key: String, default_val: Variant) -> Variant:
+	return _election_settings().get(key, default_val)
+
+func _election_sorted_roles() -> Array[String]:
+	var roles: Array[String] = []
+	for r: String in (_election_data.get("roles", {}) as Dictionary):
+		roles.append(r)
+	roles.sort()
+	return roles
+
+func _election_total_members() -> int:
+	var cached: int = int(_election_setting("cached_member_count", 0))
+	if cached > 0:
+		return cached
+	return _election_members.size()
+
+func _election_avg(role: String, target: String) -> float:
+	var role_scores: Dictionary = ((_election_data.get("scores", {}) as Dictionary).get(role, {}) as Dictionary)
+	var voter_map: Dictionary = role_scores.get(target, {}) as Dictionary
+	if voter_map.is_empty():
+		return 0.0
+	var total := 0
+	for v: Variant in voter_map.values():
+		total += int(v)
+	return float(total) / float(voter_map.size())
+
+func _election_voter_count(role: String, target: String) -> int:
+	var role_scores: Dictionary = ((_election_data.get("scores", {}) as Dictionary).get(role, {}) as Dictionary)
+	return (role_scores.get(target, {}) as Dictionary).size()
+
+func _election_meets_threshold(role: String, target: String) -> bool:
+	var total := _election_total_members()
+	if total == 0:
+		return false
+	var frac: float = float(_election_setting("min_voter_fraction", 0.333))
+	return float(_election_voter_count(role, target)) >= float(total) * frac
+
+func _election_is_holder(role: String, username: String) -> bool:
+	var holders: Array = ((_election_data.get("holders", {}) as Dictionary).get(role, []) as Array)
+	return username in holders
+
+func _election_is_candidate(role: String, username: String) -> bool:
+	var cands: Array = ((_election_data.get("candidates", {}) as Dictionary).get(role, []) as Array)
+	return username in cands
+
+func _election_is_leader() -> bool:
+	var me: String = _current_user.get("username", "")
+	if me.is_empty():
+		return false
+	var holders: Dictionary = _election_data.get("holders", {}) as Dictionary
+	for role: String in holders:
+		if role.to_lower() == "leader":
+			var list: Array = holders[role] as Array
+			if me in list:
+				return true
+	# If no "Leader" role exists at all, any member can manage roles
+	for role: String in (_election_data.get("roles", {}) as Dictionary):
+		if role.to_lower() == "leader":
+			return false
+	return true
+
+func _election_role_occupied_months(role_name: String) -> float:
+	var role_since: Dictionary = ((_election_data.get("holder_since", {}) as Dictionary).get(role_name, {}) as Dictionary)
+	if role_since.is_empty():
+		return 0.0
+	var earliest := ""
+	for u: String in role_since:
+		var d: String = role_since[u] as String
+		if earliest.is_empty() or d < earliest:
+			earliest = d
+	if earliest.is_empty():
+		return 0.0
+	var now_unix := Time.get_unix_time_from_system()
+	var since_unix := Time.get_unix_time_from_datetime_dict(
+		Time.get_datetime_dict_from_datetime_string(earliest + "T00:00:00", false))
+	return float(now_unix - since_unix) / (30.0 * 24.0 * 3600.0)
+
+func _election_pending_votes() -> Array:
+	var pv: Variant = _election_data.get("pending_votes", [])
+	if pv is Array:
+		return pv
+	return []
+
+func _election_load_members() -> void:
+	if _election_thread and _election_thread.is_started():
+		return
+	if is_instance_valid(_election_status_lbl):
+		_election_status_lbl.text = "Loading members…"
+	_election_thread = Thread.new()
+	_election_thread.start(func():
+		var users := Ops.auth_fetch_all(Callable())
+		call_deferred("_election_on_members_loaded", users)
+	)
+
+func _election_on_members_loaded(users: Array) -> void:
+	if _election_thread and _election_thread.is_started():
+		_election_thread.wait_to_finish()
+	_election_thread = null
+	_election_members = []
+	for u: Dictionary in users:
+		if u.get("approved", false):
+			_election_members.append(u)
+	var settings: Dictionary = _election_settings()
+	settings["cached_member_count"] = _election_members.size()
+	_election_data["settings"] = settings
+	if is_instance_valid(_election_status_lbl):
+		_election_status_lbl.text = ""
+	_election_weekly_check()
+	_election_refresh()
+
+func _election_weekly_check() -> void:
+	var roles: Dictionary = _election_data.get("roles", {}) as Dictionary
+	for role_name: String in roles:
+		_election_maybe_snapshot(role_name)
+		_election_eval_takeovers(role_name)
+	_election_update_lock_flags()
+	_save_elections()
+
+func _election_maybe_snapshot(role: String) -> void:
+	var snaps_dict: Dictionary = _election_data.get("snapshots", {}) as Dictionary
+	var snaps: Array = snaps_dict.get(role, []) as Array
+	var today := Time.get_date_string_from_system()
+	if not snaps.is_empty():
+		var last: Dictionary = snaps[snaps.size() - 1] as Dictionary
+		var last_date: String = last.get("date", "") as String
+		if not last_date.is_empty():
+			var last_unix := Time.get_unix_time_from_datetime_dict(
+				Time.get_datetime_dict_from_datetime_string(last_date + "T00:00:00", false))
+			if Time.get_unix_time_from_system() - last_unix < 7 * 24 * 3600:
+				return
+	var avgs: Dictionary = {}
+	for u: Dictionary in _election_members:
+		var uname: String = u.get("username", "") as String
+		if not uname.is_empty():
+			avgs[uname] = _election_avg(role, uname)
+	snaps.append({"date": today, "averages": avgs})
+	while snaps.size() > 8:
+		snaps.pop_front()
+	snaps_dict[role] = snaps
+	_election_data["snapshots"] = snaps_dict
+
+func _election_eval_takeovers(role: String) -> void:
+	var holders: Array = ((_election_data.get("holders", {}) as Dictionary).get(role, []) as Array)
+	var snaps: Array = ((_election_data.get("snapshots", {}) as Dictionary).get(role, []) as Array)
+	var weeks_to_replace: int = int(_election_setting("weeks_to_replace", 4))
+	var weeks_to_announce: int = int(_election_setting("weeks_to_announce", 2))
+	var first_holder_weeks: int = int(_election_setting("first_holder_weeks", 1))
+	var pending_takeovers: Dictionary = _election_data.get("pending_takeovers", {}) as Dictionary
+	var role_takeovers: Array = pending_takeovers.get(role, []) as Array
+	var updated_takeovers: Array = []
+
+	for holder: String in holders:
+		var best_challenger := ""
+		var best_avg := 0.0
+		for u: Dictionary in _election_members:
+			var uname: String = u.get("username", "") as String
+			if uname.is_empty() or uname == holder or _election_is_holder(role, uname):
+				continue
+			if not _election_is_candidate(role, uname) or not _election_meets_threshold(role, uname):
+				continue
+			var candidate_avg := _election_avg(role, uname)
+			if candidate_avg > best_avg:
+				best_avg = candidate_avg
+				best_challenger = uname
+		var holder_avg := _election_avg(role, holder)
+		if best_challenger.is_empty() or best_avg <= holder_avg:
+			continue
+		var snap_count := min(snaps.size(), weeks_to_replace)
+		var weeks_ahead := 0
+		for si: int in range(snaps.size() - snap_count, snaps.size()):
+			var snap_avgs: Dictionary = (snaps[si] as Dictionary).get("averages", {}) as Dictionary
+			var h_avg: float = float(snap_avgs.get(holder, 0.0))
+			var c_avg: float = float(snap_avgs.get(best_challenger, 0.0))
+			if c_avg > h_avg:
+				weeks_ahead += 1
+		if weeks_ahead >= weeks_to_replace:
+			_election_execute_takeover(role, holder, best_challenger)
+			return
+		var today := Time.get_date_string_from_system()
+		var pt: Dictionary = {}
+		for prev: Dictionary in role_takeovers:
+			if prev.get("holder", "") == holder and prev.get("challenger", "") == best_challenger:
+				pt = prev.duplicate()
+				break
+		pt["holder"] = holder
+		pt["challenger"] = best_challenger
+		pt["weeks_ahead"] = weeks_ahead
+		pt["last_snapshot"] = today
+		if weeks_ahead >= weeks_to_announce and (pt.get("announced_at", "") as String).is_empty():
+			pt["announced_at"] = today
+			_log_activity("election_pending",
+				'⚡ %s is ahead of %s for role "%s" — change in ~%d more week(s)' % [
+					best_challenger, holder, role, weeks_to_replace - weeks_ahead])
+		updated_takeovers.append(pt)
+
+	if holders.is_empty() and snaps.size() >= first_holder_weeks:
+		var best_first := ""
+		var best_first_avg := 0.0
+		for u: Dictionary in _election_members:
+			var uname: String = u.get("username", "") as String
+			if uname.is_empty() or not _election_is_candidate(role, uname) or not _election_meets_threshold(role, uname):
+				continue
+			var avg := _election_avg(role, uname)
+			if avg > best_first_avg:
+				best_first_avg = avg
+				best_first = uname
+		if not best_first.is_empty():
+			_election_execute_takeover(role, "", best_first)
+			return
+
+	pending_takeovers[role] = updated_takeovers
+	_election_data["pending_takeovers"] = pending_takeovers
+
+func _election_execute_takeover(role: String, old_holder: String, new_holder: String) -> void:
+	var holders: Dictionary = _election_data.get("holders", {}) as Dictionary
+	var holder_list: Array = holders.get(role, []) as Array
+	if not old_holder.is_empty():
+		holder_list.erase(old_holder)
+	if new_holder not in holder_list:
+		holder_list.append(new_holder)
+	holders[role] = holder_list
+	_election_data["holders"] = holders
+	var holder_since: Dictionary = _election_data.get("holder_since", {}) as Dictionary
+	var role_since: Dictionary = holder_since.get(role, {}) as Dictionary
+	role_since[new_holder] = Time.get_date_string_from_system()
+	if not old_holder.is_empty():
+		role_since.erase(old_holder)
+	holder_since[role] = role_since
+	_election_data["holder_since"] = holder_since
+	var pending_takeovers: Dictionary = _election_data.get("pending_takeovers", {}) as Dictionary
+	var role_takeovers: Array = pending_takeovers.get(role, []) as Array
+	var filtered: Array = []
+	for pt: Dictionary in role_takeovers:
+		if pt.get("holder", "") != old_holder or pt.get("challenger", "") != new_holder:
+			filtered.append(pt)
+	pending_takeovers[role] = filtered
+	_election_data["pending_takeovers"] = pending_takeovers
+	_election_update_lock_flags()
+	if old_holder.is_empty():
+		_log_activity("election_assigned", '🏆 %s was assigned role "%s"' % [new_holder, role])
+	else:
+		_log_activity("election_changed", '🔄 %s replaced %s as "%s"' % [new_holder, old_holder, role])
+
+func _election_update_lock_flags() -> void:
+	var lock_months: float = float(int(_election_setting("role_lock_months", 1)))
+	var roles_dict: Dictionary = _election_data.get("roles", {}) as Dictionary
+	for role_name: String in roles_dict:
+		var role_data: Dictionary = roles_dict[role_name] as Dictionary
+		role_data["desc_locked"] = _election_role_occupied_months(role_name) >= lock_months
+		roles_dict[role_name] = role_data
+	_election_data["roles"] = roles_dict
+
+func _build_elections_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Elections", tabs)
+
+	var toolbar := HBoxContainer.new()
+	toolbar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_election_role_opt = OptionButton.new()
+	_election_role_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_election_role_opt.item_selected.connect(func(idx: int):
+		var roles := _election_sorted_roles()
+		if idx >= 0 and idx < roles.size():
+			_election_sel_role = roles[idx]
+			_election_refresh()
+	)
+	toolbar.add_child(_election_role_opt)
+	var new_role_btn := Button.new()
+	new_role_btn.text = "➕ Role"
+	new_role_btn.tooltip_text = "Create new role"
+	new_role_btn.pressed.connect(_election_prompt_create_role)
+	toolbar.add_child(new_role_btn)
+	var del_role_btn := Button.new()
+	del_role_btn.text = "🗑 Role"
+	del_role_btn.tooltip_text = "Delete current role"
+	del_role_btn.pressed.connect(_election_delete_selected_role)
+	toolbar.add_child(del_role_btn)
+	var settings_btn := Button.new()
+	settings_btn.text = "⚙"
+	settings_btn.tooltip_text = "Election settings"
+	settings_btn.pressed.connect(_election_show_settings)
+	toolbar.add_child(settings_btn)
+	root.add_child(toolbar)
+
+	_election_status_lbl = Label.new()
+	_election_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+	root.add_child(_election_status_lbl)
+
+	root.add_child(HSeparator.new())
+
+	# Description
+	var desc_box := HBoxContainer.new()
+	desc_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_election_desc_rtl = RichTextLabel.new()
+	_election_desc_rtl.bbcode_enabled = true
+	_election_desc_rtl.fit_content = true
+	_election_desc_rtl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_election_desc_rtl.text = "[color=#888]No role selected.[/color]"
+	desc_box.add_child(_election_desc_rtl)
+	_election_edit_desc_btn = Button.new()
+	_election_edit_desc_btn.flat = true
+	_election_edit_desc_btn.visible = false
+	_election_edit_desc_btn.pressed.connect(_election_start_edit_desc)
+	desc_box.add_child(_election_edit_desc_btn)
+	root.add_child(desc_box)
+
+	_election_desc_edit = TextEdit.new()
+	_election_desc_edit.placeholder_text = "Describe this role…"
+	_election_desc_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_election_desc_edit.custom_minimum_size = Vector2(0, 60)
+	_election_desc_edit.visible = false
+	root.add_child(_election_desc_edit)
+
+	var desc_btn_row := HBoxContainer.new()
+	_election_save_desc_btn = Button.new()
+	_election_save_desc_btn.text = "💾 Save"
+	_election_save_desc_btn.visible = false
+	_election_save_desc_btn.pressed.connect(_election_commit_desc)
+	desc_btn_row.add_child(_election_save_desc_btn)
+	_election_cancel_desc_btn = Button.new()
+	_election_cancel_desc_btn.text = "Cancel"
+	_election_cancel_desc_btn.visible = false
+	_election_cancel_desc_btn.pressed.connect(_election_cancel_desc)
+	desc_btn_row.add_child(_election_cancel_desc_btn)
+	root.add_child(desc_btn_row)
+
+	root.add_child(HSeparator.new())
+
+	_election_candidate_btn = Button.new()
+	_election_candidate_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_election_candidate_btn.visible = false
+	_election_candidate_btn.pressed.connect(_election_toggle_candidate)
+	root.add_child(_election_candidate_btn)
+
+	root.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_election_member_list = VBoxContainer.new()
+	_election_member_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_election_member_list.add_theme_constant_override("separation", 6)
+	scroll.add_child(_election_member_list)
+	root.add_child(scroll)
+
+	_election_pending_lbl = Label.new()
+	_election_pending_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_election_pending_lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+	_election_pending_lbl.visible = false
+	root.add_child(_election_pending_lbl)
+
+	_election_settings_dialog = AcceptDialog.new()
+	_election_settings_dialog.title = "Election Settings"
+	_election_settings_dialog.size = Vector2i(520, 440)
+	add_child(_election_settings_dialog)
+	_election_settings_inner = VBoxContainer.new()
+	_election_settings_inner.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_election_settings_dialog.add_child(_election_settings_inner)
+
+	_election_rebuild_role_opt()
+
+func _election_rebuild_role_opt() -> void:
+	if not is_instance_valid(_election_role_opt):
+		return
+	_election_role_opt.clear()
+	var roles := _election_sorted_roles()
+	for r: String in roles:
+		_election_role_opt.add_item(r)
+	if _election_sel_role.is_empty() and not roles.is_empty():
+		_election_sel_role = roles[0]
+	var idx := roles.find(_election_sel_role)
+	if idx >= 0:
+		_election_role_opt.select(idx)
+	elif not roles.is_empty():
+		_election_sel_role = roles[0]
+		_election_role_opt.select(0)
+	else:
+		_election_sel_role = ""
+	_election_refresh()
+
+func _election_refresh() -> void:
+	if not is_instance_valid(_election_member_list):
+		return
+	for c in _election_member_list.get_children():
+		c.queue_free()
+	var role := _election_sel_role
+	var me: String = _current_user.get("username", "")
+
+	# Description area
+	if is_instance_valid(_election_desc_rtl):
+		if not role.is_empty():
+			var role_data: Dictionary = ((_election_data.get("roles", {}) as Dictionary).get(role, {}) as Dictionary)
+			var desc: String = role_data.get("description", "") as String
+			_election_desc_rtl.text = desc if not desc.is_empty() else "[color=#888]No description.[/color]"
+			var desc_locked: bool = role_data.get("desc_locked", false)
+			var is_ldr := _election_is_leader()
+			if is_instance_valid(_election_edit_desc_btn):
+				_election_edit_desc_btn.visible = is_ldr
+				_election_edit_desc_btn.text = "✏ (vote)" if (is_ldr and desc_locked) else "✏"
+				_election_edit_desc_btn.tooltip_text = "Edit description (requires vote)" if (is_ldr and desc_locked) else "Edit description"
+		else:
+			_election_desc_rtl.text = "[color=#888]No role selected.[/color]"
+			if is_instance_valid(_election_edit_desc_btn):
+				_election_edit_desc_btn.visible = false
+
+	# Candidate button
+	if is_instance_valid(_election_candidate_btn):
+		if not role.is_empty() and not me.is_empty():
+			_election_candidate_btn.visible = true
+			if _election_is_candidate(role, me):
+				_election_candidate_btn.text = "❌ Withdraw candidacy for \"%s\"" % role
+				_election_candidate_btn.modulate = Color(1.0, 0.7, 0.7)
+			else:
+				_election_candidate_btn.text = "👤 Declare candidacy for \"%s\"" % role
+				_election_candidate_btn.modulate = Color(1.0, 1.0, 1.0)
+		else:
+			_election_candidate_btn.visible = false
+
+	# Pending takeover notice
+	if is_instance_valid(_election_pending_lbl):
+		_election_pending_lbl.visible = false
+		if not role.is_empty():
+			var takeovers: Array = ((_election_data.get("pending_takeovers", {}) as Dictionary).get(role, []) as Array)
+			if not takeovers.is_empty():
+				var weeks_replace: int = int(_election_setting("weeks_to_replace", 4))
+				var parts: PackedStringArray = []
+				for pt: Dictionary in takeovers:
+					parts.append("⚡ %s has been ahead of %s for %d/%d weeks" % [
+						pt.get("challenger", ""), pt.get("holder", ""),
+						int(pt.get("weeks_ahead", 0)), weeks_replace])
+				_election_pending_lbl.text = "\n".join(parts)
+				_election_pending_lbl.visible = true
+
+	if role.is_empty():
+		var hint := Label.new()
+		hint.text = "No roles yet. Create one with ➕ Role."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_election_member_list.add_child(hint)
+		return
+	if _election_members.is_empty():
+		var hint := Label.new()
+		hint.text = "Loading members… (requires vault connection)"
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_election_member_list.add_child(hint)
+		return
+
+	# Build sorted list: holders first, then candidates, then others; within each group sort by avg desc
+	var rows: Array = []
+	for u: Dictionary in _election_members:
+		var uname: String = u.get("username", "") as String
+		rows.append({
+			"username": uname,
+			"avg": _election_avg(role, uname),
+			"votes": _election_voter_count(role, uname),
+			"is_holder": _election_is_holder(role, uname),
+			"is_candidate": _election_is_candidate(role, uname),
+			"meets": _election_meets_threshold(role, uname)
+		})
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var ah: bool = a["is_holder"]
+		var bh: bool = b["is_holder"]
+		var ac: bool = a["is_candidate"]
+		var bc: bool = b["is_candidate"]
+		if ah != bh:
+			return ah
+		if ac != bc:
+			return ac
+		return float(a["avg"]) > float(b["avg"])
+	)
+
+	var role_scores: Dictionary = ((_election_data.get("scores", {}) as Dictionary).get(role, {}) as Dictionary)
+
+	for entry: Dictionary in rows:
+		var uname: String = entry["username"]
+		var avg: float = entry["avg"]
+		var votes: int = entry["votes"]
+		var is_hld: bool = entry["is_holder"]
+		var is_cand: bool = entry["is_candidate"]
+		var meets: bool = entry["meets"]
+		var my_score: int = int((role_scores.get(uname, {}) as Dictionary).get(me, 0))
+
+		var panel := PanelContainer.new()
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var vb := VBoxContainer.new()
+		panel.add_child(vb)
+
+		var hdr := HBoxContainer.new()
+		var name_lbl := RichTextLabel.new()
+		name_lbl.bbcode_enabled = true
+		name_lbl.fit_content = true
+		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var badges := ""
+		if is_hld:
+			badges += " [color=#ffd700][b]🏆 Holder[/b][/color]"
+		if is_cand:
+			badges += " [color=#88ccff]👤 Candidate[/color]"
+		name_lbl.text = "[b]%s[/b]%s" % [uname, badges]
+		hdr.add_child(name_lbl)
+		var score_lbl := Label.new()
+		if votes > 0:
+			var need_str := "" if meets else " — needs more voters"
+			score_lbl.text = "%.1f/5 (%d vote%s%s)" % [avg, votes, "" if votes == 1 else "s", need_str]
+		else:
+			score_lbl.text = "No scores yet"
+		score_lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3) if meets else Color(0.55, 0.55, 0.55))
+		score_lbl.add_theme_font_size_override("font_size", 11)
+		hdr.add_child(score_lbl)
+		vb.add_child(hdr)
+
+		if uname != me:
+			var vote_row := HBoxContainer.new()
+			var vote_lbl := Label.new()
+			vote_lbl.text = "Your score:"
+			vote_lbl.add_theme_font_size_override("font_size", 11)
+			vote_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+			vote_row.add_child(vote_lbl)
+			for s: int in range(1, 6):
+				var cap_s := s
+				var cap_u := uname
+				var sbtn := Button.new()
+				sbtn.text = str(s)
+				sbtn.flat = my_score != cap_s
+				sbtn.custom_minimum_size = Vector2(28, 0)
+				if my_score == cap_s:
+					sbtn.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+				sbtn.pressed.connect(func(): _election_set_score(role, cap_u, cap_s))
+				vote_row.add_child(sbtn)
+			if my_score > 0:
+				var cap_u := uname
+				var clear_btn := Button.new()
+				clear_btn.text = "✕"
+				clear_btn.flat = true
+				clear_btn.custom_minimum_size = Vector2(22, 0)
+				clear_btn.pressed.connect(func(): _election_set_score(role, cap_u, 0))
+				vote_row.add_child(clear_btn)
+			vb.add_child(vote_row)
+
+		_election_member_list.add_child(panel)
+
+func _election_set_score(role: String, target: String, score: int) -> void:
+	var me: String = _current_user.get("username", "")
+	if me.is_empty():
+		return
+	var scores: Dictionary = _election_data.get("scores", {}) as Dictionary
+	var role_scores: Dictionary = scores.get(role, {}) as Dictionary
+	var voter_map: Dictionary = role_scores.get(target, {}) as Dictionary
+	if score == 0:
+		voter_map.erase(me)
+	else:
+		voter_map[me] = score
+	role_scores[target] = voter_map
+	scores[role] = role_scores
+	_election_data["scores"] = scores
+	_save_elections()
+	_election_refresh()
+
+func _election_toggle_candidate() -> void:
+	var me: String = _current_user.get("username", "")
+	if me.is_empty() or _election_sel_role.is_empty():
+		return
+	var role := _election_sel_role
+	var candidates: Dictionary = _election_data.get("candidates", {}) as Dictionary
+	var cand_list: Array = candidates.get(role, []) as Array
+	if me in cand_list:
+		cand_list.erase(me)
+		_log_activity("election_candidate", '%s withdrew candidacy for "%s"' % [me, role])
+	else:
+		cand_list.append(me)
+		_log_activity("election_candidate", '%s declared candidacy for "%s"' % [me, role])
+	candidates[role] = cand_list
+	_election_data["candidates"] = candidates
+	_save_elections()
+	_election_refresh()
+
+func _election_prompt_create_role() -> void:
+	if not _election_is_leader():
+		if is_instance_valid(_election_status_lbl):
+			_election_status_lbl.text = "⚠ Only the Leader can create roles"
+		get_tree().create_timer(2.5).timeout.connect(func():
+			if is_instance_valid(_election_status_lbl): _election_status_lbl.text = "")
+		return
+	var dlg := AcceptDialog.new()
+	dlg.title = "New Role"
+	dlg.size = Vector2i(380, 110)
+	var vb := VBoxContainer.new()
+	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	dlg.add_child(vb)
+	var lbl := Label.new()
+	lbl.text = "Role name:"
+	vb.add_child(lbl)
+	var edit := LineEdit.new()
+	edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	edit.placeholder_text = "e.g. Leader, Designer, Reviewer"
+	vb.add_child(edit)
+	add_child(dlg)
+	dlg.confirmed.connect(func():
+		var name := edit.text.strip_edges()
+		if not name.is_empty():
+			_election_create_role(name)
+		dlg.queue_free()
+	)
+	dlg.canceled.connect(func(): dlg.queue_free())
+	dlg.popup_centered()
+
+func _election_create_role(name: String) -> void:
+	if name.is_empty():
+		return
+	var roles: Dictionary = _election_data.get("roles", {}) as Dictionary
+	if name in roles:
+		if is_instance_valid(_election_status_lbl):
+			_election_status_lbl.text = "⚠ Role already exists"
+		return
+	roles[name] = {
+		"created_at": Time.get_date_string_from_system(),
+		"created_by": _current_user.get("username", "?"),
+		"description": "",
+		"desc_locked": false
+	}
+	_election_data["roles"] = roles
+	_election_sel_role = name
+	_save_elections()
+	_election_rebuild_role_opt()
+	_log_activity("election_role", '"%s" created role: "%s"' % [_current_user.get("username", "?"), name])
+
+func _election_delete_selected_role() -> void:
+	if not _election_is_leader():
+		if is_instance_valid(_election_status_lbl):
+			_election_status_lbl.text = "⚠ Only the Leader can delete roles"
+		get_tree().create_timer(2.5).timeout.connect(func():
+			if is_instance_valid(_election_status_lbl): _election_status_lbl.text = "")
+		return
+	var role := _election_sel_role
+	if role.is_empty():
+		return
+	var months := _election_role_occupied_months(role)
+	var lock_months: float = float(int(_election_setting("role_lock_months", 1)))
+	if months >= lock_months:
+		_election_submit_pending_vote({
+			"type": "delete_role",
+			"role": role,
+			"title": "Delete role: " + role,
+			"description": 'Role "%s" has been occupied for %.1f months — a %s majority vote is required.' % [role, months, _election_setting("change_threshold", "2/3")]
+		})
+		if is_instance_valid(_election_status_lbl):
+			_election_status_lbl.text = "⚡ Vote proposed — check Votes tab"
+	else:
+		_election_do_delete_role(role)
+
+func _election_do_delete_role(role: String) -> void:
+	for key: String in ["roles", "holders", "holder_since", "candidates", "scores", "snapshots", "pending_takeovers"]:
+		var d: Dictionary = _election_data.get(key, {}) as Dictionary
+		d.erase(role)
+		_election_data[key] = d
+	var roles := _election_sorted_roles()
+	_election_sel_role = roles[0] if not roles.is_empty() else ""
+	_save_elections()
+	_election_rebuild_role_opt()
+	_log_activity("election_role", '"%s" deleted role: "%s"' % [_current_user.get("username", "?"), role])
+
+func _election_start_edit_desc() -> void:
+	if _election_sel_role.is_empty() or not is_instance_valid(_election_desc_edit):
+		return
+	var role_data: Dictionary = ((_election_data.get("roles", {}) as Dictionary).get(_election_sel_role, {}) as Dictionary)
+	_election_desc_edit.text = role_data.get("description", "") as String
+	_election_desc_rtl.visible = false
+	_election_edit_desc_btn.visible = false
+	_election_desc_edit.visible = true
+	_election_save_desc_btn.visible = true
+	_election_cancel_desc_btn.visible = true
+
+func _election_cancel_desc() -> void:
+	if not is_instance_valid(_election_desc_edit):
+		return
+	_election_desc_edit.visible = false
+	_election_save_desc_btn.visible = false
+	_election_cancel_desc_btn.visible = false
+	_election_desc_rtl.visible = true
+	_election_edit_desc_btn.visible = _election_is_leader() and not _election_sel_role.is_empty()
+
+func _election_commit_desc() -> void:
+	var role := _election_sel_role
+	if role.is_empty() or not is_instance_valid(_election_desc_edit):
+		return
+	var new_desc := _election_desc_edit.text.strip_edges()
+	var roles_dict: Dictionary = _election_data.get("roles", {}) as Dictionary
+	var role_data: Dictionary = roles_dict.get(role, {}) as Dictionary
+	var desc_locked: bool = role_data.get("desc_locked", false)
+	if desc_locked:
+		var old_desc: String = role_data.get("description", "")
+		_election_submit_pending_vote({
+			"type": "edit_description",
+			"role": role,
+			"old_description": old_desc,
+			"new_description": new_desc,
+			"title": "Change description: " + role,
+			"description": 'Role "%s" has been occupied ≥%d month(s) — description change requires a vote.' % [role, int(_election_setting("role_lock_months", 1))]
+		})
+		if is_instance_valid(_election_status_lbl):
+			_election_status_lbl.text = "⚡ Vote proposed — check Votes tab"
+	else:
+		role_data["description"] = new_desc
+		roles_dict[role] = role_data
+		_election_data["roles"] = roles_dict
+		_save_elections()
+	_election_cancel_desc()
+	_election_refresh()
+
+func _election_submit_pending_vote(data: Dictionary) -> void:
+	var pvotes: Array = _election_data.get("pending_votes", []) as Array
+	var id := "elv_" + str(int(Time.get_unix_time_from_system()))
+	var threshold: String = _election_setting("change_threshold", "2/3") as String
+	pvotes.append({
+		"id": id,
+		"type": data.get("type", "unknown"),
+		"role": data.get("role", ""),
+		"title": data.get("title", "Election vote"),
+		"description": data.get("description", ""),
+		"created_by": _current_user.get("username", "?"),
+		"created_at": Time.get_datetime_string_from_system(),
+		"threshold": threshold,
+		"closed": false,
+		"result": "",
+		"votes": {"yes": [], "no": []},
+		"extra": data
+	})
+	_election_data["pending_votes"] = pvotes
+	_save_elections()
+	_refresh_vote_list()
+
+func _election_cast_vote(vote_id: String, vote_yes: bool) -> void:
+	var pvotes: Array = _election_data.get("pending_votes", []) as Array
+	var me: String = _current_user.get("username", "")
+	for i: int in range(pvotes.size()):
+		var pv: Dictionary = pvotes[i] as Dictionary
+		if pv.get("id", "") != vote_id or pv.get("closed", false):
+			continue
+		var votes: Dictionary = pv.get("votes", {"yes": [], "no": []}) as Dictionary
+		var yes_list: Array = votes.get("yes", []) as Array
+		var no_list: Array = votes.get("no", []) as Array
+		yes_list.erase(me)
+		no_list.erase(me)
+		if vote_yes:
+			yes_list.append(me)
+		else:
+			no_list.append(me)
+		votes["yes"] = yes_list
+		votes["no"] = no_list
+		pv["votes"] = votes
+		var yes_n := yes_list.size()
+		var no_n := no_list.size()
+		var total := yes_n + no_n
+		var thresh: String = pv.get("threshold", "2/3") as String
+		var passed := false
+		var rejected := false
+		match thresh:
+			"1/2":
+				passed = yes_n * 2 > total
+				rejected = no_n * 2 > total
+			"2/3":
+				passed = yes_n * 3 >= total * 2
+				rejected = no_n * 3 >= total * 2
+			"3/4":
+				passed = yes_n * 4 >= total * 3
+				rejected = no_n * 4 >= total * 3
+		if passed or rejected:
+			pv["closed"] = true
+			pv["result"] = "approved" if passed else "rejected"
+			pv["closed_at"] = Time.get_datetime_string_from_system()
+			if passed:
+				_election_process_approved(pv)
+			_log_activity("election_vote_closed",
+				'🗳 Election vote "%s" closed: %s' % [pv.get("title", ""), pv.get("result", "")])
+		pvotes[i] = pv
+		break
+	_election_data["pending_votes"] = pvotes
+	_save_elections()
+	_refresh_vote_list()
+
+func _election_process_approved(pv: Dictionary) -> void:
+	var extra: Dictionary = pv.get("extra", {}) as Dictionary
+	var type: String = pv.get("type", "") as String
+	match type:
+		"delete_role":
+			_election_do_delete_role(pv.get("role", "") as String)
+		"edit_description":
+			var role: String = pv.get("role", "") as String
+			var new_desc: String = extra.get("new_description", "") as String
+			var roles_dict: Dictionary = _election_data.get("roles", {}) as Dictionary
+			var role_data: Dictionary = roles_dict.get(role, {}) as Dictionary
+			role_data["description"] = new_desc
+			roles_dict[role] = role_data
+			_election_data["roles"] = roles_dict
+			_save_elections()
+		"change_setting":
+			var setting: String = extra.get("setting", "") as String
+			var new_val: Variant = extra.get("new_value", null)
+			if not setting.is_empty() and new_val != null:
+				var settings: Dictionary = _election_settings()
+				settings[setting] = new_val
+				_election_data["settings"] = settings
+				_save_elections()
+	if is_instance_valid(_election_status_lbl):
+		_election_status_lbl.text = "✅ Vote passed — action applied"
+	_election_rebuild_role_opt()
+
+func _election_show_settings() -> void:
+	if not is_instance_valid(_election_settings_dialog) or not is_instance_valid(_election_settings_inner):
+		return
+	for c in _election_settings_inner.get_children():
+		c.queue_free()
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var inner := VBoxContainer.new()
+	inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inner.add_theme_constant_override("separation", 6)
+	scroll.add_child(inner)
+	_election_settings_inner.add_child(scroll)
+	var note := Label.new()
+	note.text = "All changes require a %s majority vote to take effect." % _election_setting("change_threshold", "2/3")
+	note.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	inner.add_child(note)
+	inner.add_child(HSeparator.new())
+
+	var settings_def: Array = [
+		{"key": "min_voter_fraction", "label": "Minimum voter fraction to count a score",
+			"options": [["1/3 (default)", 0.333], ["1/2", 0.5], ["2/3", 0.667], ["3/4", 0.75]]},
+		{"key": "weeks_to_replace", "label": "Consecutive weeks challenger must lead",
+			"options": [["2 weeks", 2], ["3 weeks", 3], ["4 weeks (default)", 4], ["6 weeks", 6]]},
+		{"key": "weeks_to_announce", "label": "Weeks ahead to announce pending change",
+			"options": [["1 week", 1], ["2 weeks (default)", 2], ["3 weeks", 3]]},
+		{"key": "change_threshold", "label": "Vote threshold for settings changes",
+			"options": [["1/2", "1/2"], ["2/3 (default)", "2/3"], ["3/4", "3/4"]]},
+		{"key": "role_lock_months", "label": "Months before role requires vote to modify",
+			"options": [["1 month (default)", 1], ["2 months", 2], ["3 months", 3]]},
+		{"key": "first_holder_weeks", "label": "Weeks before first holder is assigned",
+			"options": [["1 week (default)", 1], ["2 weeks", 2]]}
+	]
+
+	for sdef: Dictionary in settings_def:
+		var skey: String = sdef["key"] as String
+		var slabel: String = sdef["label"] as String
+		var sopts: Array = sdef["options"] as Array
+		var row := HBoxContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var lbl := Label.new()
+		lbl.text = slabel
+		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		lbl.custom_minimum_size = Vector2(220, 0)
+		row.add_child(lbl)
+		var cur := _election_setting(skey, sopts[0][1])
+		var opt := OptionButton.new()
+		opt.custom_minimum_size = Vector2(160, 0)
+		var sel_idx := 0
+		for oi: int in range(sopts.size()):
+			opt.add_item(sopts[oi][0] as String)
+			if sopts[oi][1] == cur:
+				sel_idx = oi
+		opt.select(sel_idx)
+		row.add_child(opt)
+		var cap_key := skey
+		var cap_opts := sopts
+		var propose_btn := Button.new()
+		propose_btn.text = "Propose"
+		propose_btn.pressed.connect(func():
+			var sel: int = opt.selected
+			if sel < 0 or sel >= cap_opts.size():
+				return
+			var new_val: Variant = cap_opts[sel][1]
+			var old_val := _election_setting(cap_key, cap_opts[0][1])
+			if new_val == old_val:
+				return
+			_election_submit_pending_vote({
+				"type": "change_setting",
+				"setting": cap_key,
+				"old_value": old_val,
+				"new_value": new_val,
+				"title": "Change setting: %s → %s" % [cap_key, str(new_val)],
+				"description": "Change %s from %s to %s." % [cap_key, str(old_val), str(new_val)]
+			})
+			_election_settings_dialog.hide()
+			if is_instance_valid(_election_status_lbl):
+				_election_status_lbl.text = "⚡ Vote proposed — check Votes tab"
+		)
+		row.add_child(propose_btn)
+		inner.add_child(row)
+		inner.add_child(HSeparator.new())
+
+	_election_settings_dialog.popup_centered()
