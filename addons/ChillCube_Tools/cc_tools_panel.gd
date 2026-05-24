@@ -95,6 +95,9 @@ var _vault_thread: Thread = null
 var _vault_cache: String = ""
 var _vault_file_dialog: EditorFileDialog
 var _vault_files: Array[String] = []
+var _vault_sel_files: Array[String] = []
+var _vault_sel_count_lbl: Label
+var _vault_edit_sel_btn: Button
 var _vault_preview_panel: VBoxContainer
 var _vault_preview_name_lbl: Label
 var _vault_img_rect: TextureRect
@@ -4510,6 +4513,13 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	upload_btn.text = "⬆ Upload"
 	upload_btn.tooltip_text = "Upload files to the current folder (supports zip auto-extract, multi-select)"
 	upload_btn.pressed.connect(_vault_open_picker)
+	_vault_sel_count_lbl = Label.new()
+	_vault_sel_count_lbl.add_theme_color_override("font_color", Color(0.5, 0.85, 1.0))
+	_vault_sel_count_lbl.visible = false
+	_vault_edit_sel_btn = Button.new()
+	_vault_edit_sel_btn.text = "✏ Edit Selected"
+	_vault_edit_sel_btn.visible = false
+	_vault_edit_sel_btn.pressed.connect(func(): _asset_meta_bulk_edit(_vault_sel_files.duplicate()))
 	var newdir_btn := Button.new()
 	newdir_btn.text = "📁+"
 	newdir_btn.tooltip_text = "Create new folder"
@@ -4520,6 +4530,8 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	)
 	path_row.add_child(_vault_path_lbl)
 	path_row.add_child(upload_btn)
+	path_row.add_child(_vault_sel_count_lbl)
+	path_row.add_child(_vault_edit_sel_btn)
 	path_row.add_child(newdir_btn)
 	left.add_child(path_row)
 	left.add_child(HSeparator.new())
@@ -4698,9 +4710,9 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 
 	# Delete confirm dialog
 	_vault_delete_dialog = ConfirmationDialog.new()
-	_vault_delete_dialog.title = "Delete File"
-	_vault_delete_dialog.dialog_text = "Are you sure? This cannot be undone."
-	_vault_delete_dialog.confirmed.connect(_vault_do_delete)
+	_vault_delete_dialog.title = "Archive File"
+	_vault_delete_dialog.dialog_text = "Move this file to the archive?"
+	_vault_delete_dialog.confirmed.connect(_vault_do_archive)
 	add_child(_vault_delete_dialog)
 
 	# New folder dialog
@@ -4754,6 +4766,9 @@ func _vault_on_connected(ok: bool) -> void:
 		_docs_navigate(_docs_current_dir)
 
 func _vault_navigate(rel: String) -> void:
+	if rel != _vault_current_dir:
+		_vault_sel_files.clear()
+		_vault_update_sel_ui()
 	_vault_current_dir = rel
 	_vault_path_lbl.text = "/" + rel
 	for c in _vault_browser.get_children():
@@ -4772,7 +4787,8 @@ func _vault_navigate(rel: String) -> void:
 	var files: Array[String] = []
 	for path: String in _vault_files:
 		if path.begins_with("_cc_tools/") or path == "_cc_tools" \
-				or path.begins_with("_docs/") or path == "_docs":
+				or path.begins_with("_docs/") or path == "_docs" \
+				or path.begins_with("_archive/") or path == "_archive":
 			continue
 		if not path.begins_with(prefix):
 			continue
@@ -4828,6 +4844,18 @@ func _vault_navigate(rel: String) -> void:
 		var row := HBoxContainer.new()
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
+		var chk := CheckBox.new()
+		chk.button_pressed = cap_rel in _vault_sel_files
+		chk.toggled.connect(func(pressed: bool):
+			if pressed:
+				if cap_rel not in _vault_sel_files:
+					_vault_sel_files.append(cap_rel)
+			else:
+				_vault_sel_files.erase(cap_rel)
+			_vault_update_sel_ui()
+		)
+		row.add_child(chk)
+
 		var file_btn := Button.new()
 		file_btn.text = _vault_file_icon(file) + " " + file
 		file_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -4867,8 +4895,8 @@ func _vault_navigate(rel: String) -> void:
 		row.add_child(ren_btn)
 
 		var del_btn := Button.new()
-		del_btn.text = "🗑"
-		del_btn.tooltip_text = "Delete"
+		del_btn.text = "📦"
+		del_btn.tooltip_text = "Archive"
 		del_btn.flat = true
 		del_btn.custom_minimum_size = Vector2(26, 0)
 		del_btn.pressed.connect(func():
@@ -5138,14 +5166,17 @@ func _vault_show_audio(path: String, ext: String) -> void:
 				s.data = bytes
 				stream = s
 		"wav":
-			var bytes := FileAccess.get_file_as_bytes(path)
-			if bytes.size() > 0:
-				var user_path := "user://cc_preview_tmp.wav"
-				var f := FileAccess.open(user_path, FileAccess.WRITE)
-				if f:
-					f.store_buffer(bytes)
-					f.close()
-					stream = ResourceLoader.load(user_path, "", ResourceLoader.CACHE_MODE_IGNORE) as AudioStream
+			if ClassDB.class_has_method("AudioStreamWAV", "load_from_file"):
+				stream = AudioStreamWAV.call("load_from_file", path) as AudioStream
+			else:
+				var bytes := FileAccess.get_file_as_bytes(path)
+				if bytes.size() > 0:
+					var user_path := "user://cc_preview_tmp.wav"
+					var fw2 := FileAccess.open(user_path, FileAccess.WRITE)
+					if fw2:
+						fw2.store_buffer(bytes)
+						fw2.close()
+						stream = ResourceLoader.load(ProjectSettings.globalize_path(user_path), "AudioStream", ResourceLoader.CACHE_MODE_IGNORE) as AudioStream
 	if stream:
 		_vault_audio_player.stream = stream
 		_vault_audio_container.visible = true
@@ -5244,10 +5275,10 @@ func _vault_do_mkdir() -> void:
 
 func _vault_confirm_delete(rel_path: String) -> void:
 	_vault_pending_delete = rel_path
-	_vault_delete_dialog.dialog_text = 'Delete "%s"? This cannot be undone.' % rel_path.get_file()
+	_vault_delete_dialog.dialog_text = 'Archive "%s"? It will be moved to _archive/YYYY/MM/.' % rel_path.get_file()
 	_vault_delete_dialog.popup_centered()
 
-func _vault_do_delete() -> void:
+func _vault_do_archive() -> void:
 	if _vault_pending_delete.is_empty():
 		return
 	if _vault_thread and _vault_thread.is_started():
@@ -5256,14 +5287,16 @@ func _vault_do_delete() -> void:
 	var target := _vault_pending_delete
 	_vault_pending_delete = ""
 	_vault_log.text = ""
-	_vault_status_lbl.text = "Deleting…"
+	_vault_status_lbl.text = "Archiving…"
 	_vault_thread = Thread.new()
 	var cache := _vault_cache
-	var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
+	var dt := Time.get_datetime_dict_from_system()
+	var dest: String = "_archive/%04d/%02d/%s" % [dt.year, dt.month, target.get_file()]
 	_vault_thread.start(func():
-		Ops.vault_delete_file(target, log_fn)
+		var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
+		Ops.vault_move_file(target, dest, log_fn)
 		Ops.vault_refresh(cache, log_fn)
-		call_deferred("_vault_after_manage_named", "asset_deleted", 'Deleted "%s" from assets' % target.get_file())
+		call_deferred("_vault_after_manage_named", "asset_deleted", 'Archived "%s"' % target.get_file())
 	)
 
 func _vault_after_manage() -> void:
@@ -5350,6 +5383,78 @@ func _asset_meta_edit(rel_path: String) -> void:
 			_asset_meta.erase(cap_path)
 		else:
 			_asset_meta[cap_path] = {"made_by": made_by, "notes": notes}
+		_save_asset_meta()
+		_vault_navigate(_vault_current_dir)
+	)
+	add_child(dialog)
+	dialog.popup_centered()
+
+func _vault_update_sel_ui() -> void:
+	var n := _vault_sel_files.size()
+	_vault_sel_count_lbl.text = "%d selected" % n
+	_vault_sel_count_lbl.visible = n > 0
+	_vault_edit_sel_btn.visible = n > 0
+
+func _asset_meta_bulk_edit(paths: Array) -> void:
+	if paths.is_empty():
+		return
+	const MIXED := "(mixed)"
+	var first_made_by: String = (_asset_meta.get(paths[0], {}) as Dictionary).get("made_by", "")
+	var first_notes: String = (_asset_meta.get(paths[0], {}) as Dictionary).get("notes", "")
+	for p in paths:
+		var meta: Dictionary = _asset_meta.get(str(p), {})
+		if meta.get("made_by", "") != first_made_by:
+			first_made_by = MIXED
+		if meta.get("notes", "") != first_notes:
+			first_notes = MIXED
+	var dialog := AcceptDialog.new()
+	dialog.title = "Bulk Edit (%d files)" % paths.size()
+	dialog.size = Vector2i(440, 140)
+	var vbox := VBoxContainer.new()
+	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vbox.add_theme_constant_override("separation", 6)
+	dialog.add_child(vbox)
+	var row := HBoxContainer.new()
+	var lbl := Label.new()
+	lbl.text = "Made by:"
+	lbl.custom_minimum_size = Vector2(70, 0)
+	row.add_child(lbl)
+	var made_by_edit := LineEdit.new()
+	made_by_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if first_made_by == MIXED:
+		made_by_edit.placeholder_text = "(mixed — type to override all)"
+	else:
+		made_by_edit.text = first_made_by
+	row.add_child(made_by_edit)
+	vbox.add_child(row)
+	var notes_row := HBoxContainer.new()
+	var notes_lbl := Label.new()
+	notes_lbl.text = "Notes:"
+	notes_lbl.custom_minimum_size = Vector2(70, 0)
+	notes_row.add_child(notes_lbl)
+	var notes_edit := LineEdit.new()
+	notes_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if first_notes == MIXED:
+		notes_edit.placeholder_text = "(mixed — type to override all)"
+	else:
+		notes_edit.text = first_notes
+	notes_row.add_child(notes_edit)
+	vbox.add_child(notes_row)
+	var orig_mb := first_made_by
+	var orig_n := first_notes
+	dialog.confirmed.connect(func():
+		var new_mb := made_by_edit.text.strip_edges()
+		var new_n := notes_edit.text.strip_edges()
+		var mb_changed: bool = (orig_mb == MIXED and not new_mb.is_empty()) or (orig_mb != MIXED and new_mb != orig_mb)
+		var n_changed: bool = (orig_n == MIXED and not new_n.is_empty()) or (orig_n != MIXED and new_n != orig_n)
+		for p in paths:
+			var ps: String = str(p)
+			var meta: Dictionary = (_asset_meta.get(ps, {}) as Dictionary).duplicate()
+			if mb_changed:
+				if new_mb.is_empty(): meta.erase("made_by") else: meta["made_by"] = new_mb
+			if n_changed:
+				if new_n.is_empty(): meta.erase("notes") else: meta["notes"] = new_n
+			if meta.is_empty(): _asset_meta.erase(ps) else: _asset_meta[ps] = meta
 		_save_asset_meta()
 		_vault_navigate(_vault_current_dir)
 	)
