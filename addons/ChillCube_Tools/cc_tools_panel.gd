@@ -7704,8 +7704,6 @@ func _populate_registry(entries: Array) -> void:
 		name_row.custom_minimum_size = Vector2(0, 0)
 		var name_lbl := Label.new()
 		name_lbl.text = entry.get("name", "")
-		name_lbl.custom_minimum_size = Vector2(0, 0)
-		name_lbl.clip_text = true
 		name_row.add_child(name_lbl)
 
 		for cat: String in entry.get("categories", ["Uncategorized"]):
@@ -9395,8 +9393,8 @@ func _election_eval_takeovers(role: String) -> void:
 		var holder_avg := _election_avg(role, holder)
 		if best_challenger.is_empty() or best_avg <= holder_avg:
 			continue
-		var snap_count := min(snaps.size(), weeks_to_replace)
-		var weeks_ahead := 0
+		var snap_count: int = min(snaps.size(), weeks_to_replace)
+		var weeks_ahead: int = 0
 		for si: int in range(snaps.size() - snap_count, snaps.size()):
 			var snap_avgs: Dictionary = (snaps[si] as Dictionary).get("averages", {}) as Dictionary
 			var h_avg: float = float(snap_avgs.get(holder, 0.0))
