@@ -1488,7 +1488,7 @@ func _plan_generate_script(pa: Dictionary) -> String:
 			for dl in d.split("\n"):
 				lines.append("## " + dl)
 		var ret: String = fn.get("return_type", "void")
-		var sig := "func %s(%s)" % [fn.get("name","_fn"), fn.get("params","")]
+		var sig: String = "func %s(%s)" % [fn.get("name","_fn"), fn.get("params","")]
 		lines.append((sig + " -> " + ret + ":") if ret != "void" else (sig + ":"))
 		lines.append("\tpass")
 		lines.append("")
@@ -2583,7 +2583,7 @@ func _refresh_todo() -> void:
 			lbl.fit_content = true
 			lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			lbl.scroll_active = false
-			var base_color := Color(0.4, 0.4, 0.4) if item.get("done", false) else Color(1, 1, 1)
+			var base_color: Color = Color(0.4, 0.4, 0.4) if item.get("done", false) else Color(1, 1, 1)
 			lbl.push_color(base_color)
 			lbl.append_text(_todo_bbcode(item.get("text", ""), item.get("done", false)))
 			lbl.pop()
@@ -3310,7 +3310,7 @@ func _refresh_vote_list() -> void:
 		for c in _vote_list.get_children():
 			c.queue_free()
 		var hint := Label.new()
-		var has_closed := _vote_items.any(func(v: Dictionary) -> bool: return v.get("closed", false))
+		var has_closed: bool = _vote_items.any(func(v: Dictionary) -> bool: return v.get("closed", false))
 		hint.text = "All votes concluded — see Decision Log." if has_closed else "No votes yet. Use + New Vote to start one."
 		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 		_vote_list.add_child(hint)
@@ -3382,7 +3382,7 @@ func _build_decision_log_tab(tabs: TabContainer) -> void:
 		for uname: String in _decisions_participant_checks:
 			if (_decisions_participant_checks[uname] as CheckBox).button_pressed:
 				participants.append(uname)
-		var me2 := _current_user.get("username", "")
+		var me2: String = _current_user.get("username", "")
 		var decision := {
 			"id": str(int(Time.get_unix_time_from_system())),
 			"type": "manual",
@@ -3446,7 +3446,7 @@ func _populate_decisions_participant_list() -> void:
 		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 		_decisions_participant_list.add_child(hint)
 		return
-	var me2 := _current_user.get("username", "")
+	var me2: String = _current_user.get("username", "")
 	var flow := HFlowContainer.new()
 	flow.add_theme_constant_override("h_separation", 12)
 	for u: Dictionary in _election_members:
@@ -5166,17 +5166,7 @@ func _vault_show_audio(path: String, ext: String) -> void:
 				s.data = bytes
 				stream = s
 		"wav":
-			if ClassDB.class_has_method("AudioStreamWAV", "load_from_file"):
-				stream = AudioStreamWAV.call("load_from_file", path) as AudioStream
-			else:
-				var bytes := FileAccess.get_file_as_bytes(path)
-				if bytes.size() > 0:
-					var user_path := "user://cc_preview_tmp.wav"
-					var fw2 := FileAccess.open(user_path, FileAccess.WRITE)
-					if fw2:
-						fw2.store_buffer(bytes)
-						fw2.close()
-						stream = ResourceLoader.load(ProjectSettings.globalize_path(user_path), "AudioStream", ResourceLoader.CACHE_MODE_IGNORE) as AudioStream
+			stream = AudioStreamWAV.load_from_file(path)
 	if stream:
 		_vault_audio_player.stream = stream
 		_vault_audio_container.visible = true
@@ -5571,7 +5561,7 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 			if s.get("doc_path", "") == _docs_sel_path and s.get("type", "") == "archive_request" and s.get("status", "") == "pending":
 				_docs_status_lbl.text = "⚠ Archive vote already pending."
 				return
-		var me := _current_user.get("username", "?")
+		var me: String = _current_user.get("username", "?")
 		var perm: Dictionary = _docs_permissions.get(_docs_sel_path, {})
 		var sugg: Dictionary = {
 			"id": str(Time.get_unix_time_from_system()) + "_" + me,
@@ -6332,7 +6322,7 @@ func _docs_do_move(dest_rel: String) -> void:
 	if not dest_full.ends_with(".md"):
 		dest_full += ".md"
 	if _docs_requires_vote(src):
-		var me := _current_user.get("username", "?")
+		var me: String = _current_user.get("username", "?")
 		var perm: Dictionary = _docs_permissions.get(src, {})
 		_docs_suggestions.append({
 			"id": str(Time.get_unix_time_from_system()) + "_move_" + me,
@@ -6497,7 +6487,7 @@ func _docs_perm_save() -> void:
 		new_perm.erase("vote_threshold")
 	# If the doc currently requires a vote, changing vote settings itself requires a vote
 	if old_perm.get("require_vote", false):
-		var me := _current_user.get("username", "?")
+		var me: String = _current_user.get("username", "?")
 		_docs_suggestions.append({
 			"id": str(Time.get_unix_time_from_system()) + "_perm_" + me,
 			"doc_path": _docs_perm_path,
@@ -6602,7 +6592,7 @@ func _docs_enter_suggest() -> void:
 func _docs_suggest_submit() -> void:
 	if _docs_sel_path.is_empty():
 		return
-	var me := _current_user.get("username", "?")
+	var me: String = _current_user.get("username", "?")
 	var sugg: Dictionary = {
 		"id": str(Time.get_unix_time_from_system()) + "_" + me,
 		"doc_path": _docs_sel_path,
@@ -6642,7 +6632,7 @@ func _docs_open_review_dialog() -> void:
 func _docs_review_build(full_path: String) -> void:
 	for c in _docs_review_list.get_children():
 		c.queue_free()
-	var me := _current_user.get("username", "?")
+	var me: String = _current_user.get("username", "?")
 	var can_edit := _docs_can_edit(full_path)
 	var found := false
 	for i in range(_docs_suggestions.size()):
@@ -6661,7 +6651,7 @@ func _docs_review_build(full_path: String) -> void:
 		card.add_child(card_vbox)
 		# ── Title row ────────────────────────────────────────────────────────
 		var top_row := HBoxContainer.new()
-		var status_icon := {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(status, "?")
+		var status_icon: String = {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(status, "?")
 		var kind_icon := "🗳" if is_vote else ("🔒" if is_perm_change else ("📦" if is_archive_req else ("📁" if is_move_req else "💡")))
 		var info_lbl := Label.new()
 		info_lbl.text = status_icon + " " + kind_icon + " " + s.get("author", "?") + "  —  " + s.get("timestamp", "")
@@ -6770,7 +6760,7 @@ func _docs_review_approve(idx: int) -> void:
 		var cache := _vault_cache
 		var cap_src := doc_path
 		var cap_dest := dest
-		var me := sugg.get("approved_by", "?")
+		var me: String = sugg.get("approved_by", "?")
 		var doc_name2 := doc_path.get_file().get_basename()
 		_log_activity("doc_suggestion", '"%s" approved archive of: "%s"' % [me, doc_name2])
 		_docs_status_lbl.text = "Archiving…"
@@ -6788,7 +6778,7 @@ func _docs_review_approve(idx: int) -> void:
 		if dest_path.is_empty():
 			return
 		var cache := _vault_cache
-		var me2 := sugg.get("approved_by", "?")
+		var me2: String = sugg.get("approved_by", "?")
 		_log_activity("doc_suggestion", '"%s" approved move of: "%s"' % [me2, doc_path.get_file().get_basename()])
 		_docs_status_lbl.text = "Moving…"
 		_docs_thread = Thread.new()
@@ -6804,7 +6794,7 @@ func _docs_review_approve(idx: int) -> void:
 		_docs_permissions[doc_path] = sugg.get("new_permissions", {})
 		_save_doc_permissions()
 		var doc_name := doc_path.get_file().get_basename()
-		var me := _current_user.get("username", "?")
+		var me: String = _current_user.get("username", "?")
 		_log_activity("doc_suggestion", '"%s" approved permission change for: "%s"' % [me, doc_name])
 		if _docs_sel_path == doc_path:
 			_docs_show_view_buttons(_docs_sel_path)
@@ -6839,7 +6829,7 @@ func _docs_review_reject(idx: int) -> void:
 	_docs_suggestions[idx] = sugg
 	_save_doc_suggestions()
 	var doc_name: String = (sugg.get("doc_path", "") as String).get_file().get_basename()
-	var me := _current_user.get("username", "?")
+	var me: String = _current_user.get("username", "?")
 	_log_activity("doc_suggestion", '"%s" rejected suggestion for: "%s"' % [me, doc_name])
 	_docs_review_build(sugg.get("doc_path", _docs_sel_path))
 	if _docs_sel_path == sugg.get("doc_path", ""):
@@ -6865,7 +6855,7 @@ func _docs_vote_threshold_met(sugg: Dictionary) -> bool:
 
 func _docs_vote_cast(idx: int, vote_yes: bool) -> void:
 	var sugg: Dictionary = _docs_suggestions[idx]
-	var me := _current_user.get("username", "?")
+	var me: String = _current_user.get("username", "?")
 	var votes: Dictionary = sugg.get("votes", {})
 	var yes_list: Array = votes.get("yes", [])
 	var no_list: Array = votes.get("no", [])
@@ -10081,7 +10071,7 @@ func _election_show_settings() -> void:
 		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		lbl.custom_minimum_size = Vector2(220, 0)
 		row.add_child(lbl)
-		var cur := _election_setting(skey, sopts[0][1])
+		var cur: Variant = _election_setting(skey, sopts[0][1])
 		var opt := OptionButton.new()
 		opt.custom_minimum_size = Vector2(160, 0)
 		var sel_idx := 0
@@ -10100,7 +10090,7 @@ func _election_show_settings() -> void:
 			if sel < 0 or sel >= cap_opts.size():
 				return
 			var new_val: Variant = cap_opts[sel][1]
-			var old_val := _election_setting(cap_key, cap_opts[0][1])
+			var old_val: Variant = _election_setting(cap_key, cap_opts[0][1])
 			if new_val == old_val:
 				return
 			_election_submit_pending_vote({
