@@ -139,6 +139,15 @@ var _docs_pending_delete: String = ""
 var _docs_move_dialog: AcceptDialog
 var _docs_move_input: LineEdit
 
+var _docs_permissions: Dictionary = {}  # full_path -> {"mode": "anyone"|"specific", "users": [...]}
+var _docs_perm_btn: Button
+var _docs_perm_dialog: AcceptDialog
+var _docs_perm_mode: OptionButton
+var _docs_perm_user_section: VBoxContainer
+var _docs_perm_user_list: VBoxContainer
+var _docs_perm_input: LineEdit
+var _docs_perm_path: String = ""
+
 var _http: HTTPRequest
 var _registry_list: VBoxContainer
 var _registry_status: Label
@@ -226,6 +235,7 @@ func _ready() -> void:
 	_load_votes()
 	_load_asset_meta()
 	_load_contracts()
+	_load_doc_permissions()
 
 	_login_overlay = _build_login_overlay()
 	_login_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -2622,7 +2632,8 @@ func _cc_data_bundle() -> Dictionary:
 		"schedule.json": JSON.stringify(_schedule_items, "\t") + "\n",
 		"forum.json": JSON.stringify(_forum_items, "\t") + "\n",
 		"contracts.json": JSON.stringify(_contract_items, "\t") + "\n",
-		"deps.json": JSON.stringify(_deps_items, "\t") + "\n"
+		"deps.json": JSON.stringify(_deps_items, "\t") + "\n",
+		"doc_permissions.json": JSON.stringify(_docs_permissions, "\t") + "\n"
 	}
 
 func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
@@ -4629,11 +4640,17 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	_docs_cancel_btn.text = "✕"
 	_docs_cancel_btn.visible = false
 	_docs_cancel_btn.pressed.connect(_docs_exit_edit)
+	_docs_perm_btn = Button.new()
+	_docs_perm_btn.text = "🔒"
+	_docs_perm_btn.tooltip_text = "Edit permissions"
+	_docs_perm_btn.visible = false
+	_docs_perm_btn.pressed.connect(_docs_open_perm_dialog)
 	doc_header.add_child(_docs_title_lbl)
 	doc_header.add_child(_docs_edit_btn)
 	doc_header.add_child(_docs_delete_header_btn)
 	doc_header.add_child(_docs_save_btn)
 	doc_header.add_child(_docs_cancel_btn)
+	doc_header.add_child(_docs_perm_btn)
 	_docs_view_panel.add_child(doc_header)
 	_docs_view_panel.add_child(HSeparator.new())
 
@@ -4730,6 +4747,49 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 			_docs_do_move(dest)
 	)
 	add_child(_docs_move_dialog)
+
+	_docs_perm_dialog = AcceptDialog.new()
+	_docs_perm_dialog.title = "Document Permissions"
+	_docs_perm_dialog.size = Vector2i(380, 300)
+	var perm_vbox := VBoxContainer.new()
+	perm_vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_docs_perm_dialog.add_child(perm_vbox)
+	var perm_mode_lbl := Label.new()
+	perm_mode_lbl.text = "Who can edit this document?"
+	perm_vbox.add_child(perm_mode_lbl)
+	_docs_perm_mode = OptionButton.new()
+	_docs_perm_mode.add_item("Anyone")
+	_docs_perm_mode.add_item("Specific users only")
+	perm_vbox.add_child(_docs_perm_mode)
+	_docs_perm_user_section = VBoxContainer.new()
+	var perm_user_section := _docs_perm_user_section
+	perm_vbox.add_child(perm_user_section)
+	var perm_users_lbl := Label.new()
+	perm_users_lbl.text = "Allowed users:"
+	perm_users_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	perm_user_section.add_child(perm_users_lbl)
+	var perm_scroll := ScrollContainer.new()
+	perm_scroll.custom_minimum_size = Vector2(0, 100)
+	perm_user_section.add_child(perm_scroll)
+	_docs_perm_user_list = VBoxContainer.new()
+	_docs_perm_user_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	perm_scroll.add_child(_docs_perm_user_list)
+	var perm_add_row := HBoxContainer.new()
+	_docs_perm_input = LineEdit.new()
+	_docs_perm_input.placeholder_text = "Username"
+	_docs_perm_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var perm_add_btn := Button.new()
+	perm_add_btn.text = "+ Add"
+	perm_add_btn.pressed.connect(_docs_perm_add_user)
+	perm_add_row.add_child(_docs_perm_input)
+	perm_add_row.add_child(perm_add_btn)
+	perm_user_section.add_child(perm_add_row)
+	_docs_perm_mode.item_selected.connect(func(idx: int):
+		if is_instance_valid(_docs_perm_user_section):
+			_docs_perm_user_section.visible = idx == 1
+	)
+	_docs_perm_dialog.confirmed.connect(_docs_perm_save)
+	add_child(_docs_perm_dialog)
 
 	_docs_navigate("")
 
@@ -4866,6 +4926,7 @@ func _docs_select(full_path: String) -> void:
 	_docs_title_lbl.add_theme_color_override("font_color", Color(0.9, 0.9, 0.9))
 	_docs_edit_btn.visible = false
 	_docs_delete_header_btn.visible = false
+	_docs_perm_btn.visible = false
 	_docs_save_btn.visible = false
 	_docs_cancel_btn.visible = false
 	_docs_status_lbl.text = "Loading…"
@@ -4898,8 +4959,10 @@ func _docs_on_loaded(tmp_file: String) -> void:
 	_docs_loaded_content = f.get_as_text()
 	f.close()
 	_docs_view.parse_bbcode(_md_to_bbcode(_docs_loaded_content))
-	_docs_edit_btn.visible = true
-	_docs_delete_header_btn.visible = true
+	var can_edit := _docs_can_edit(_docs_sel_path)
+	_docs_edit_btn.visible = can_edit
+	_docs_delete_header_btn.visible = can_edit
+	_docs_perm_btn.visible = true
 
 func _docs_enter_edit() -> void:
 	_docs_editor.text = _docs_loaded_content
@@ -5035,8 +5098,10 @@ func _docs_on_created(full_path: String, content: String) -> void:
 	_docs_view.parse_bbcode(_md_to_bbcode(content))
 	_docs_view_scroll.visible = true
 	_docs_editor.visible = false
-	_docs_edit_btn.visible = true
-	_docs_delete_header_btn.visible = true
+	var can_edit := _docs_can_edit(full_path)
+	_docs_edit_btn.visible = can_edit
+	_docs_delete_header_btn.visible = can_edit
+	_docs_perm_btn.visible = true
 	_docs_save_btn.visible = false
 	_docs_cancel_btn.visible = false
 
@@ -5090,6 +5155,7 @@ func _docs_on_deleted(full_path: String) -> void:
 		_docs_view.text = ""
 		_docs_edit_btn.visible = false
 		_docs_delete_header_btn.visible = false
+		_docs_perm_btn.visible = false
 	_docs_navigate(_docs_current_dir)
 
 func _docs_do_move(dest_rel: String) -> void:
@@ -5123,6 +5189,103 @@ func _docs_on_moved(old_path: String, new_path: String) -> void:
 	if folder == ".":
 		folder = ""
 	_docs_navigate(folder)
+
+# ─── Docs permissions ─────────────────────────────────────────────────────────
+
+func _docs_perm_file() -> String:
+	return ProjectSettings.globalize_path("user://cc_doc_permissions.json")
+
+func _load_doc_permissions() -> void:
+	_docs_permissions = {}
+	var path := _docs_perm_file()
+	if not FileAccess.file_exists(path):
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if not f:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if parsed is Dictionary:
+		_docs_permissions = parsed
+
+func _save_doc_permissions() -> void:
+	var fw := FileAccess.open(_docs_perm_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(_docs_permissions, "\t") + "\n")
+		fw.close()
+	_activity_auto_push()
+
+func _docs_can_edit(full_path: String) -> bool:
+	var perm: Dictionary = _docs_permissions.get(full_path, {})
+	if perm.get("mode", "anyone") == "anyone":
+		return true
+	var users: Array = perm.get("users", [])
+	var me: String = _current_user.get("username", "")
+	return me.is_empty() or me in users
+
+func _docs_open_perm_dialog() -> void:
+	if _docs_sel_path.is_empty():
+		return
+	_docs_perm_path = _docs_sel_path
+	var perm: Dictionary = _docs_permissions.get(_docs_perm_path, {})
+	var mode: String = perm.get("mode", "anyone")
+	_docs_perm_mode.select(0 if mode == "anyone" else 1)
+	_docs_perm_user_section.visible = mode == "specific"
+	_docs_perm_refresh_users(perm.get("users", []))
+	_docs_perm_input.text = ""
+	_docs_perm_dialog.popup_centered()
+
+func _docs_perm_refresh_users(users: Array) -> void:
+	for c in _docs_perm_user_list.get_children():
+		c.queue_free()
+	for u: String in users:
+		var cap_u := u
+		var row := HBoxContainer.new()
+		var lbl := Label.new()
+		lbl.text = cap_u
+		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var rm := Button.new()
+		rm.text = "✕"
+		rm.flat = true
+		rm.pressed.connect(func():
+			var perm: Dictionary = _docs_permissions.get(_docs_perm_path, {})
+			var lst: Array = perm.get("users", [])
+			lst.erase(cap_u)
+			perm["users"] = lst
+			_docs_permissions[_docs_perm_path] = perm
+			_docs_perm_refresh_users(lst)
+		)
+		row.add_child(lbl)
+		row.add_child(rm)
+		_docs_perm_user_list.add_child(row)
+
+func _docs_perm_add_user() -> void:
+	var username := _docs_perm_input.text.strip_edges()
+	if username.is_empty():
+		return
+	var perm: Dictionary = _docs_permissions.get(_docs_perm_path, {})
+	var users: Array = perm.get("users", [])
+	if username not in users:
+		users.append(username)
+	perm["users"] = users
+	_docs_permissions[_docs_perm_path] = perm
+	_docs_perm_input.text = ""
+	_docs_perm_refresh_users(users)
+
+func _docs_perm_save() -> void:
+	if _docs_perm_path.is_empty():
+		return
+	var perm: Dictionary = _docs_permissions.get(_docs_perm_path, {})
+	perm["mode"] = "anyone" if _docs_perm_mode.selected == 0 else "specific"
+	if perm["mode"] == "anyone":
+		perm.erase("users")
+	_docs_permissions[_docs_perm_path] = perm
+	_save_doc_permissions()
+	# Refresh Edit/Delete visibility for current doc
+	if _docs_sel_path == _docs_perm_path:
+		var can_edit := _docs_can_edit(_docs_sel_path)
+		_docs_edit_btn.visible = can_edit
+		_docs_delete_header_btn.visible = can_edit
 
 # ─── Markdown renderer ────────────────────────────────────────────────────────
 
