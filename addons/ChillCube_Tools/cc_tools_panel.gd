@@ -108,6 +108,7 @@ var _vault_video_play_btn: Button
 var _vault_preview_unsupported: Label
 var _vault_preview_loading_lbl: Label
 var _vault_preview_thread: Thread = null
+var _vault_gif_frame_container: HFlowContainer
 var _vault_move_dialog: AcceptDialog
 var _vault_move_dest_input: LineEdit
 var _vault_newdir_dialog: AcceptDialog
@@ -4492,7 +4493,9 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 
 	# ── Left: browser ─────────────────────────────────────────────────────────
 	var left := VBoxContainer.new()
-	left.custom_minimum_size = Vector2(220, 0)
+	left.custom_minimum_size = Vector2(320, 0)
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left.size_flags_stretch_ratio = 0.45
 	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
 	# Path + action buttons row
@@ -4552,6 +4555,7 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	# ── Right: preview ────────────────────────────────────────────────────────
 	_vault_preview_panel = VBoxContainer.new()
 	_vault_preview_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vault_preview_panel.size_flags_stretch_ratio = 0.55
 	_vault_preview_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
 	_vault_preview_name_lbl = Label.new()
@@ -4631,6 +4635,13 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	_vault_preview_unsupported.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_vault_preview_unsupported.visible = false
 	preview_inner.add_child(_vault_preview_unsupported)
+
+	_vault_gif_frame_container = HFlowContainer.new()
+	_vault_gif_frame_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vault_gif_frame_container.add_theme_constant_override("h_separation", 4)
+	_vault_gif_frame_container.add_theme_constant_override("v_separation", 4)
+	_vault_gif_frame_container.visible = false
+	preview_inner.add_child(_vault_gif_frame_container)
 
 	split.add_child(_vault_preview_panel)
 	root.add_child(split)
@@ -4995,11 +5006,21 @@ func _vault_request_preview(rel_path: String) -> void:
 	var tmp_dir := OS.get_temp_dir() + "/cc_vault_preview"
 	DirAccess.make_dir_recursive_absolute(tmp_dir)
 	_vault_preview_thread = Thread.new()
-	_vault_preview_thread.start(func():
-		Ops.vault_download_file(cache, rel_path, tmp_dir, Callable())
-		var tmp_path := tmp_dir + "/" + rel_path.get_file()
-		call_deferred("_vault_on_preview_ready", tmp_path, ext)
-	)
+	if ext == "gif":
+		var gif_stem := rel_path.get_basename().get_file()
+		_vault_preview_thread.start(func():
+			Ops.vault_download_file(cache, rel_path, tmp_dir, Callable())
+			var tmp_gif: String = tmp_dir + "/" + rel_path.get_file()
+			var frames_dir: String = tmp_dir + "/frames_" + gif_stem
+			var n := Ops.vault_gif_to_pngs(tmp_gif, frames_dir, Callable())
+			call_deferred("_vault_on_gif_preview_ready", frames_dir, n, tmp_gif)
+		)
+	else:
+		_vault_preview_thread.start(func():
+			Ops.vault_download_file(cache, rel_path, tmp_dir, Callable())
+			var tmp_path := tmp_dir + "/" + rel_path.get_file()
+			call_deferred("_vault_on_preview_ready", tmp_path, ext)
+		)
 
 func _vault_on_preview_ready(tmp_path: String, ext: String) -> void:
 	if _vault_preview_thread and _vault_preview_thread.is_started():
@@ -5015,14 +5036,53 @@ func _vault_on_preview_ready(tmp_path: String, ext: String) -> void:
 	var VIDEO_EXTS := ["ogv", "webm", "mp4"]
 	if ext in IMAGE_EXTS:
 		_vault_show_image(tmp_path)
-		if ext == "gif":
-			_vault_preview_name_lbl.text += "  (first frame — animated on download)"
 	elif ext in AUDIO_EXTS:
 		_vault_show_audio(tmp_path, ext)
 	elif ext in VIDEO_EXTS:
 		_vault_show_video(tmp_path, ext)
 	else:
 		_vault_show_text(tmp_path)
+
+func _vault_on_gif_preview_ready(frames_dir: String, count: int, fallback_gif: String) -> void:
+	if _vault_preview_thread and _vault_preview_thread.is_started():
+		_vault_preview_thread.wait_to_finish()
+	_vault_preview_thread = null
+	_vault_preview_loading_lbl.visible = false
+	if count == 0:
+		var img := Image.new()
+		if img.load(fallback_gif) == OK:
+			_vault_img_rect.texture = ImageTexture.create_from_image(img)
+			_vault_img_rect.visible = true
+			_vault_preview_name_lbl.text += "  (first frame — install ffmpeg for all frames)"
+		else:
+			_vault_preview_unsupported.text = "Could not preview GIF (install ffmpeg for frame extraction)."
+			_vault_preview_unsupported.visible = true
+		return
+	_vault_preview_name_lbl.text += "  (%d frames)" % count
+	const THUMB := 64
+	for i in range(count):
+		var frame_path: String = frames_dir + "/frame_%04d.png" % (i + 1)
+		var img := Image.new()
+		if img.load(frame_path) != OK:
+			continue
+		var w := img.get_width()
+		var h := img.get_height()
+		var scale := float(THUMB) / float(max(w, h))
+		img.resize(int(w * scale), int(h * scale), Image.INTERPOLATE_NEAREST)
+		var tex := ImageTexture.create_from_image(img)
+		var frame_box := VBoxContainer.new()
+		var rect := TextureRect.new()
+		rect.texture = tex
+		rect.custom_minimum_size = Vector2(THUMB, THUMB)
+		rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		frame_box.add_child(rect)
+		var num_lbl := Label.new()
+		num_lbl.text = str(i + 1)
+		num_lbl.add_theme_font_size_override("font_size", 9)
+		num_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		frame_box.add_child(num_lbl)
+		_vault_gif_frame_container.add_child(frame_box)
+	_vault_gif_frame_container.visible = true
 
 func _vault_clear_preview() -> void:
 	if _vault_audio_player and _vault_audio_player.playing:
@@ -5045,6 +5105,10 @@ func _vault_clear_preview() -> void:
 		_vault_video_player.stop()
 	if _vault_preview_unsupported:
 		_vault_preview_unsupported.visible = false
+	if _vault_gif_frame_container:
+		for c in _vault_gif_frame_container.get_children():
+			c.queue_free()
+		_vault_gif_frame_container.visible = false
 
 func _vault_show_image(path: String) -> void:
 	var img := Image.new()
