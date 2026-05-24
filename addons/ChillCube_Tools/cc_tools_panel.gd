@@ -189,6 +189,10 @@ var _activity_comments_open: Dictionary = {}  # idx -> bool
 var _vote_items: Array = []
 var _vote_list: VBoxContainer
 var _decision_log_list: VBoxContainer
+var _decisions_status_lbl: Label
+var _decisions_create_box: VBoxContainer
+var _decisions_participant_list: VBoxContainer
+var _decisions_participant_checks: Dictionary = {}
 var _vote_status_lbl: Label
 var _vote_create_box: Control
 var _vote_thread: Thread = null
@@ -3311,6 +3315,111 @@ func _refresh_vote_list() -> void:
 
 func _build_decision_log_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Decisions", tabs)
+
+	var toolbar := HBoxContainer.new()
+	var new_btn := Button.new()
+	new_btn.text = "📋 Add Decision"
+	_decisions_status_lbl = Label.new()
+	_decisions_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_decisions_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+	toolbar.add_child(new_btn)
+	toolbar.add_child(_decisions_status_lbl)
+	root.add_child(toolbar)
+
+	# ── Create form ─────────────────────────────────────────────────────────────
+	_decisions_create_box = VBoxContainer.new()
+	_decisions_create_box.visible = false
+	_decisions_create_box.add_theme_constant_override("separation", 4)
+
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 4)
+
+	var t_lbl := Label.new(); t_lbl.text = "Title *"
+	var t_field := LineEdit.new()
+	t_field.placeholder_text = "What was decided"
+	t_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_child(t_lbl); grid.add_child(t_field)
+
+	var r_lbl := Label.new(); r_lbl.text = "Outcome *"
+	var r_field := LineEdit.new()
+	r_field.placeholder_text = "The result of the decision"
+	r_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_child(r_lbl); grid.add_child(r_field)
+
+	var n_lbl := Label.new(); n_lbl.text = "Notes"
+	var n_field := TextEdit.new()
+	n_field.placeholder_text = "Optional context or rationale"
+	n_field.custom_minimum_size = Vector2(0, 52)
+	n_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_child(n_lbl); grid.add_child(n_field)
+
+	_decisions_create_box.add_child(grid)
+
+	var p_hdr := Label.new()
+	p_hdr.text = "Members present at the decision:"
+	p_hdr.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	_decisions_create_box.add_child(p_hdr)
+
+	_decisions_participant_list = VBoxContainer.new()
+	_decisions_create_box.add_child(_decisions_participant_list)
+
+	var create_btn := Button.new()
+	create_btn.text = "📋 Post Decision"
+	create_btn.pressed.connect(func():
+		var title := t_field.text.strip_edges()
+		var outcome := r_field.text.strip_edges()
+		if title.is_empty() or outcome.is_empty():
+			_decisions_status_lbl.text = "Title and outcome are required."
+			return
+		var participants: Array = []
+		for uname: String in _decisions_participant_checks:
+			if (_decisions_participant_checks[uname] as CheckBox).button_pressed:
+				participants.append(uname)
+		var me2 := _current_user.get("username", "")
+		var decision := {
+			"id": str(int(Time.get_unix_time_from_system())),
+			"type": "manual",
+			"title": title,
+			"result": outcome,
+			"description": n_field.text.strip_edges(),
+			"created_by": me2,
+			"created_at": Time.get_datetime_string_from_system(),
+			"closed": true,
+			"closed_at": Time.get_datetime_string_from_system(),
+			"closed_at_unix": int(Time.get_unix_time_from_system()),
+			"close_reason": "manual",
+			"participants": participants,
+			"confirmations": ([me2] if me2 in participants else []),
+			"extra_approvals": [],
+			"revote_count": 0,
+			"revote_requesters": [],
+			"history": []
+		}
+		_vote_items.insert(0, decision)
+		_save_votes()
+		_log_activity("decision_posted",
+			'"%s" posted manual decision: "%s" → %s' % [me2, title, outcome])
+		t_field.text = ""; r_field.text = ""; n_field.text = ""
+		_decisions_create_box.visible = false
+		_decisions_status_lbl.text = "✅ Decision posted"
+		get_tree().create_timer(3.0).timeout.connect(func():
+			if is_instance_valid(_decisions_status_lbl): _decisions_status_lbl.text = ""
+		)
+		_refresh_decision_log()
+	)
+	_decisions_create_box.add_child(create_btn)
+	root.add_child(_decisions_create_box)
+	root.add_child(HSeparator.new())
+
+	new_btn.pressed.connect(func():
+		_decisions_create_box.visible = not _decisions_create_box.visible
+		if _decisions_create_box.visible:
+			_populate_decisions_participant_list()
+	)
+
+	# ── List ──────────────────────────────────────────────────────────────────
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -3320,161 +3429,364 @@ func _build_decision_log_tab(tabs: TabContainer) -> void:
 	scroll.add_child(_decision_log_list)
 	root.add_child(scroll)
 
+func _populate_decisions_participant_list() -> void:
+	if not is_instance_valid(_decisions_participant_list):
+		return
+	for c in _decisions_participant_list.get_children():
+		c.queue_free()
+	_decisions_participant_checks.clear()
+	if _election_members.is_empty():
+		var hint := Label.new()
+		hint.text = "No members loaded yet — open the Elections tab first."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_decisions_participant_list.add_child(hint)
+		return
+	var me2 := _current_user.get("username", "")
+	var flow := HFlowContainer.new()
+	flow.add_theme_constant_override("h_separation", 12)
+	for u: Dictionary in _election_members:
+		var uname: String = u.get("username", "")
+		if uname.is_empty():
+			continue
+		var cb := CheckBox.new()
+		cb.text = uname
+		cb.button_pressed = (uname == me2)
+		_decisions_participant_checks[uname] = cb
+		flow.add_child(cb)
+	_decisions_participant_list.add_child(flow)
+
+func _find_vote_by_id(id: String) -> Dictionary:
+	for v: Dictionary in _vote_items:
+		if v.get("id", "") == id:
+			return v
+	return {}
+
 func _refresh_decision_log() -> void:
 	if not is_instance_valid(_decision_log_list):
 		return
 	for c in _decision_log_list.get_children():
 		c.queue_free()
 
-	var closed_votes: Array = []
+	var closed_items: Array = []
 	for i in range(_vote_items.size()):
-		if (_vote_items[i] as Dictionary).get("closed", false):
-			closed_votes.append({"vote": _vote_items[i], "idx": i})
-	closed_votes.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var v: Dictionary = _vote_items[i]
+		# Exclude challenge meta-votes — they surface through the manual decision card
+		if v.get("closed", false) and v.get("type", "") != "challenge":
+			closed_items.append({"vote": v, "idx": i})
+	closed_items.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return (a["vote"].get("closed_at", "") as String) > (b["vote"].get("closed_at", "") as String)
 	)
 
-	if closed_votes.is_empty():
+	if closed_items.is_empty():
 		var hint := Label.new()
-		hint.text = "No concluded votes yet."
+		hint.text = "No concluded votes or decisions yet."
 		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 		_decision_log_list.add_child(hint)
 		return
 
 	var me: String = _current_user.get("username", "")
+	var total_members: int = max(_election_members.size(), int(_election_setting("cached_member_count", 1)))
 
-	for entry: Dictionary in closed_votes:
+	for entry: Dictionary in closed_items:
 		var vote: Dictionary = entry["vote"]
 		var cap_i: int = entry["idx"]
-		var title: String = vote.get("title", "Untitled")
-		var result: String = vote.get("result", "")
-		var closed_at: String = vote.get("closed_at", "")
-		var close_reason: String = vote.get("close_reason", "")
-		var revote_count: int = int(vote.get("revote_count", 0))
-		var requesters: Array = vote.get("revote_requesters", [])
-		var history: Array = vote.get("history", [])
-		var threshold: int = revote_count + 1
-
 		var panel := PanelContainer.new()
 		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		var cvbox := VBoxContainer.new()
 		cvbox.add_theme_constant_override("separation", 4)
 		panel.add_child(cvbox)
-
-		# Title + current result
-		var header_lbl := RichTextLabel.new()
-		header_lbl.bbcode_enabled = true
-		header_lbl.fit_content = true
-		var rv_tag := (" [color=#888](revote #%d)[/color]" % revote_count) if revote_count > 0 else ""
-		header_lbl.text = "[b]%s[/b]%s  →  [color=#66bb6a]%s[/color]" % [title, rv_tag, result]
-		cvbox.add_child(header_lbl)
-
-		# Meta
-		var close_note := "majority vote" if close_reason == "majority" else "deadline"
-		var meta_lbl := Label.new()
-		meta_lbl.text = "Decided by %s  ·  %s" % [close_note, closed_at.substr(0, 16)]
-		meta_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
-		meta_lbl.add_theme_font_size_override("font_size", 11)
-		cvbox.add_child(meta_lbl)
-
-		# History of previous decisions
-		if not history.is_empty():
-			var hist_header := Label.new()
-			hist_header.text = "Previous:"
-			hist_header.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
-			hist_header.add_theme_font_size_override("font_size", 11)
-			cvbox.add_child(hist_header)
-			for h: Dictionary in history:
-				var hl := Label.new()
-				hl.text = "  • %s  (%s)" % [h.get("result", "?"), (h.get("closed_at", "") as String).substr(0, 16)]
-				hl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
-				hl.add_theme_font_size_override("font_size", 11)
-				cvbox.add_child(hl)
-
-		# Revote section
-		var already_requested: bool = me in requesters
-		var closed_at_unix: int = int(vote.get("closed_at_unix", 0))
-		var can_revote := true
-		var hours_left := 0.0
-		if closed_at_unix > 0:
-			var elapsed := float(int(Time.get_unix_time_from_system()) - closed_at_unix) / 3600.0
-			if elapsed < float(REVOTE_TIMEOUT_HOURS):
-				can_revote = false
-				hours_left = float(REVOTE_TIMEOUT_HOURS) - elapsed
-
-		var revote_row := HBoxContainer.new()
-		if not can_revote:
-			var wait_lbl := Label.new()
-			wait_lbl.text = "⏳ Revote available in %.0fh" % ceili(hours_left)
-			wait_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
-			wait_lbl.add_theme_font_size_override("font_size", 11)
-			revote_row.add_child(wait_lbl)
+		if vote.get("type", "") == "manual":
+			_render_manual_decision_card(cvbox, cap_i, vote, me, total_members)
 		else:
-			var tally_lbl := Label.new()
-			tally_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			tally_lbl.add_theme_font_size_override("font_size", 11)
-			if requesters.is_empty():
-				tally_lbl.text = "Need %d to revote" % threshold
-			else:
-				tally_lbl.text = "%d/%d requested revote" % [requesters.size(), threshold]
-			tally_lbl.add_theme_color_override("font_color",
-				Color(0.4, 0.8, 0.5) if already_requested else Color(0.5, 0.5, 0.5))
-			revote_row.add_child(tally_lbl)
-
-			if not already_requested:
-				var revote_btn := Button.new()
-				revote_btn.text = "🔄 Revote"
-				revote_btn.add_theme_font_size_override("font_size", 11)
-				revote_btn.disabled = me.is_empty()
-				revote_btn.tooltip_text = "Log in to request a revote" if me.is_empty() else \
-					"Request a revote (need %d, have %d)" % [threshold, requesters.size()]
-				var cap_idx := cap_i
-				revote_btn.pressed.connect(func():
-					if me.is_empty():
-						return
-					var v: Dictionary = _vote_items[cap_idx]
-					var req: Array = v.get("revote_requesters", [])
-					if me in req:
-						return
-					req.append(me)
-					v["revote_requesters"] = req
-					var thresh: int = int(v.get("revote_count", 0)) + 1
-					if req.size() >= thresh:
-						# Quorum reached — reopen the vote
-						var hist: Array = v.get("history", [])
-						hist.append({
-							"result": v.get("result", ""),
-							"closed_at": v.get("closed_at", ""),
-							"close_reason": v.get("close_reason", "")
-						})
-						v["history"] = hist
-						v["revote_count"] = int(v.get("revote_count", 0)) + 1
-						v["closed"] = false
-						v["result"] = ""
-						v["closed_at"] = ""
-						v["closed_at_unix"] = 0
-						v["close_reason"] = ""
-						v["votes"] = {}
-						v["revote_requesters"] = []
-						_vote_items[cap_idx] = v
-						_save_votes()
-						_log_activity("vote_revote",
-							'Vote "%s" reopened for revote #%d (triggered by %s)' % [
-							v.get("title", ""), v.get("revote_count", 0), me])
-						_refresh_vote_list()
-					else:
-						v["revote_requesters"] = req
-						_vote_items[cap_idx] = v
-						_save_votes()
-						_log_activity("vote_revote_request",
-							'%s requested a revote on "%s" (%d/%d)' % [
-							me, v.get("title", ""), req.size(), thresh])
-						_refresh_decision_log()
-				)
-				revote_row.add_child(revote_btn)
-
-		cvbox.add_child(revote_row)
+			_render_concluded_vote_card(cvbox, cap_i, vote, me)
 		_decision_log_list.add_child(panel)
+
+func _render_manual_decision_card(cvbox: VBoxContainer, cap_i: int, vote: Dictionary, me: String, total_members: int) -> void:
+	var title: String = vote.get("title", "Untitled")
+	var result: String = vote.get("result", "")
+	var description: String = vote.get("description", "")
+	var created_by: String = vote.get("created_by", "?")
+	var created_at: String = vote.get("created_at", "")
+	var participants: Array = vote.get("participants", [])
+	var confirmations: Array = vote.get("confirmations", [])
+	var extra_approvals: Array = vote.get("extra_approvals", [])
+	var challenge_id: String = vote.get("challenge_vote_id", "")
+	var challenge_vote: Dictionary = {} if challenge_id.is_empty() else _find_vote_by_id(challenge_id)
+	var challenge_closed: bool = challenge_vote.get("closed", false)
+	var overturned: bool = challenge_closed and challenge_vote.get("result", "") == "Override"
+
+	# Title + outcome
+	var header_lbl := RichTextLabel.new()
+	header_lbl.bbcode_enabled = true
+	header_lbl.fit_content = true
+	header_lbl.text = "[b]%s[/b]  [color=#888][MANUAL][/color]  →  [color=%s]%s[/color]%s" % [
+		title,
+		"#aaaaaa" if overturned else "#66bb6a",
+		result,
+		"  [color=#ff6b6b][OVERTURNED][/color]" if overturned else ""]
+	cvbox.add_child(header_lbl)
+
+	# Meta
+	var meta_lbl := Label.new()
+	meta_lbl.text = "by %s  ·  %s" % [created_by, created_at.substr(0, 16)]
+	meta_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+	meta_lbl.add_theme_font_size_override("font_size", 11)
+	cvbox.add_child(meta_lbl)
+
+	if not description.is_empty():
+		var desc_lbl := Label.new()
+		desc_lbl.text = description
+		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		desc_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+		cvbox.add_child(desc_lbl)
+
+	# Participants with confirmation status
+	if not participants.is_empty():
+		var parts_row := HFlowContainer.new()
+		parts_row.add_theme_constant_override("h_separation", 8)
+		var parts_hdr := Label.new()
+		parts_hdr.text = "Present:"
+		parts_hdr.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+		parts_hdr.add_theme_font_size_override("font_size", 11)
+		parts_row.add_child(parts_hdr)
+		for p: String in participants:
+			var confirmed: bool = p in confirmations
+			var pl := Label.new()
+			pl.text = ("✅ " if confirmed else "⏳ ") + p
+			pl.add_theme_font_size_override("font_size", 11)
+			pl.add_theme_color_override("font_color",
+				Color(0.4, 0.85, 0.5) if confirmed else Color(0.65, 0.65, 0.65))
+			parts_row.add_child(pl)
+		cvbox.add_child(parts_row)
+
+	# Approval tally
+	var all_approvals: Array = confirmations.duplicate()
+	for ea: String in extra_approvals:
+		if ea not in all_approvals:
+			all_approvals.append(ea)
+	var majority: bool = all_approvals.size() * 2 > total_members
+	var tally_lbl := Label.new()
+	tally_lbl.text = "%d/%d approved%s" % [all_approvals.size(), total_members,
+		"  ✅ majority reached" if majority else ""]
+	tally_lbl.add_theme_color_override("font_color",
+		Color(0.4, 0.85, 0.5) if majority else Color(0.55, 0.55, 0.55))
+	tally_lbl.add_theme_font_size_override("font_size", 11)
+	cvbox.add_child(tally_lbl)
+
+	# Action buttons
+	var btn_row := HBoxContainer.new()
+	btn_row.add_theme_constant_override("separation", 8)
+
+	if not me.is_empty():
+		# Confirm presence (participant only, not yet confirmed)
+		if me in participants and me not in confirmations:
+			var confirm_btn := Button.new()
+			confirm_btn.text = "✅ Confirm I was present"
+			confirm_btn.add_theme_font_size_override("font_size", 11)
+			var cap_idx := cap_i
+			confirm_btn.pressed.connect(func():
+				var v: Dictionary = _vote_items[cap_idx]
+				var conf: Array = v.get("confirmations", [])
+				if me not in conf:
+					conf.append(me)
+					v["confirmations"] = conf
+					_vote_items[cap_idx] = v
+					_save_votes()
+					_log_activity("decision_confirmed",
+						'%s confirmed presence in: "%s"' % [me, v.get("title", "")])
+				_refresh_decision_log()
+			)
+			btn_row.add_child(confirm_btn)
+
+		# Add approval (anyone, while below majority)
+		if not majority and me not in all_approvals:
+			var approve_btn := Button.new()
+			approve_btn.text = "👍 Add My Approval"
+			approve_btn.add_theme_font_size_override("font_size", 11)
+			approve_btn.tooltip_text = "Endorse this decision even if you weren't present"
+			var cap_idx2 := cap_i
+			approve_btn.pressed.connect(func():
+				var v: Dictionary = _vote_items[cap_idx2]
+				var ea: Array = v.get("extra_approvals", [])
+				if me not in ea:
+					ea.append(me)
+					v["extra_approvals"] = ea
+					_vote_items[cap_idx2] = v
+					_save_votes()
+					_log_activity("decision_approved",
+						'%s endorsed decision: "%s"' % [me, v.get("title", "")])
+				_refresh_decision_log()
+			)
+			btn_row.add_child(approve_btn)
+
+	# Challenge section
+	if challenge_vote.is_empty():
+		if not me.is_empty():
+			var chal_btn := Button.new()
+			chal_btn.text = "⚠ Request Vote"
+			chal_btn.add_theme_font_size_override("font_size", 11)
+			chal_btn.tooltip_text = "Open a formal vote to challenge this decision"
+			var cap_decision_id: String = vote.get("id", "")
+			chal_btn.pressed.connect(func():
+				var chal_id := str(int(Time.get_unix_time_from_system())) + "_chal"
+				var chal_vote := {
+					"id": chal_id,
+					"type": "challenge",
+					"title": "Challenge: " + vote.get("title", ""),
+					"description": 'Should "%s → %s" be overridden?' % [
+						vote.get("title", ""), vote.get("result", "")],
+					"created_by": me,
+					"created_at": Time.get_datetime_string_from_system(),
+					"deadline": "",
+					"options": ["Uphold", "Override"],
+					"votes": {},
+					"closed": false
+				}
+				_vote_items.insert(0, chal_vote)
+				for j in range(_vote_items.size()):
+					if (_vote_items[j] as Dictionary).get("id", "") == cap_decision_id:
+						var upd: Dictionary = _vote_items[j]
+						upd["challenge_vote_id"] = chal_id
+						_vote_items[j] = upd
+						break
+				_save_votes()
+				_log_activity("decision_challenged",
+					'%s challenged decision: "%s"' % [me, vote.get("title", "")])
+				_refresh_vote_list()
+			)
+			btn_row.add_child(chal_btn)
+	elif not challenge_closed:
+		var lbl := Label.new()
+		lbl.text = "⚠ Challenge vote open — see Votes tab"
+		lbl.add_theme_color_override("font_color", Color(1.0, 0.75, 0.3))
+		lbl.add_theme_font_size_override("font_size", 11)
+		btn_row.add_child(lbl)
+	elif overturned:
+		var lbl := Label.new()
+		lbl.text = "Overturned by vote"
+		lbl.add_theme_color_override("font_color", Color(1.0, 0.5, 0.5))
+		lbl.add_theme_font_size_override("font_size", 11)
+		btn_row.add_child(lbl)
+	else:
+		var lbl := Label.new()
+		lbl.text = "✅ Challenge rejected — decision upheld"
+		lbl.add_theme_color_override("font_color", Color(0.4, 0.85, 0.5))
+		lbl.add_theme_font_size_override("font_size", 11)
+		btn_row.add_child(lbl)
+
+	if btn_row.get_child_count() > 0:
+		cvbox.add_child(btn_row)
+
+func _render_concluded_vote_card(cvbox: VBoxContainer, cap_i: int, vote: Dictionary, me: String) -> void:
+	var title: String = vote.get("title", "Untitled")
+	var result: String = vote.get("result", "")
+	var closed_at: String = vote.get("closed_at", "")
+	var close_reason: String = vote.get("close_reason", "")
+	var revote_count: int = int(vote.get("revote_count", 0))
+	var requesters: Array = vote.get("revote_requesters", [])
+	var history: Array = vote.get("history", [])
+	var threshold: int = revote_count + 1
+
+	var header_lbl := RichTextLabel.new()
+	header_lbl.bbcode_enabled = true
+	header_lbl.fit_content = true
+	var rv_tag := (" [color=#888](revote #%d)[/color]" % revote_count) if revote_count > 0 else ""
+	header_lbl.text = "[b]%s[/b]%s  →  [color=#66bb6a]%s[/color]" % [title, rv_tag, result]
+	cvbox.add_child(header_lbl)
+
+	var close_note := "majority vote" if close_reason == "majority" else "deadline"
+	var meta_lbl := Label.new()
+	meta_lbl.text = "Decided by %s  ·  %s" % [close_note, closed_at.substr(0, 16)]
+	meta_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+	meta_lbl.add_theme_font_size_override("font_size", 11)
+	cvbox.add_child(meta_lbl)
+
+	if not history.is_empty():
+		var hist_hdr := Label.new()
+		hist_hdr.text = "Previous:"
+		hist_hdr.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		hist_hdr.add_theme_font_size_override("font_size", 11)
+		cvbox.add_child(hist_hdr)
+		for h: Dictionary in history:
+			var hl := Label.new()
+			hl.text = "  • %s  (%s)" % [h.get("result", "?"), (h.get("closed_at", "") as String).substr(0, 16)]
+			hl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+			hl.add_theme_font_size_override("font_size", 11)
+			cvbox.add_child(hl)
+
+	var already_requested: bool = me in requesters
+	var closed_at_unix: int = int(vote.get("closed_at_unix", 0))
+	var can_revote := true
+	var hours_left := 0.0
+	if closed_at_unix > 0:
+		var elapsed := float(int(Time.get_unix_time_from_system()) - closed_at_unix) / 3600.0
+		if elapsed < float(REVOTE_TIMEOUT_HOURS):
+			can_revote = false
+			hours_left = float(REVOTE_TIMEOUT_HOURS) - elapsed
+
+	var revote_row := HBoxContainer.new()
+	if not can_revote:
+		var wait_lbl := Label.new()
+		wait_lbl.text = "⏳ Revote available in %.0fh" % ceili(hours_left)
+		wait_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		wait_lbl.add_theme_font_size_override("font_size", 11)
+		revote_row.add_child(wait_lbl)
+	else:
+		var tally_lbl := Label.new()
+		tally_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		tally_lbl.add_theme_font_size_override("font_size", 11)
+		tally_lbl.text = ("%d/%d requested revote" % [requesters.size(), threshold]) if not requesters.is_empty() \
+			else ("Need %d to revote" % threshold)
+		tally_lbl.add_theme_color_override("font_color",
+			Color(0.4, 0.8, 0.5) if already_requested else Color(0.5, 0.5, 0.5))
+		revote_row.add_child(tally_lbl)
+
+		if not already_requested:
+			var revote_btn := Button.new()
+			revote_btn.text = "🔄 Revote"
+			revote_btn.add_theme_font_size_override("font_size", 11)
+			revote_btn.disabled = me.is_empty()
+			revote_btn.tooltip_text = "Log in to request a revote" if me.is_empty() else \
+				"Request a revote (need %d, have %d)" % [threshold, requesters.size()]
+			var cap_idx := cap_i
+			revote_btn.pressed.connect(func():
+				if me.is_empty():
+					return
+				var v: Dictionary = _vote_items[cap_idx]
+				var req: Array = v.get("revote_requesters", [])
+				if me in req:
+					return
+				req.append(me)
+				var thresh: int = int(v.get("revote_count", 0)) + 1
+				if req.size() >= thresh:
+					var hist: Array = v.get("history", [])
+					hist.append({"result": v.get("result", ""), "closed_at": v.get("closed_at", ""),
+						"close_reason": v.get("close_reason", "")})
+					v["history"] = hist
+					v["revote_count"] = int(v.get("revote_count", 0)) + 1
+					v["closed"] = false
+					v["result"] = ""
+					v["closed_at"] = ""
+					v["closed_at_unix"] = 0
+					v["close_reason"] = ""
+					v["votes"] = {}
+					v["revote_requesters"] = []
+					_vote_items[cap_idx] = v
+					_save_votes()
+					_log_activity("vote_revote", 'Vote "%s" reopened for revote #%d (by %s)' % [
+						v.get("title", ""), v.get("revote_count", 0), me])
+					_refresh_vote_list()
+				else:
+					v["revote_requesters"] = req
+					_vote_items[cap_idx] = v
+					_save_votes()
+					_log_activity("vote_revote_request", '%s requested revote on "%s" (%d/%d)' % [
+						me, v.get("title", ""), req.size(), thresh])
+					_refresh_decision_log()
+			)
+			revote_row.add_child(revote_btn)
+
+	cvbox.add_child(revote_row)
 
 # ─── Schedule tab ─────────────────────────────────────────────────────────────
 
