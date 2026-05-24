@@ -164,6 +164,12 @@ var _schedule_items: Array = []
 var _schedule_list: VBoxContainer
 var _schedule_status_lbl: Label
 var _schedule_create_box: Control
+var _schedule_edit_dialog: AcceptDialog
+var _schedule_edit_idx: int = -1
+var _schedule_edit_title: LineEdit
+var _schedule_edit_date: LineEdit
+var _schedule_edit_time: LineEdit
+var _schedule_edit_desc: TextEdit
 
 var _ideas_items: Array = []
 var _ideas_list: VBoxContainer
@@ -209,7 +215,6 @@ func _ready() -> void:
 	_build_planning_tab(tabs)
 	_build_team_supertab(tabs)
 	_build_vault_tab(tabs)
-	_build_docs_tab(tabs)
 	_build_terminal_tab(tabs)
 	_build_account_tab(tabs)
 
@@ -2641,6 +2646,7 @@ func _build_team_supertab(tabs: TabContainer) -> void:
 	_build_votes_tab(inner_tabs)
 	_build_schedule_tab(inner_tabs)
 	_build_forum_tab(inner_tabs)
+	_build_docs_tab(inner_tabs)
 
 # ─── Votes tab ────────────────────────────────────────────────────────────────
 
@@ -3120,6 +3126,58 @@ func _build_schedule_tab(tabs: TabContainer) -> void:
 	scroll.add_child(_schedule_list)
 	root.add_child(scroll)
 
+	# ── Edit dialog ───────────────────────────────────────────────────────────
+	_schedule_edit_dialog = AcceptDialog.new()
+	_schedule_edit_dialog.title = "Edit Event"
+	_schedule_edit_dialog.size = Vector2i(440, 240)
+	var edit_vbox := VBoxContainer.new()
+	edit_vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	edit_vbox.add_theme_constant_override("separation", 4)
+	_schedule_edit_dialog.add_child(edit_vbox)
+	var edit_grid := GridContainer.new()
+	edit_grid.columns = 2
+	edit_grid.add_theme_constant_override("h_separation", 8)
+	edit_grid.add_theme_constant_override("v_separation", 4)
+	var et_lbl := Label.new(); et_lbl.text = "Title *"
+	_schedule_edit_title = LineEdit.new()
+	_schedule_edit_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	edit_grid.add_child(et_lbl); edit_grid.add_child(_schedule_edit_title)
+	var ed_lbl := Label.new(); ed_lbl.text = "Date *"
+	_schedule_edit_date = LineEdit.new()
+	_schedule_edit_date.placeholder_text = "YYYY-MM-DD"
+	_schedule_edit_date.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	edit_grid.add_child(ed_lbl); edit_grid.add_child(_schedule_edit_date)
+	var etm_lbl := Label.new(); etm_lbl.text = "Time"
+	_schedule_edit_time = LineEdit.new()
+	_schedule_edit_time.placeholder_text = "HH:MM (optional)"
+	_schedule_edit_time.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	edit_grid.add_child(etm_lbl); edit_grid.add_child(_schedule_edit_time)
+	var edc_lbl := Label.new(); edc_lbl.text = "Description"
+	_schedule_edit_desc = TextEdit.new()
+	_schedule_edit_desc.custom_minimum_size = Vector2(0, 48)
+	_schedule_edit_desc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	edit_grid.add_child(edc_lbl); edit_grid.add_child(_schedule_edit_desc)
+	edit_vbox.add_child(edit_grid)
+	_schedule_edit_dialog.confirmed.connect(func():
+		if _schedule_edit_idx < 0 or _schedule_edit_idx >= _schedule_items.size():
+			return
+		var t := _schedule_edit_title.text.strip_edges()
+		var d := _schedule_edit_date.text.strip_edges()
+		if t.is_empty() or d.is_empty():
+			return
+		var ev: Dictionary = _schedule_items[_schedule_edit_idx]
+		ev["title"] = t
+		ev["date"] = d
+		ev["time"] = _schedule_edit_time.text.strip_edges()
+		ev["description"] = _schedule_edit_desc.text.strip_edges()
+		_schedule_items.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return (a.get("date", "") + "T" + a.get("time", "")) < (b.get("date", "") + "T" + b.get("time", ""))
+		)
+		_save_schedule()
+		_refresh_schedule_list()
+	)
+	add_child(_schedule_edit_dialog)
+
 	_load_schedule()
 
 func _schedule_file() -> String:
@@ -3137,6 +3195,9 @@ func _load_schedule() -> void:
 	f.close()
 	if parsed is Array:
 		_schedule_items = parsed
+	_schedule_items.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return (a.get("date", "") + "T" + a.get("time", "")) < (b.get("date", "") + "T" + b.get("time", ""))
+	)
 	if is_instance_valid(_schedule_list):
 		_refresh_schedule_list()
 
@@ -3198,12 +3259,26 @@ func _refresh_schedule_list() -> void:
 		dt_lbl.add_theme_font_size_override("font_size", 12)
 		header.add_child(dt_lbl)
 
-		# Delete button
+		# Edit / delete buttons
+		var cap_i := i
+		var edit_btn := Button.new()
+		edit_btn.text = "✏️"
+		edit_btn.flat = true
+		edit_btn.tooltip_text = "Edit event"
+		edit_btn.pressed.connect(func():
+			_schedule_edit_idx = cap_i
+			_schedule_edit_title.text = _schedule_items[cap_i].get("title", "")
+			_schedule_edit_date.text = _schedule_items[cap_i].get("date", "")
+			_schedule_edit_time.text = _schedule_items[cap_i].get("time", "")
+			_schedule_edit_desc.text = _schedule_items[cap_i].get("description", "")
+			_schedule_edit_dialog.popup_centered()
+		)
+		header.add_child(edit_btn)
+
 		var del_btn := Button.new()
 		del_btn.text = "🗑"
 		del_btn.flat = true
 		del_btn.tooltip_text = "Delete event"
-		var cap_i := i
 		del_btn.pressed.connect(func():
 			var cap_title: String = _schedule_items[cap_i].get("title", "")
 			_schedule_items.remove_at(cap_i)
@@ -4913,15 +4988,16 @@ func _docs_do_create(doc_path: String) -> void:
 	var remote_dir := full_remote.get_base_dir()
 	var cache := _vault_cache
 	var cap_full := full_remote
+	var cap_content := content
 	_docs_status_lbl.text = "Creating…"
 	_docs_thread = Thread.new()
 	_docs_thread.start(func():
 		Ops.vault_upload_file(tmp_file, remote_dir, Callable())
 		Ops.vault_refresh(cache, Callable())
-		call_deferred("_docs_on_created", cap_full)
+		call_deferred("_docs_on_created", cap_full, cap_content)
 	)
 
-func _docs_on_created(full_path: String) -> void:
+func _docs_on_created(full_path: String, content: String) -> void:
 	if _docs_thread and _docs_thread.is_started():
 		_docs_thread.wait_to_finish()
 	_docs_thread = null
@@ -4933,7 +5009,16 @@ func _docs_on_created(full_path: String) -> void:
 	if folder == ".":
 		folder = ""
 	_docs_navigate(folder)
-	_docs_select(full_path)
+	# Display the content we just wrote — no need to re-download from vault
+	_docs_title_lbl.text = full_path.get_file().get_basename()
+	_docs_title_lbl.add_theme_color_override("font_color", Color(0.9, 0.9, 0.9))
+	_docs_loaded_content = content
+	_docs_view.parse_bbcode(_md_to_bbcode(content))
+	_docs_view.visible = true
+	_docs_editor.visible = false
+	_docs_edit_btn.visible = true
+	_docs_save_btn.visible = false
+	_docs_cancel_btn.visible = false
 
 func _docs_do_mkdir(dir_path: String) -> void:
 	if _docs_thread and _docs_thread.is_started():
