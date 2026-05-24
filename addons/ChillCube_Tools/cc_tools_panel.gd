@@ -138,6 +138,8 @@ var _docs_delete_dialog: ConfirmationDialog
 var _docs_pending_delete: String = ""
 var _docs_move_dialog: AcceptDialog
 var _docs_move_input: LineEdit
+var _docs_new_doc_btn: Button
+var _docs_new_dir_btn: Button
 
 var _docs_permissions: Dictionary = {}  # full_path -> {"mode": "anyone"|"specific", "users": [...]}
 var _docs_perm_btn: Button
@@ -4678,6 +4680,7 @@ func _asset_meta_edit(rel_path: String) -> void:
 # ─── Docs tab ────────────────────────────────────────────────────────────────
 
 const DOCS_PREFIX := "_docs"
+const DOCS_ARCHIVE_REL := "_archive"
 
 func _build_docs_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Docs", tabs)
@@ -4716,25 +4719,25 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	_docs_path_lbl.add_theme_color_override("font_color", Color(0.5, 0.7, 1.0))
 	_docs_path_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_docs_path_lbl.clip_text = true
-	var new_doc_btn := Button.new()
-	new_doc_btn.text = "📄+"
-	new_doc_btn.tooltip_text = "New document"
-	new_doc_btn.pressed.connect(func():
+	_docs_new_doc_btn = Button.new()
+	_docs_new_doc_btn.text = "📄+"
+	_docs_new_doc_btn.tooltip_text = "New document"
+	_docs_new_doc_btn.pressed.connect(func():
 		var pre := (_docs_current_dir + "/") if not _docs_current_dir.is_empty() else ""
 		_docs_new_input.text = pre
 		_docs_new_dialog.popup_centered()
 	)
-	var new_dir_btn := Button.new()
-	new_dir_btn.text = "📁+"
-	new_dir_btn.tooltip_text = "New folder"
-	new_dir_btn.pressed.connect(func():
+	_docs_new_dir_btn = Button.new()
+	_docs_new_dir_btn.text = "📁+"
+	_docs_new_dir_btn.tooltip_text = "New folder"
+	_docs_new_dir_btn.pressed.connect(func():
 		var pre := (_docs_current_dir + "/") if not _docs_current_dir.is_empty() else ""
 		_docs_newdir_input.text = pre
 		_docs_newdir_dialog.popup_centered()
 	)
 	path_row.add_child(_docs_path_lbl)
-	path_row.add_child(new_doc_btn)
-	path_row.add_child(new_dir_btn)
+	path_row.add_child(_docs_new_doc_btn)
+	path_row.add_child(_docs_new_dir_btn)
 	left.add_child(path_row)
 	left.add_child(HSeparator.new())
 
@@ -4766,7 +4769,7 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	_docs_edit_btn.visible = false
 	_docs_edit_btn.pressed.connect(_docs_enter_edit)
 	_docs_delete_header_btn = Button.new()
-	_docs_delete_header_btn.text = "🗑 Delete"
+	_docs_delete_header_btn.text = "📦 Archive"
 	_docs_delete_header_btn.visible = false
 	_docs_delete_header_btn.pressed.connect(func():
 		if not _docs_sel_path.is_empty():
@@ -4881,8 +4884,8 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	add_child(_docs_newdir_dialog)
 
 	_docs_delete_dialog = ConfirmationDialog.new()
-	_docs_delete_dialog.title = "Delete Document"
-	_docs_delete_dialog.dialog_text = "Delete this document? This cannot be undone."
+	_docs_delete_dialog.title = "Archive Document"
+	_docs_delete_dialog.dialog_text = "Move this document to the archive?\nIt will be read-only and cannot be edited."
 	_docs_delete_dialog.confirmed.connect(_docs_do_delete)
 	add_child(_docs_delete_dialog)
 
@@ -5091,6 +5094,10 @@ func _docs_navigate(rel: String) -> void:
 		_docs_browser.add_child(hint)
 		return
 
+	var in_archive: bool = rel == DOCS_ARCHIVE_REL or rel.begins_with(DOCS_ARCHIVE_REL + "/")
+	_docs_new_doc_btn.visible = not in_archive
+	_docs_new_dir_btn.visible = not in_archive
+
 	var prefix := (rel + "/") if not rel.is_empty() else ""
 	var folders: Array[String] = []
 	var files: Array[String] = []
@@ -5102,6 +5109,9 @@ func _docs_navigate(rel: String) -> void:
 		var rest := doc_rel.substr(prefix.length())
 		if "/" in rest:
 			var folder := rest.split("/")[0]
+			# Hide the archive folder from normal listings — it gets its own button
+			if folder == DOCS_ARCHIVE_REL and rel.is_empty():
+				continue
 			if folder not in folders:
 				folders.append(folder)
 		else:
@@ -5139,13 +5149,15 @@ func _docs_navigate(rel: String) -> void:
 		var row := HBoxContainer.new()
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
+		var icon := "📦 " if in_archive else "📄 "
 		var file_btn := Button.new()
-		file_btn.text = "📄 " + file.get_basename()
+		file_btn.text = icon + file.get_basename()
 		file_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		file_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		file_btn.flat = cap_full != _docs_sel_path
 		if cap_full == _docs_sel_path:
-			file_btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+			file_btn.add_theme_color_override("font_color",
+				Color(0.8, 0.6, 0.4) if in_archive else Color(0.4, 0.8, 1.0))
 		file_btn.pressed.connect(func():
 			_docs_sel_path = cap_full
 			_docs_navigate(_docs_current_dir)
@@ -5153,39 +5165,59 @@ func _docs_navigate(rel: String) -> void:
 		)
 		row.add_child(file_btn)
 
-		var ren_btn := Button.new()
-		ren_btn.text = "✏"
-		ren_btn.flat = true
-		ren_btn.custom_minimum_size = Vector2(26, 0)
-		ren_btn.tooltip_text = "Rename / move"
-		ren_btn.pressed.connect(func():
-			_docs_move_input.text = cap_rel
-			_docs_move_dialog.popup_centered()
-		)
-		row.add_child(ren_btn)
+		if not in_archive:
+			var ren_btn := Button.new()
+			ren_btn.text = "✏"
+			ren_btn.flat = true
+			ren_btn.custom_minimum_size = Vector2(26, 0)
+			ren_btn.tooltip_text = "Rename / move"
+			ren_btn.pressed.connect(func():
+				_docs_move_input.text = cap_rel
+				_docs_move_dialog.popup_centered()
+			)
+			row.add_child(ren_btn)
 
-		var del_btn := Button.new()
-		del_btn.text = "🗑"
-		del_btn.flat = true
-		del_btn.custom_minimum_size = Vector2(26, 0)
-		del_btn.tooltip_text = "Delete"
-		del_btn.pressed.connect(func():
-			_docs_pending_delete = cap_full
-			_docs_delete_dialog.popup_centered()
-		)
-		row.add_child(del_btn)
+			var del_btn := Button.new()
+			del_btn.text = "🗑"
+			del_btn.flat = true
+			del_btn.custom_minimum_size = Vector2(26, 0)
+			del_btn.tooltip_text = "Archive"
+			del_btn.pressed.connect(func():
+				_docs_pending_delete = cap_full
+				_docs_delete_dialog.popup_centered()
+			)
+			row.add_child(del_btn)
 
 		_docs_browser.add_child(row)
 
 	if folders.is_empty() and files.is_empty():
 		var hint := Label.new()
-		if rel.is_empty():
+		if in_archive:
+			hint.text = "Archive is empty."
+		elif rel.is_empty():
 			hint.text = "No documents yet.\nClick 📄+ to create one."
 		else:
 			hint.text = "Empty folder."
 		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		_docs_browser.add_child(hint)
+
+	# ── Archive folder button (always at the bottom of the root view) ─────────
+	if rel.is_empty():
+		var sep := HSeparator.new()
+		_docs_browser.add_child(sep)
+		var arc_btn := Button.new()
+		var arc_count := 0
+		for f: String in _docs_files:
+			if _docs_is_archived(f):
+				arc_count += 1
+		arc_btn.text = "📦 Archive" + (" (%d)" % arc_count if arc_count > 0 else "")
+		arc_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		arc_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		arc_btn.flat = true
+		arc_btn.add_theme_color_override("font_color", Color(0.6, 0.5, 0.4))
+		arc_btn.pressed.connect(func(): _docs_navigate(DOCS_ARCHIVE_REL))
+		_docs_browser.add_child(arc_btn)
 
 func _docs_select(full_path: String) -> void:
 	if _docs_thread and _docs_thread.is_started():
@@ -5400,35 +5432,39 @@ func _docs_on_mkdir_done() -> void:
 func _docs_do_delete() -> void:
 	if _docs_pending_delete.is_empty() or (_docs_thread and _docs_thread.is_started()):
 		return
-	var cache := _vault_cache
-	var cap_path := _docs_pending_delete
+	var src := _docs_pending_delete
 	_docs_pending_delete = ""
-	_docs_status_lbl.text = "Deleting…"
+	# Preserve relative path inside the archive (e.g. guides/foo.md → _archive/guides/foo.md)
+	var rel := _docs_rel(src)
+	var dest := DOCS_PREFIX + "/" + DOCS_ARCHIVE_REL + "/" + rel
+	var cache := _vault_cache
+	var cap_src := src
+	var cap_dest := dest
+	_docs_status_lbl.text = "Archiving…"
 	_docs_thread = Thread.new()
 	_docs_thread.start(func():
-		Ops.vault_delete_file(cap_path, Callable())
+		Ops.vault_move_file(cap_src, cap_dest, Callable())
 		Ops.vault_refresh(cache, Callable())
-		call_deferred("_docs_on_deleted", cap_path)
+		call_deferred("_docs_on_archived", cap_src, cap_dest)
 	)
 
-func _docs_on_deleted(full_path: String) -> void:
+func _docs_on_archived(old_path: String, new_path: String) -> void:
 	if _docs_thread and _docs_thread.is_started():
 		_docs_thread.wait_to_finish()
 	_docs_thread = null
-	_docs_status_lbl.text = "✅ Deleted"
+	_docs_status_lbl.text = "✅ Archived"
 	_vault_files = Ops.vault_list_files(_vault_cache)
 	_docs_files = _docs_filter_files(_vault_files)
-	if _docs_sel_path == full_path:
-		_docs_sel_path = ""
-		_docs_title_lbl.text = "Select a document"
-		_docs_title_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
-		_docs_view.text = ""
-		_docs_edit_btn.visible = false
-		_docs_suggest_btn.visible = false
-		_docs_delete_header_btn.visible = false
-		_docs_perm_btn.visible = false
-		_docs_review_btn.visible = false
-	_docs_navigate(_docs_current_dir)
+	if _docs_sel_path == old_path:
+		# Stay on the doc — it's now in the archive
+		_docs_sel_path = new_path
+		var folder := _docs_rel(new_path).get_base_dir()
+		if folder == ".":
+			folder = ""
+		_docs_navigate(folder)
+		_docs_show_view_buttons(new_path)
+	else:
+		_docs_navigate(_docs_current_dir)
 
 func _docs_do_move(dest_rel: String) -> void:
 	if _docs_sel_path.is_empty() or (_docs_thread and _docs_thread.is_started()):
@@ -5628,7 +5664,21 @@ func _docs_pending_suggestions(full_path: String) -> int:
 			count += 1
 	return count
 
+func _docs_is_archived(full_path: String) -> bool:
+	return full_path.begins_with(DOCS_PREFIX + "/" + DOCS_ARCHIVE_REL + "/")
+
 func _docs_show_view_buttons(full_path: String) -> void:
+	if _docs_is_archived(full_path):
+		_docs_edit_btn.visible = false
+		_docs_suggest_btn.visible = false
+		_docs_delete_header_btn.visible = false
+		_docs_perm_btn.visible = false
+		_docs_review_btn.visible = false
+		_docs_save_btn.visible = false
+		_docs_suggest_submit_btn.visible = false
+		_docs_cancel_btn.visible = false
+		_docs_title_lbl.add_theme_color_override("font_color", Color(0.65, 0.55, 0.45))
+		return
 	var can_edit := _docs_can_edit(full_path)
 	var req_vote := _docs_requires_vote(full_path)
 	_docs_edit_btn.visible = can_edit and not req_vote
