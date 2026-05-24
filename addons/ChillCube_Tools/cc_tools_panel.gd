@@ -7709,13 +7709,22 @@ func _populate_registry(entries: Array) -> void:
 		name_lbl.clip_text = true
 		name_row.add_child(name_lbl)
 
-		for cat: String in entry.get("categories", ["Uncategorized"]):
+		var cats: Array = entry.get("categories", ["Uncategorized"])
+		var shown_cats: int = mini(cats.size(), 2)
+		for ci in range(shown_cats):
+			var cat: String = cats[ci]
 			var cat_chip := Label.new()
-			var cat_text := cat if cat.length() <= 14 else cat.left(13) + "…"
+			var cat_text: String = cat if cat.length() <= 14 else cat.left(13) + "…"
 			cat_chip.text = " " + cat_text + " "
 			cat_chip.add_theme_color_override("font_color", Color(0.5, 0.8, 1.0))
 			cat_chip.add_theme_font_size_override("font_size", 10)
 			name_row.add_child(cat_chip)
+		if cats.size() > shown_cats:
+			var more_lbl := Label.new()
+			more_lbl.text = "+%d" % (cats.size() - shown_cats)
+			more_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 1.0))
+			more_lbl.add_theme_font_size_override("font_size", 10)
+			name_row.add_child(more_lbl)
 		info.add_child(name_row)
 
 		var raw_desc: String = entry.get("desc", "")
