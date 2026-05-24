@@ -4503,8 +4503,8 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 	_vault_path_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_vault_path_lbl.clip_text = true
 	var upload_btn := Button.new()
-	upload_btn.text = "⬆"
-	upload_btn.tooltip_text = "Upload a file to the current folder"
+	upload_btn.text = "⬆ Upload"
+	upload_btn.tooltip_text = "Upload files to the current folder (supports zip auto-extract, multi-select)"
 	upload_btn.pressed.connect(_vault_open_picker)
 	var newdir_btn := Button.new()
 	newdir_btn.text = "📁+"
@@ -4649,11 +4649,10 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 
 	# File picker — selecting a file auto-uploads to current directory
 	_vault_file_dialog = EditorFileDialog.new()
-	_vault_file_dialog.file_mode = EditorFileDialog.FILE_MODE_OPEN_FILE
+	_vault_file_dialog.file_mode = EditorFileDialog.FILE_MODE_OPEN_FILES
 	_vault_file_dialog.access = EditorFileDialog.ACCESS_FILESYSTEM
-	_vault_file_dialog.file_selected.connect(func(path: String):
-		_vault_local_sel = path
-		_vault_upload()
+	_vault_file_dialog.files_selected.connect(func(paths: PackedStringArray):
+		_vault_upload_batch(Array(paths))
 	)
 	add_child(_vault_file_dialog)
 
@@ -4895,7 +4894,7 @@ func _vault_navigate(rel: String) -> void:
 
 func _vault_file_icon(filename: String) -> String:
 	var ext := filename.get_extension().to_lower()
-	if ext in ["png", "jpg", "jpeg", "webp", "bmp", "tga", "svg", "hdr"]:
+	if ext in ["png", "jpg", "jpeg", "webp", "bmp", "tga", "svg", "hdr", "gif"]:
 		return "🖼"
 	if ext in ["ogg", "mp3", "wav", "flac", "m4a"]:
 		return "🎵"
@@ -4908,12 +4907,12 @@ func _vault_file_icon(filename: String) -> String:
 func _vault_open_picker() -> void:
 	_vault_file_dialog.popup_centered_ratio(0.7)
 
-func _vault_upload() -> void:
+func _vault_upload_batch(files: Array) -> void:
 	if _vault_cache.is_empty() or not DirAccess.dir_exists_absolute(_vault_cache):
 		_vault_log.text = "⚠️ Not connected to a vault repo."
 		return
-	if _vault_local_sel.is_empty():
-		_vault_log.text = "⚠️ No local file selected."
+	if files.is_empty():
+		_vault_log.text = "⚠️ No files selected."
 		return
 	_vault_log.text = ""
 	_vault_status_lbl.text = "Uploading…"
@@ -4921,14 +4920,15 @@ func _vault_upload() -> void:
 		_vault_thread.wait_to_finish()
 	_vault_thread = Thread.new()
 	var cache := _vault_cache
-	var local := _vault_local_sel
 	var dest := _vault_current_dir
-	var fname := local.get_file()
+	var local_files: Array[String] = []
+	for f in files:
+		local_files.append(str(f))
 	_vault_thread.start(func():
 		var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
-		Ops.vault_upload_file(local, dest, log_fn)
+		Ops.vault_upload_batch(local_files, dest, log_fn)
 		Ops.vault_refresh(cache, log_fn)
-		call_deferred("_vault_after_op", fname, dest)
+		call_deferred("_vault_after_op", str(local_files.size()) + " file(s)", dest)
 	)
 
 func _vault_download() -> void:
@@ -4949,9 +4949,18 @@ func _vault_download() -> void:
 	var cache := _vault_cache
 	var remote := _vault_remote_sel
 	var dest := _vault_download_dest_path
+	var is_gif := remote.get_extension().to_lower() == "gif"
+	var gif_stem := remote.get_basename().get_file()
 	_vault_thread.start(func():
 		var log_fn := func(msg): call_deferred("_append_log", _vault_log, msg)
-		Ops.vault_download_file(cache, remote, dest, log_fn)
+		var ok := Ops.vault_download_file(cache, remote, dest, log_fn)
+		if ok and is_gif:
+			var gif_file: String = dest + "/" + remote.get_file()
+			var frames_dir: String = dest + "/" + gif_stem
+			var n := Ops.vault_gif_to_pngs(gif_file, frames_dir, log_fn)
+			if n > 0:
+				DirAccess.remove_absolute(gif_file)
+				log_fn.call("✅ Extracted %d frame(s) to %s/" % [n, gif_stem])
 		call_deferred("_vault_after_op", "", "")
 	)
 
@@ -4973,7 +4982,7 @@ func _vault_request_preview(rel_path: String) -> void:
 	_vault_clear_preview()
 	_vault_preview_name_lbl.text = rel_path.get_file()
 	var ext := rel_path.get_extension().to_lower()
-	var IMAGE_EXTS := ["png", "jpg", "jpeg", "webp", "bmp", "tga", "svg"]
+	var IMAGE_EXTS := ["png", "jpg", "jpeg", "webp", "bmp", "tga", "svg", "gif"]
 	var AUDIO_EXTS := ["ogg", "mp3", "wav"]
 	var VIDEO_EXTS := ["ogv", "webm", "mp4"]
 	var TEXT_EXTS  := ["txt", "md", "json", "csv", "gd", "cfg", "ini", "toml", "yaml", "yml", "xml", "html", "shader", "glsl"]
@@ -5001,11 +5010,13 @@ func _vault_on_preview_ready(tmp_path: String, ext: String) -> void:
 		_vault_preview_unsupported.text = "Preview extraction failed."
 		_vault_preview_unsupported.visible = true
 		return
-	var IMAGE_EXTS := ["png", "jpg", "jpeg", "webp", "bmp", "tga", "svg"]
+	var IMAGE_EXTS := ["png", "jpg", "jpeg", "webp", "bmp", "tga", "svg", "gif"]
 	var AUDIO_EXTS := ["ogg", "mp3", "wav"]
 	var VIDEO_EXTS := ["ogv", "webm", "mp4"]
 	if ext in IMAGE_EXTS:
 		_vault_show_image(tmp_path)
+		if ext == "gif":
+			_vault_preview_name_lbl.text += "  (first frame — animated on download)"
 	elif ext in AUDIO_EXTS:
 		_vault_show_audio(tmp_path, ext)
 	elif ext in VIDEO_EXTS:

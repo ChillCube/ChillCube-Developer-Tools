@@ -1299,6 +1299,83 @@ static func vault_upload_file(local_file: String, remote_dir: String, log: Calla
 	log.call("✅ Uploaded " + filename if ok else "⚠️  Push failed.")
 	return ok
 
+## Upload a batch of files (and/or zips) to the vault in a single commit.
+## Regular files are copied flat into remote_dir.
+## Zip files are extracted preserving their internal directory structure under remote_dir.
+static func vault_upload_batch(local_files: Array[String], remote_dir: String, log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
+	if local_files.is_empty():
+		log.call("⚠️ No files to upload.")
+		return false
+	var tmp := OS.get_temp_dir() + "/.cc_vaultup_" + str(int(Time.get_unix_time_from_system()))
+	log.call("📥 Preparing upload (shallow clone)...")
+	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+		log.call("❌ Could not clone vault.")
+		_rm_rf(tmp)
+		return false
+	var rdir := remote_dir.strip_edges().lstrip("/").rstrip("/")
+	var dest_folder: String = tmp + ("/" + rdir if not rdir.is_empty() else "")
+	DirAccess.make_dir_recursive_absolute(dest_folder)
+	var count := 0
+	for local: String in local_files:
+		if local.get_extension().to_lower() == "zip":
+			var zip := ZIPReader.new()
+			if zip.open(local) != OK:
+				log.call("⚠️ Could not open %s — skipping." % local.get_file())
+				continue
+			log.call("📂 Extracting %s..." % local.get_file())
+			for f: String in zip.get_files():
+				if f.ends_with("/"):
+					continue
+				var out_path: String = dest_folder + "/" + f
+				DirAccess.make_dir_recursive_absolute(out_path.get_base_dir())
+				var fw := FileAccess.open(out_path, FileAccess.WRITE)
+				if fw:
+					fw.store_buffer(zip.read_file(f))
+					fw.close()
+					count += 1
+			zip.close()
+		else:
+			_exec("cp", ["-f", local, dest_folder + "/" + local.get_file()], log)
+			count += 1
+	if count == 0:
+		log.call("⚠️ No files were added.")
+		_rm_rf(tmp)
+		return false
+	log.call("📦 Committing %d file(s)..." % count)
+	_git(["add", "."], tmp, log)
+	if _git(["commit", "-m", "vault: upload %d file(s)" % count], tmp, log) != OK:
+		log.call("✨ Files unchanged — nothing to push.")
+		_rm_rf(tmp)
+		return true
+	log.call("⬆️  Pushing...")
+	var ok := _git(["push", "origin", "main"], tmp, log) == OK
+	_rm_rf(tmp)
+	log.call(("✅ Uploaded %d file(s)." % count) if ok else "⚠️  Push failed.")
+	return ok
+
+## Extracts frames from a GIF using ffmpeg into out_dir as frame_0001.png etc.
+## Returns the number of frames extracted, or 0 if ffmpeg is unavailable.
+static func vault_gif_to_pngs(gif_path: String, out_dir: String, log: Callable) -> int:
+	if not log.is_valid(): log = func(_m): pass
+	DirAccess.make_dir_recursive_absolute(out_dir)
+	var pattern: String = out_dir + "/frame_%04d.png"
+	log.call("🎞 Extracting GIF frames with ffmpeg...")
+	if _exec("ffmpeg", ["-i", gif_path, "-vsync", "0", pattern, "-y"], log) != OK:
+		log.call("⚠️ ffmpeg not found or failed — GIF saved as-is.")
+		return 0
+	var dir := DirAccess.open(out_dir)
+	if not dir:
+		return 0
+	var count := 0
+	dir.list_dir_begin()
+	var f := dir.get_next()
+	while not f.is_empty():
+		if f.ends_with(".png"):
+			count += 1
+		f = dir.get_next()
+	return count
+
 static func vault_move_file(src_rel: String, dest_rel: String, log: Callable) -> bool:
 	if not log.is_valid(): log = func(_m): pass
 	var tmp := OS.get_temp_dir() + "/.cc_vaultmv_" + str(int(Time.get_unix_time_from_system()))
