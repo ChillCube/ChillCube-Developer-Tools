@@ -7547,6 +7547,7 @@ func _build_browse_tab(tabs: TabContainer) -> void:
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_registry_list = VBoxContainer.new()
 	_registry_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(_registry_list)
@@ -7696,11 +7697,15 @@ func _populate_registry(entries: Array) -> void:
 
 		var info := VBoxContainer.new()
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info.custom_minimum_size = Vector2(0, 0)
 
 		var name_row := HBoxContainer.new()
 		name_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_row.custom_minimum_size = Vector2(0, 0)
 		var name_lbl := Label.new()
 		name_lbl.text = entry.get("name", "")
+		name_lbl.custom_minimum_size = Vector2(0, 0)
+		name_lbl.clip_text = true
 		name_row.add_child(name_lbl)
 
 		for cat: String in entry.get("categories", ["Uncategorized"]):
@@ -7716,6 +7721,7 @@ func _populate_registry(entries: Array) -> void:
 		desc_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
 		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		desc_lbl.size_flags_horizontal = Control.SIZE_FILL
+		desc_lbl.custom_minimum_size = Vector2(0, 0)
 		info.add_child(desc_lbl)
 		row.add_child(info)
 
