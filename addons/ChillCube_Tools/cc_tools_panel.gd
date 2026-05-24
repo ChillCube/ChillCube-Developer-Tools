@@ -5625,8 +5625,8 @@ func _docs_review_build(full_path: String) -> void:
 			tally_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			tally_lbl.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
 			vote_row.add_child(tally_lbl)
-			var already_yes := me in yes_list
-			var already_no := me in no_list
+			var already_yes: bool = me in yes_list
+			var already_no: bool = me in no_list
 			if not already_yes and not already_no:
 				var yes_btn := Button.new()
 				yes_btn.text = "👍 For"
@@ -5725,7 +5725,7 @@ func _docs_review_reject(idx: int) -> void:
 	sugg["rejected_by"] = _current_user.get("username", "?")
 	_docs_suggestions[idx] = sugg
 	_save_doc_suggestions()
-	var doc_name := sugg.get("doc_path", "").get_file().get_basename()
+	var doc_name: String = (sugg.get("doc_path", "") as String).get_file().get_basename()
 	var me := _current_user.get("username", "?")
 	_log_activity("doc_suggestion", '"%s" rejected suggestion for: "%s"' % [me, doc_name])
 	_docs_review_build(sugg.get("doc_path", _docs_sel_path))
@@ -5766,7 +5766,7 @@ func _docs_vote_cast(idx: int, vote_yes: bool) -> void:
 	sugg["votes"] = votes
 	_docs_suggestions[idx] = sugg
 	_save_doc_suggestions()
-	var doc_name := sugg.get("doc_path", "").get_file().get_basename()
+	var doc_name: String = (sugg.get("doc_path", "") as String).get_file().get_basename()
 	_log_activity("doc_vote", '"%s" voted %s on suggestion for: "%s"' % [me, "👍" if vote_yes else "👎", doc_name])
 	if _docs_vote_threshold_met(sugg):
 		_docs_review_approve(idx)
@@ -5781,8 +5781,8 @@ func _docs_open_diff_dialog(idx: int) -> void:
 	var result := _docs_diff_columns(_docs_loaded_content, proposed)
 	_docs_diff_left.parse_bbcode(result["left"])
 	_docs_diff_right.parse_bbcode(result["right"])
-	var doc_name := sugg.get("doc_path", "").get_file().get_basename()
-	_docs_diff_dialog.title = "Diff — " + doc_name + " — by " + sugg.get("author", "?")
+	var doc_name: String = (sugg.get("doc_path", "") as String).get_file().get_basename()
+	_docs_diff_dialog.title = "Diff — " + doc_name + " — by " + (sugg.get("author", "?") as String)
 	_docs_diff_dialog.popup_centered()
 
 func _docs_diff_columns(old_text: String, new_text: String) -> Dictionary:
