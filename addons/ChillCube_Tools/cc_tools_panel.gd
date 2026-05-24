@@ -7704,6 +7704,9 @@ func _populate_registry(entries: Array) -> void:
 		name_row.custom_minimum_size = Vector2(0, 0)
 		var name_lbl := Label.new()
 		name_lbl.text = entry.get("name", "")
+		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_lbl.custom_minimum_size = Vector2(0, 0)
+		name_lbl.clip_text = true
 		name_row.add_child(name_lbl)
 
 		for cat: String in entry.get("categories", ["Uncategorized"]):
