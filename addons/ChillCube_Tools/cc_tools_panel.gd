@@ -7480,7 +7480,7 @@ func _show_perm_error_dialog(addons_dir: String) -> void:
 	if _perm_fix_dialog and is_instance_valid(_perm_fix_dialog):
 		_perm_fix_dialog.queue_free()
 
-	var cmd := "sudo chmod -R 777 \"%s\"" % addons_dir
+	var cmd := "sudo chown -R $(whoami) \"%s\"" % addons_dir
 
 	_perm_fix_dialog = AcceptDialog.new()
 	_perm_fix_dialog.title = "Git Permission Error"

@@ -623,6 +623,7 @@ static func push_all(root: String, log: Callable, exclude: Array[String] = [], o
 	_prescan_reverse_deps(addons_dir, dependents_of)
 
 	var updated := 0
+	var perm_errors: Array[String] = []
 	var dir := DirAccess.open(addons_dir)
 	if not dir:
 		return false
@@ -640,7 +641,7 @@ static func push_all(root: String, log: Callable, exclude: Array[String] = [], o
 					FileAccess.file_exists(apath + "/plugin.cfg"):
 				log.call("──────────────────────────")
 				log.call("📦 Processing: " + name)
-				if _process_one(root, name, class_to_repo, class_to_addon, dependents_of, log, on_perm_error):
+				if _process_one(root, name, class_to_repo, class_to_addon, dependents_of, log, perm_errors):
 					updated += 1
 					if on_pushed.is_valid():
 						on_pushed.call(name)
@@ -652,6 +653,8 @@ static func push_all(root: String, log: Callable, exclude: Array[String] = [], o
 	_update_tree(root, log)
 
 	log.call("✅ Finished! %d updated." % updated)
+	if not perm_errors.is_empty() and on_perm_error.is_valid():
+		on_perm_error.call(addons_dir)
 	return true
 
 static func _prescan_classes(addons_dir: String, class_to_repo: Dictionary, class_to_addon: Dictionary) -> void:
@@ -700,7 +703,7 @@ static func _prescan_reverse_deps(addons_dir: String, dependents_of: Dictionary)
 		name = dir.get_next()
 	dir.list_dir_end()
 
-static func _process_one(root: String, folder: String, c2r: Dictionary, c2a: Dictionary, deps_of: Dictionary, log: Callable, on_perm_error: Callable = Callable()) -> bool:
+static func _process_one(root: String, folder: String, c2r: Dictionary, c2a: Dictionary, deps_of: Dictionary, log: Callable, perm_errors: Array[String] = []) -> bool:
 	var addons_dir := root + "/addons"
 	var apath := addons_dir + "/" + folder
 	var info := parse_cfg(apath + "/plugin.cfg")
@@ -795,9 +798,8 @@ static func _process_one(root: String, folder: String, c2r: Dictionary, c2a: Dic
 				if not line.strip_edges().is_empty():
 					log.call(line)
 		if (add_res.get("code", -1) as int) != OK and "insufficient permission" in add_out:
-			log.call("❌ Permission error — run the fix command shown in the popup.")
-			if on_perm_error.is_valid():
-				on_perm_error.call(apath.get_base_dir())
+			log.call("❌ Permission error — will show fix command after processing all addons.")
+			perm_errors.append(apath)
 			return false
 		_git(["commit", "-m", "docs: auto-sync v1.0.0"], apath, log)
 		_git(["push", "origin", "main"], apath, log)
