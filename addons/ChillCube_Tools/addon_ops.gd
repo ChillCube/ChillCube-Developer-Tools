@@ -1283,23 +1283,81 @@ static func _update_tree(root: String, log: Callable) -> void:
 				pos[l_nodes[i]] = float(i)
 			by_layer[l] = l_nodes
 
-	# Build Mermaid
-	var m := "\n" + s_mark + "\n## 🌳 Dependency Tree\n\n"
-	m += "```mermaid\n"
-	m += "%%{init: {\"flowchart\": {\"curve\": \"linear\"}}}%%\n"
-	m += "flowchart BT\n"
-	m += "    classDef core  fill:#4a9eff,stroke:#2471d4,color:#fff\n"
-	m += "    classDef shared fill:#a29bfe,stroke:#6c5ce7,color:#fff\n"
-	m += "    classDef external fill:#fd9644,stroke:#e67e22,color:#fff\n\n"
+	# ── Stats ──────────────────────────────────────────────────────────────────
+	var total_connected: int = has_edge.size()
+	var avg_width: float = float(total_connected) / float(max(max_layer, 1))
+	var shape_advice: String
+	if float(max_layer) >= avg_width * 1.5:
+		shape_advice = "🔼 Your tree is **tall** — you've been combining modules well. Consider broadening your foundation with more independent addons."
+	elif avg_width >= float(max_layer) * 1.5:
+		shape_advice = "↔️ Your tree is **wide** — you have many independent tools. Start combining them to build higher-level systems closer to actual game features."
+	else:
+		shape_advice = "✅ Your tree is **balanced** — good mix of depth and breadth."
 
+	# Top depended-on nodes
+	var by_indegree: Array[String] = []
+	for id: String in has_edge:
+		by_indegree.append(id)
+	by_indegree.sort_custom(func(a: String, b: String) -> bool:
+		return int((nodes.get(a, {}) as Dictionary).get("indegree", 0)) > int((nodes.get(b, {}) as Dictionary).get("indegree", 0))
+	)
+	var top_relied: Array[String] = []
+	for id: String in by_indegree:
+		var deg: int = int((nodes.get(id, {}) as Dictionary).get("indegree", 0))
+		if deg == 0:
+			break
+		var lbl: String = (nodes.get(id, {}) as Dictionary).get("label", id)
+		top_relied.append("**%s** ×%d" % [lbl, deg])
+		if top_relied.size() >= 5:
+			break
+
+	var m := "\n" + s_mark + "\n## 🌳 Dependency Tree\n\n"
+
+	# Summary table
+	m += "| | |\n|---|---|\n"
+	m += "| 🏗️ Height (layers) | %d |\n" % max_layer
+	m += "| 📐 Avg width per layer | %.1f |\n" % avg_width
+	m += "| 📦 Addons in tree | %d |\n" % total_connected
+	m += "| 🏆 Score | %d pts |\n" % score
+	if not top_relied.is_empty():
+		m += "| 🔗 Most relied on | %s |\n" % " · ".join(PackedStringArray(top_relied))
+	m += "\n%s\n\n" % shape_advice
+
+	# Standalone list
+	var standalone: Array[String] = []
+	for id: String in nodes:
+		if id not in has_edge:
+			var n: Dictionary = nodes[id]
+			var lbl: String = n.get("label", id)
+			var url: String = n.get("url", "")
+			standalone.append("[%s](%s)" % [lbl, url] if not url.is_empty() else lbl)
+	if not standalone.is_empty():
+		standalone.sort()
+		m += "**Standalone (no connections yet):** " + " · ".join(PackedStringArray(standalone)) + "\n\n"
+
+	# ── Flowchart ───────────────────────────────────────────────────────────────
+	m += "```mermaid\n"
+	m += "%%{init: {\"flowchart\": {\"curve\": \"basis\", \"nodeSpacing\": 40, \"rankSpacing\": 80}}}%%\n"
+	m += "flowchart LR\n"
+	m += "    classDef foundation fill:#00b894,stroke:#00856f,color:#fff\n"
+	m += "    classDef core      fill:#4a9eff,stroke:#2471d4,color:#fff\n"
+	m += "    classDef shared    fill:#a29bfe,stroke:#6c5ce7,color:#fff\n"
+	m += "    classDef leaf      fill:#636e72,stroke:#2d3436,color:#fff\n"
+	m += "    classDef external  fill:#fd9644,stroke:#e67e22,color:#fff\n\n"
+
+	# Nodes — label shows name, layer badge, and ★ count if relied on
 	for l in range(max_layer + 1):
 		var ids: Array[String] = by_layer.get(l, [])
 		for id: String in ids:
-			var label: String = (nodes.get(id, {}) as Dictionary).get("label", id)
-			var layer_tag: String = "L0 · Foundation" if l == 0 else "L%d" % l
-			m += '    %s["%s\n%s"]\n' % [id, label, layer_tag]
+			var n: Dictionary = nodes.get(id, {})
+			var lbl: String = n.get("label", id)
+			var deg: int = int(n.get("indegree", 0))
+			var star_str: String = " · ★×%d" % deg if deg > 0 else ""
+			var layer_badge: String = "⬛ Foundation" if l == 0 else "L%d" % l
+			m += '    %s["%s\n%s%s"]\n' % [id, lbl, layer_badge, star_str]
 	m += "\n"
 
+	# Edges
 	for edge: Array in edges:
 		var f: String = edge[0]
 		var t: String = edge[1]
@@ -1307,38 +1365,32 @@ static func _update_tree(root: String, log: Callable) -> void:
 			m += "    %s --> %s\n" % [t, f]
 	m += "\n"
 
-	var edge_ids := has_edge.keys()
+	# Classes
+	var edge_ids: Array = has_edge.keys()
 	edge_ids.sort()
 	for id: String in edge_ids:
 		var n: Dictionary = nodes.get(id, {})
 		if not bool(n.get("internal", false)):
 			m += "    class %s external\n" % id
+		elif int(layers.get(id, 0)) == 0:
+			m += "    class %s foundation\n" % id
 		else:
-			var deg := int(n.get("indegree", 0))
+			var deg: int = int(n.get("indegree", 0))
 			if deg >= 2:
 				m += "    class %s core\n" % id
 			elif deg == 1:
 				m += "    class %s shared\n" % id
+			else:
+				m += "    class %s leaf\n" % id
 	m += "\n"
 
+	# Click links
 	for id: String in edge_ids:
 		var url: String = (nodes.get(id, {}) as Dictionary).get("url", "")
 		if not url.is_empty():
 			m += '    click %s href "%s" _blank\n' % [id, url]
 	m += "```\n"
 
-	# Standalone
-	var standalone: Array[String] = []
-	for id: String in nodes:
-		if id not in has_edge:
-			var n: Dictionary = nodes[id]
-			var label: String = n.get("label", id)
-			var url: String = n.get("url", "")
-			standalone.append("[%s](%s)" % [label, url] if not url.is_empty() else label)
-	if not standalone.is_empty():
-		m += "\n**Standalone addons:** " + " · ".join(PackedStringArray(standalone)) + "\n"
-
-	m += "\n**🏆 Progress Score: %d pts** — _+10 per .gd file · +50 per module that depends on you · +20 per dependency layer_\n" % score
 	m += e_mark
 
 	_write(rfile, content.rstrip("\n") + m)
