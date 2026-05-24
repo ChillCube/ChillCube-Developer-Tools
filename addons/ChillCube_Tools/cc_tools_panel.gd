@@ -2875,12 +2875,6 @@ func _refresh_vote_list() -> void:
 		return
 	for c in _vote_list.get_children():
 		c.queue_free()
-	if _vote_items.is_empty():
-		var hint := Label.new()
-		hint.text = "No votes yet. Use + New Vote to start one."
-		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
-		_vote_list.add_child(hint)
-		return
 	var username: String = _current_user.get("username", "")
 	for i in range(_vote_items.size()):
 		var vote: Dictionary = _vote_items[i]
@@ -3060,6 +3054,134 @@ func _refresh_vote_list() -> void:
 			cvbox.add_child(add_row)
 
 		_vote_list.add_child(panel)
+
+	# ── Doc vote suggestions ─────────────────────────────────────────────────
+	var doc_votes: Array = []
+	for s: Dictionary in _docs_suggestions:
+		if s.get("vote_required", false) and s.get("status", "") == "pending":
+			doc_votes.append(s)
+	for s: Dictionary in doc_votes:
+		var sugg_idx := _docs_suggestions.find(s)
+		var cap_si := sugg_idx
+		var doc_path: String = s.get("doc_path", "")
+		var doc_name: String = doc_path.get_file().get_basename()
+		var author: String = s.get("author", "?")
+		var ts: String = s.get("timestamp", "")
+		var thresh: String = s.get("vote_threshold", "1/2")
+		var votes_d: Dictionary = s.get("votes", {})
+		var yes_list: Array = votes_d.get("yes", [])
+		var no_list: Array = votes_d.get("no", [])
+		var yes_n := yes_list.size()
+		var no_n := no_list.size()
+		var total_n := yes_n + no_n
+		var is_perm: bool = s.get("type", "") == "permission_change"
+		var panel := PanelContainer.new()
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var cvbox := VBoxContainer.new()
+		cvbox.add_theme_constant_override("separation", 4)
+		panel.add_child(cvbox)
+		# Header
+		var header := HBoxContainer.new()
+		var title_lbl := RichTextLabel.new()
+		title_lbl.bbcode_enabled = true
+		title_lbl.fit_content = true
+		title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var kind := "🔒 Permission Change" if is_perm else "📄 " + doc_name
+		title_lbl.text = "[b]%s[/b]  [color=#aaaaff][DOC VOTE][/color]  [color=#42a5f5][OPEN][/color]" % kind
+		header.add_child(title_lbl)
+		var diff_btn := Button.new()
+		diff_btn.text = "📊 View Diff"
+		diff_btn.flat = false
+		if is_perm:
+			diff_btn.disabled = true
+			diff_btn.tooltip_text = "Permission change — no content diff"
+		else:
+			diff_btn.pressed.connect(func(): _docs_open_diff_dialog(cap_si))
+		header.add_child(diff_btn)
+		cvbox.add_child(header)
+		# Subtitle
+		var sub_lbl := Label.new()
+		sub_lbl.text = "Proposed by %s  —  %s  |  Threshold: %s" % [author, ts.substr(0, 16), thresh]
+		sub_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+		sub_lbl.add_theme_font_size_override("font_size", 11)
+		cvbox.add_child(sub_lbl)
+		if is_perm:
+			var perm_lbl := Label.new()
+			var new_p: Dictionary = s.get("new_permissions", {})
+			var req_v: bool = new_p.get("require_vote", false)
+			var mode: String = new_p.get("mode", "anyone")
+			perm_lbl.text = "  Edit access: %s   Vote lock: %s" % [
+				mode, ("on (%s)" % new_p.get("vote_threshold", "")) if req_v else "off"]
+			perm_lbl.add_theme_color_override("font_color", Color(0.7, 0.65, 1.0))
+			cvbox.add_child(perm_lbl)
+		# Vote bars
+		var tally_row := HBoxContainer.new()
+		for pair in [["👍 For", yes_n, Color(0.4, 0.9, 0.5)], ["👎 Against", no_n, Color(0.9, 0.4, 0.4)]]:
+			var opt_lbl := Label.new()
+			opt_lbl.text = pair[0] as String
+			opt_lbl.custom_minimum_size = Vector2(90, 0)
+			opt_lbl.add_theme_color_override("font_color", pair[2] as Color)
+			tally_row.add_child(opt_lbl)
+			var pbar := ProgressBar.new()
+			pbar.min_value = 0
+			pbar.max_value = max(total_n, 1)
+			pbar.value = pair[1] as int
+			pbar.show_percentage = false
+			pbar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			pbar.custom_minimum_size = Vector2(0, 16)
+			tally_row.add_child(pbar)
+			var n_lbl := Label.new()
+			n_lbl.text = " %d" % (pair[1] as int)
+			tally_row.add_child(n_lbl)
+		cvbox.add_child(tally_row)
+		# Vote buttons or "already voted" label
+		var already_yes: bool = username in yes_list
+		var already_no: bool = username in no_list
+		if not already_yes and not already_no:
+			var btn_row := HBoxContainer.new()
+			var yes_btn := Button.new()
+			yes_btn.text = "👍 For"
+			yes_btn.pressed.connect(func(): _docs_vote_cast(cap_si, true))
+			var no_btn := Button.new()
+			no_btn.text = "👎 Against"
+			no_btn.pressed.connect(func(): _docs_vote_cast(cap_si, false))
+			btn_row.add_child(yes_btn)
+			btn_row.add_child(no_btn)
+			cvbox.add_child(btn_row)
+		else:
+			var voted_row := HBoxContainer.new()
+			var voted_lbl := Label.new()
+			voted_lbl.text = "Your vote: " + ("👍 For" if already_yes else "👎 Against")
+			voted_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+			voted_row.add_child(voted_lbl)
+			var change_btn := Button.new()
+			change_btn.text = "Change"
+			change_btn.flat = true
+			change_btn.pressed.connect(func(): _docs_vote_cast(cap_si, not already_yes))
+			voted_row.add_child(change_btn)
+			cvbox.add_child(voted_row)
+		# Editor force controls
+		if _docs_can_edit(doc_path):
+			var force_row := HBoxContainer.new()
+			force_row.alignment = BoxContainer.ALIGNMENT_END
+			var force_yes := Button.new()
+			force_yes.text = "✅ Force Approve"
+			force_yes.pressed.connect(func(): _docs_review_approve(cap_si))
+			var force_no := Button.new()
+			force_no.text = "❌ Reject"
+			force_no.pressed.connect(func(): _docs_review_reject(cap_si))
+			force_row.add_child(force_yes)
+			force_row.add_child(force_no)
+			cvbox.add_child(force_row)
+		_vote_list.add_child(panel)
+	# Show hint if truly empty
+	if _vote_items.is_empty() and doc_votes.is_empty():
+		for c in _vote_list.get_children():
+			c.queue_free()
+		var hint := Label.new()
+		hint.text = "No votes yet. Use + New Vote to start one."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_vote_list.add_child(hint)
 
 # ─── Schedule tab ─────────────────────────────────────────────────────────────
 
@@ -5450,6 +5572,7 @@ func _docs_perm_save() -> void:
 			"author": me,
 			"timestamp": Time.get_datetime_string_from_system(),
 			"content": _docs_loaded_content,
+			"original_content": _docs_loaded_content,
 			"status": "pending",
 			"type": "permission_change",
 			"new_permissions": new_perm,
@@ -5545,11 +5668,14 @@ func _docs_suggest_submit() -> void:
 		sugg["vote_required"] = true
 		sugg["vote_threshold"] = perm.get("vote_threshold", "1/2")
 		sugg["votes"] = {"yes": [], "no": []}
+		sugg["original_content"] = _docs_loaded_content
 	_docs_suggestions.append(sugg)
 	_save_doc_suggestions()
 	var doc_name := _docs_sel_path.get_file().get_basename()
 	_log_activity("doc_suggestion", '"%s" suggested edits to: "%s"' % [me, doc_name])
 	_docs_exit_edit()
+	if sugg.get("vote_required", false):
+		_refresh_vote_list()
 	_docs_status_lbl.text = "✅ Suggestion submitted"
 	get_tree().create_timer(3.0).timeout.connect(func():
 		if is_instance_valid(_docs_status_lbl): _docs_status_lbl.text = ""
@@ -5731,6 +5857,7 @@ func _docs_review_reject(idx: int) -> void:
 	_docs_review_build(sugg.get("doc_path", _docs_sel_path))
 	if _docs_sel_path == sugg.get("doc_path", ""):
 		_docs_show_view_buttons(_docs_sel_path)
+	_refresh_vote_list()
 
 func _docs_requires_vote(full_path: String) -> bool:
 	return _docs_permissions.get(full_path, {}).get("require_vote", false)
@@ -5774,11 +5901,13 @@ func _docs_vote_cast(idx: int, vote_yes: bool) -> void:
 		_docs_review_build(sugg.get("doc_path", _docs_sel_path))
 		if _docs_sel_path == sugg.get("doc_path", ""):
 			_docs_show_view_buttons(_docs_sel_path)
+		_refresh_vote_list()
 
 func _docs_open_diff_dialog(idx: int) -> void:
 	var sugg: Dictionary = _docs_suggestions[idx]
 	var proposed: String = sugg.get("content", "")
-	var result := _docs_diff_columns(_docs_loaded_content, proposed)
+	var original: String = sugg.get("original_content", _docs_loaded_content)
+	var result := _docs_diff_columns(original, proposed)
 	_docs_diff_left.parse_bbcode(result["left"])
 	_docs_diff_right.parse_bbcode(result["right"])
 	var doc_name: String = (sugg.get("doc_path", "") as String).get_file().get_basename()
