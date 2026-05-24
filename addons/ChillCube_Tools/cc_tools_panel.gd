@@ -19,6 +19,7 @@ var _clone_url: LineEdit
 var _clone_btn: Button
 var _push_btn: Button
 var _update_plugin_btn: Button
+var _perm_fix_dialog: AcceptDialog
 
 var _dep_addon_list: VBoxContainer
 var _dep_details: VBoxContainer
@@ -7470,9 +7471,56 @@ func _start_push() -> void:
 			ProjectSettings.globalize_path("res://").rstrip("/"),
 			func(msg): call_deferred("_append_log", _installed_log, msg),
 			[self_folder],
-			func(addon_name): call_deferred("_log_activity", "addon_pushed", "Pushed addon update: " + addon_name)
+			func(addon_name): call_deferred("_log_activity", "addon_pushed", "Pushed addon update: " + addon_name),
+			func(addons_dir): call_deferred("_show_perm_error_dialog", addons_dir)
 		)
 	)
+
+func _show_perm_error_dialog(addons_dir: String) -> void:
+	if _perm_fix_dialog and is_instance_valid(_perm_fix_dialog):
+		_perm_fix_dialog.queue_free()
+
+	var cmd := "sudo chmod -R 777 \"%s\"" % addons_dir
+
+	_perm_fix_dialog = AcceptDialog.new()
+	_perm_fix_dialog.title = "Git Permission Error"
+	_perm_fix_dialog.ok_button_text = "Close & Retry"
+	_perm_fix_dialog.confirmed.connect(_start_push)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 8)
+
+	var info := Label.new()
+	info.text = "Git couldn't write to .git/objects — likely caused by a previous sudo git run.\n\nRun this command in a terminal, then close this dialog to retry:"
+	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(info)
+
+	var cmd_row := HBoxContainer.new()
+	var cmd_field := LineEdit.new()
+	cmd_field.text = cmd
+	cmd_field.editable = false
+	cmd_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cmd_row.add_child(cmd_field)
+	var copy_btn := Button.new()
+	copy_btn.text = "📋 Copy"
+	copy_btn.pressed.connect(func(): DisplayServer.clipboard_set(cmd))
+	cmd_row.add_child(copy_btn)
+	vbox.add_child(cmd_row)
+
+	var term_btn := Button.new()
+	term_btn.text = "🖥 Open Terminal"
+	term_btn.pressed.connect(func():
+		for term: String in ["gnome-terminal", "konsole", "xfce4-terminal", "xterm"]:
+			var out := []
+			if OS.execute("which", [term], out, true) == OK and not (out[0] as String).strip_edges().is_empty():
+				OS.create_process(term, [])
+				return
+	)
+	vbox.add_child(term_btn)
+
+	_perm_fix_dialog.add_child(vbox)
+	add_child(_perm_fix_dialog)
+	_perm_fix_dialog.popup_centered(Vector2i(520, 0))
 
 func _run_op(btn: Button, log: TextEdit, work: Callable) -> void:
 	if _thread and _thread.is_started():

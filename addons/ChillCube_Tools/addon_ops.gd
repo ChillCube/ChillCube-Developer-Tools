@@ -46,6 +46,14 @@ static func _exec(cmd: String, args: Array, log: Callable) -> int:
 				log.call(line)
 	return code
 
+static func _exec_capture(cmd: String, args: Array) -> Dictionary:
+	var psa := PackedStringArray()
+	for a in args:
+		psa.append(str(a))
+	var output := []
+	var code := OS.execute(cmd, psa, output, true)
+	return {"code": code, "output": output[0] if not output.is_empty() else ""}
+
 static func _fix_git_perms(repo: String) -> void:
 	var obj_dir := repo + "/.git/objects"
 	if DirAccess.dir_exists_absolute(obj_dir):
@@ -599,7 +607,7 @@ static func update_plugin(root: String, log: Callable) -> bool:
 
 # ─── PUSH ALL ADDONS ─────────────────────────────────────────────────────────
 
-static func push_all(root: String, log: Callable, exclude: Array[String] = [], on_pushed: Callable = Callable()) -> bool:
+static func push_all(root: String, log: Callable, exclude: Array[String] = [], on_pushed: Callable = Callable(), on_perm_error: Callable = Callable()) -> bool:
 	var addons_dir := root + "/addons"
 	if not DirAccess.dir_exists_absolute(addons_dir):
 		log.call("❌ No addons/ directory.")
@@ -632,7 +640,7 @@ static func push_all(root: String, log: Callable, exclude: Array[String] = [], o
 					FileAccess.file_exists(apath + "/plugin.cfg"):
 				log.call("──────────────────────────")
 				log.call("📦 Processing: " + name)
-				if _process_one(root, name, class_to_repo, class_to_addon, dependents_of, log):
+				if _process_one(root, name, class_to_repo, class_to_addon, dependents_of, log, on_perm_error):
 					updated += 1
 					if on_pushed.is_valid():
 						on_pushed.call(name)
@@ -692,7 +700,7 @@ static func _prescan_reverse_deps(addons_dir: String, dependents_of: Dictionary)
 		name = dir.get_next()
 	dir.list_dir_end()
 
-static func _process_one(root: String, folder: String, c2r: Dictionary, c2a: Dictionary, deps_of: Dictionary, log: Callable) -> bool:
+static func _process_one(root: String, folder: String, c2r: Dictionary, c2a: Dictionary, deps_of: Dictionary, log: Callable, on_perm_error: Callable = Callable()) -> bool:
 	var addons_dir := root + "/addons"
 	var apath := addons_dir + "/" + folder
 	var info := parse_cfg(apath + "/plugin.cfg")
@@ -779,7 +787,18 @@ static func _process_one(root: String, folder: String, c2r: Dictionary, c2a: Dic
 	var status_out := []
 	OS.execute("git", PackedStringArray(["-C", apath, "status", "-s"]), status_out, true)
 	if not status_out.is_empty() and not status_out[0].strip_edges().is_empty():
-		_git(["add", "."], apath, log)
+		_fix_git_perms(apath)
+		var add_res: Dictionary = _exec_capture("git", ["-C", apath, "add", "."])
+		var add_out: String = add_res.get("output", "")
+		if log.is_valid() and not add_out.is_empty():
+			for line: String in add_out.split("\n"):
+				if not line.strip_edges().is_empty():
+					log.call(line)
+		if (add_res.get("code", -1) as int) != OK and "insufficient permission" in add_out:
+			log.call("❌ Permission error — run the fix command shown in the popup.")
+			if on_perm_error.is_valid():
+				on_perm_error.call(apath.get_base_dir())
+			return false
 		_git(["commit", "-m", "docs: auto-sync v1.0.0"], apath, log)
 		_git(["push", "origin", "main"], apath, log)
 		return true
