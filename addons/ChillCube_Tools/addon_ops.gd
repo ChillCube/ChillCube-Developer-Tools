@@ -1084,59 +1084,97 @@ static func _update_tree(root: String, log: Callable) -> void:
 		if ei != -1:
 			content = content.substr(0, si) + content.substr(ei + e_mark.length())
 
-	# Collect nodes
-	var nodes := {}  # id -> {label, url, indegree, size, internal}
+	# Parse ADDONS.md to get all known registry addons
+	var registry_addons: Dictionary = {}  # normalized_url -> {name, url}
+	var re_entry := RegEx.new()
+	re_entry.compile("\\*\\s*\\[([^\\]]+)\\]\\(([^)]+)\\)")
+	for line: String in content.split("\n"):
+		var rm := re_entry.search(line)
+		if rm:
+			var rname: String = rm.get_string(1)
+			var rurl: String = _normalise_remote_url(rm.get_string(2))
+			if not rurl.is_empty():
+				registry_addons[rurl] = {"name": rname, "url": rurl}
+
+	# Build local addon map: normalized_url -> local path
+	var local_addons: Dictionary = {}
 	var dir := DirAccess.open(addons_dir)
 	if dir:
 		dir.list_dir_begin()
-		var name := dir.get_next()
-		while name != "":
-			if dir.current_is_dir() and not name.begins_with("."):
-				var cfg := addons_dir + "/" + name + "/plugin.cfg"
-				if FileAccess.file_exists(cfg):
-					var info := parse_cfg(cfg)
-					var raw: String = info.get("name", name)
-					var id := _make_id(raw)
-					var url := git_remote(addons_dir + "/" + name)
-					nodes[id] = {"label": _clean_label(raw), "url": url,
-						"indegree": 0, "size": _find(addons_dir + "/" + name, "*.gd").size(), "internal": true}
-			name = dir.get_next()
+		var lname := dir.get_next()
+		while lname != "":
+			if dir.current_is_dir() and not lname.begins_with("."):
+				var apath := addons_dir + "/" + lname
+				var u := git_remote(apath)
+				if not u.is_empty():
+					local_addons[u] = apath
+			lname = dir.get_next()
 		dir.list_dir_end()
 
-	# Collect edges
+	# Collect nodes — seed from full registry so uninstalled addons appear
+	var nodes := {}  # id -> {label, url, indegree, size, internal}
+	for rurl: String in registry_addons:
+		var rinfo: Dictionary = registry_addons[rurl]
+		var rname: String = rinfo.get("name", rurl.get_file())
+		var id := _make_id(rname)
+		var sz := 0
+		if rurl in local_addons:
+			sz = _find(local_addons[rurl], "*.gd").size()
+		nodes[id] = {"label": _clean_label(rname), "url": rurl, "indegree": 0, "size": sz, "internal": true}
+
+	# Collect edges — read DEPENDENCIES.txt locally or fetch from GitHub
 	var edges: Array[Array] = []
-	var deps_map := {}  # from_id -> [to_ids]
+	var deps_map := {}
 	var has_edge := {}
-	var dir2 := DirAccess.open(addons_dir)
-	if dir2:
-		dir2.list_dir_begin()
-		var name2 := dir2.get_next()
-		while name2 != "":
-			if dir2.current_is_dir() and not name2.begins_with("."):
-				var cfg := addons_dir + "/" + name2 + "/plugin.cfg"
-				var dep_file := addons_dir + "/" + name2 + "/DEPENDENCIES.txt"
-				if FileAccess.file_exists(cfg) and FileAccess.file_exists(dep_file):
-					var info := parse_cfg(cfg)
-					var from_id := _make_id(info.get("name", name2))
-					for line: String in _read(dep_file).split("\n"):
-						line = line.strip_edges()
-						if line.begins_with("http"):
-							var dep_repo := line.rstrip("/").get_file().replace(".git", "")
-							var to_id := _make_id(dep_repo)
-							if from_id.is_empty() or to_id.is_empty():
-								continue
-							if to_id not in nodes:
-								nodes[to_id] = {"label": _clean_label(dep_repo), "url": line.replace(".git", ""),
-									"indegree": 0, "size": 0, "internal": false}
-							nodes[to_id]["indegree"] = int(nodes[to_id]["indegree"]) + 1
-							has_edge[from_id] = true
-							has_edge[to_id] = true
-							edges.append([from_id, to_id])
-							if from_id not in deps_map:
-								deps_map[from_id] = []
-							deps_map[from_id].append(to_id)
-			name2 = dir2.get_next()
-		dir2.list_dir_end()
+	for rurl: String in registry_addons:
+		var rinfo: Dictionary = registry_addons[rurl]
+		var rname: String = rinfo.get("name", rurl.get_file())
+		var from_id := _make_id(rname)
+		var dep_lines: Array[String] = []
+		if rurl in local_addons:
+			var dep_file := local_addons[rurl] + "/DEPENDENCIES.txt"
+			if FileAccess.file_exists(dep_file):
+				for dl: String in _read(dep_file).split("\n"):
+					dep_lines.append(dl)
+		else:
+			var repo_name := rurl.get_file()
+			var raw_url := "https://raw.githubusercontent.com/ChillCube/" + repo_name + "/main/DEPENDENCIES.txt"
+			var curl_out := []
+			OS.execute("curl", ["-sf", "--connect-timeout", "5", "--max-time", "10", raw_url], curl_out, true)
+			if not curl_out.is_empty():
+				for dl: String in (curl_out[0] as String).split("\n"):
+					dep_lines.append(dl)
+		for dline: String in dep_lines:
+			dline = dline.strip_edges()
+			if not dline.begins_with("http"):
+				continue
+			var dep_url := _normalise_remote_url(dline)
+			var to_id: String
+			if dep_url in registry_addons:
+				to_id = _make_id((registry_addons[dep_url] as Dictionary).get("name", dep_url.get_file()))
+			else:
+				var dep_repo := dep_url.rstrip("/").get_file().replace(".git", "")
+				to_id = _make_id(dep_repo)
+				if to_id not in nodes:
+					nodes[to_id] = {"label": _clean_label(dep_repo), "url": dep_url,
+						"indegree": 0, "size": 0, "internal": false}
+			if from_id.is_empty() or to_id.is_empty():
+				continue
+			(nodes[to_id] as Dictionary)["indegree"] = int((nodes[to_id] as Dictionary).get("indegree", 0)) + 1
+			has_edge[from_id] = true
+			has_edge[to_id] = true
+			edges.append([from_id, to_id])
+			if from_id not in deps_map:
+				deps_map[from_id] = []
+			(deps_map[from_id] as Array).append(to_id)
+
+	# Add isolated registry nodes to has_edge so they appear as standalone
+	for rurl: String in registry_addons:
+		var rname2: String = (registry_addons[rurl] as Dictionary).get("name", rurl.get_file())
+		var rid := _make_id(rname2)
+		if rid not in has_edge:
+			# will appear in standalone section
+			pass
 
 	# Topological layers
 	var layers := {}
