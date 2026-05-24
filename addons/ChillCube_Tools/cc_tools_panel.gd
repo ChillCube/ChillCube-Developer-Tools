@@ -3186,17 +3186,13 @@ func _refresh_vote_list() -> void:
 			change_btn.pressed.connect(func(): _docs_vote_cast(cap_si, not already_yes))
 			voted_row.add_child(change_btn)
 			cvbox.add_child(voted_row)
-		# Editor force controls
+		# Editor controls
 		if _docs_can_edit(doc_path):
 			var force_row := HBoxContainer.new()
 			force_row.alignment = BoxContainer.ALIGNMENT_END
-			var force_yes := Button.new()
-			force_yes.text = "✅ Force Approve"
-			force_yes.pressed.connect(func(): _docs_review_approve(cap_si))
 			var force_no := Button.new()
 			force_no.text = "❌ Reject"
 			force_no.pressed.connect(func(): _docs_review_reject(cap_si))
-			force_row.add_child(force_yes)
 			force_row.add_child(force_no)
 			cvbox.add_child(force_row)
 		_vote_list.add_child(panel)
@@ -5979,14 +5975,9 @@ func _docs_review_build(full_path: String) -> void:
 				change_btn.pressed.connect(func(): _docs_vote_cast(cap_i, not already_yes))
 				vote_row.add_child(change_btn)
 			if can_edit:
-				var force_yes := Button.new()
-				force_yes.text = "✅ Force"
-				force_yes.tooltip_text = "Force approve without waiting for vote threshold"
-				force_yes.pressed.connect(func(): _docs_review_approve(cap_i))
 				var force_no := Button.new()
 				force_no.text = "❌ Reject"
 				force_no.pressed.connect(func(): _docs_review_reject(cap_i))
-				vote_row.add_child(force_yes)
 				vote_row.add_child(force_no)
 			card_vbox.add_child(vote_row)
 		elif status == "pending" and can_edit:
@@ -8224,7 +8215,7 @@ func _refresh_account_tab() -> void:
 				var uname: String = _current_user.get("username", "")
 				var role: String = _current_user.get("role", "member")
 				info.text = "👤 %s  (%s)" % [uname, role]
-			var is_leader: bool = _current_user.get("role", "") == "leader"
+			var is_leader: bool = _election_is_leader()
 			for child in root.get_children():
 				if child.name in ["ApprovalHeading", "ApprovalBar", "ApprovalScroll"]:
 					child.visible = is_leader
@@ -8269,13 +8260,17 @@ func _on_pending_loaded(all_users: Array, approver: String) -> void:
 		if uname.to_lower() == approver.to_lower():
 			continue
 		var approved: bool = u.get("approved", false)
+		var u_role: String = u.get("role", "member")
 		var row := HBoxContainer.new()
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		var lbl := Label.new()
-		lbl.text = ("✅ " if approved else "⏳ ") + uname
+		var role_tag := " [leader]" if u_role == "leader" else ""
+		lbl.text = ("✅ " if approved else "⏳ ") + uname + role_tag
 		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		if not approved:
 			lbl.add_theme_color_override("font_color", Color(0.9, 0.7, 0.3))
+		elif u_role == "leader":
+			lbl.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
 		row.add_child(lbl)
 		if not approved:
 			var approve_btn := Button.new()
@@ -8296,6 +8291,26 @@ func _on_pending_loaded(all_users: Array, approver: String) -> void:
 				)
 			)
 			row.add_child(approve_btn)
+		if approved:
+			var role_btn := Button.new()
+			role_btn.text = "Demote" if u_role == "leader" else "Promote"
+			var cap_name3 := uname
+			var cap_approver3 := approver
+			var cap_new_role := "member" if u_role == "leader" else "leader"
+			role_btn.pressed.connect(func():
+				role_btn.disabled = true
+				if _login_thread and _login_thread.is_started():
+					return
+				_login_thread = Thread.new()
+				_login_thread.start(func():
+					Ops.auth_set_role(cap_approver3, cap_name3, cap_new_role, Callable())
+					call_deferred("_log_activity", "role_changed",
+						"%s set %s role to %s" % [cap_approver3, cap_name3, cap_new_role])
+					call_deferred("_refresh_pending_list")
+					call_deferred("_on_approve_done")
+				)
+			)
+			row.add_child(role_btn)
 		var remove_btn := Button.new()
 		remove_btn.text = "Remove"
 		remove_btn.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
@@ -8316,6 +8331,47 @@ func _on_pending_loaded(all_users: Array, approver: String) -> void:
 		)
 		row.add_child(remove_btn)
 		_pending_list.add_child(row)
+
+	# Bootstrap: sole member with no leader can claim leadership
+	var only_self := true
+	for u: Dictionary in all_users:
+		if u.get("username", "").to_lower() != approver.to_lower():
+			only_self = false
+			break
+	if only_self and _current_user.get("role", "member") != "leader":
+		var row2 := HBoxContainer.new()
+		var hint := Label.new()
+		hint.text = "You are the only member."
+		hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+		row2.add_child(hint)
+		var claim_btn := Button.new()
+		claim_btn.text = "👑 Claim Leadership"
+		var cap_approver4 := approver
+		claim_btn.pressed.connect(func():
+			claim_btn.disabled = true
+			if _login_thread and _login_thread.is_started():
+				return
+			_login_thread = Thread.new()
+			_login_thread.start(func():
+				var ok := Ops.auth_set_role(cap_approver4, cap_approver4, "leader", Callable())
+				if ok:
+					call_deferred("_on_leadership_claimed")
+				else:
+					call_deferred("_on_approve_done")
+			)
+		)
+		row2.add_child(claim_btn)
+		_pending_list.add_child(row2)
+
+func _on_leadership_claimed() -> void:
+	if _login_thread:
+		_login_thread.wait_to_finish()
+	_login_thread = null
+	_current_user["role"] = "leader"
+	_session_save()
+	_log_activity("role_changed", _current_user.get("username", "") + " claimed leadership")
+	_refresh_account_tab()
 
 func _on_approve_done() -> void:
 	if _login_thread:
@@ -8409,6 +8465,8 @@ func _election_is_leader() -> bool:
 	var me: String = _current_user.get("username", "")
 	if me.is_empty():
 		return false
+	if _current_user.get("role", "") == "leader":
+		return true
 	var holders: Dictionary = _election_data.get("holders", {}) as Dictionary
 	for role: String in holders:
 		if role.to_lower() == "leader":
@@ -8465,10 +8523,33 @@ func _election_on_members_loaded(users: Array) -> void:
 	var settings: Dictionary = _election_settings()
 	settings["cached_member_count"] = _election_members.size()
 	_election_data["settings"] = settings
+	_election_seed_initial_leader(users)
 	if is_instance_valid(_election_status_lbl):
 		_election_status_lbl.text = ""
 	_election_weekly_check()
 	_election_refresh()
+
+func _election_seed_initial_leader(users: Array) -> void:
+	var roles: Dictionary = _election_data.get("roles", {}) as Dictionary
+	for r: String in roles:
+		if r.to_lower() == "leader":
+			return  # Leader role already exists, nothing to seed
+	var auth_leader := ""
+	for u: Dictionary in users:
+		if u.get("role", "") == "leader" and u.get("approved", true):
+			auth_leader = u.get("username", "")
+			break
+	if auth_leader.is_empty():
+		return
+	var today := Time.get_date_string_from_system()
+	roles["Leader"] = {"description": "Project leader.", "desc_locked": false}
+	_election_data["roles"] = roles
+	var holders: Dictionary = _election_data.get("holders", {}) as Dictionary
+	holders["Leader"] = [auth_leader]
+	_election_data["holders"] = holders
+	var holder_since: Dictionary = _election_data.get("holder_since", {}) as Dictionary
+	holder_since["Leader"] = {auth_leader: today}
+	_election_data["holder_since"] = holder_since
 
 func _election_weekly_check() -> void:
 	var roles: Dictionary = _election_data.get("roles", {}) as Dictionary
