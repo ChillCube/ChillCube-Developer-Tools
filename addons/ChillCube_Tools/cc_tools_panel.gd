@@ -622,6 +622,79 @@ func _refresh_dep_details() -> void:
 		_dep_commit_bg(root + "/addons/" + folder)
 	)
 
+func _show_addon_meta_dialog(addon_path: String, current: Dictionary) -> void:
+	var dlg := AcceptDialog.new()
+	dlg.title = "Edit Addon Metadata"
+	dlg.ok_button_text = "Save & Commit"
+	dlg.min_size = Vector2i(420, 0)
+
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 6)
+
+	var fields: Dictionary = {}
+	for pair: Array in [
+		["name", "Name"],
+		["description", "Description"],
+		["author", "Author"],
+		["version", "Version"],
+	]:
+		var key: String = pair[0]
+		var label_text: String = pair[1]
+		var lbl := Label.new()
+		lbl.text = label_text + ":"
+		grid.add_child(lbl)
+		var field := LineEdit.new()
+		field.text = current.get(key, "")
+		field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		grid.add_child(field)
+		fields[key] = field
+
+	var cat_lbl := Label.new()
+	cat_lbl.text = "Category:"
+	grid.add_child(cat_lbl)
+	var cat_opt := OptionButton.new()
+	cat_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var known_cats: Array[String] = [
+		"Uncategorized", "Core Systems", "UI & Menus", "Combat & Abilities",
+		"Character Controllers", "Inventory & Items", "Settings & Configuration",
+		"Polish & Juice", "Networking", "Visual Effects (Shaders/VFX)",
+		"Camera Systems", "Audio Management", "AI & Pathfinding",
+		"World & Level Design", "Card Game Systems", "Saving & Loading",
+	]
+	var cur_cat: String = current.get("category", "Uncategorized")
+	if cur_cat not in known_cats:
+		known_cats.append(cur_cat)
+	var cur_idx := 0
+	for i in range(known_cats.size()):
+		cat_opt.add_item(known_cats[i])
+		if known_cats[i] == cur_cat:
+			cur_idx = i
+	cat_opt.selected = cur_idx
+	grid.add_child(cat_opt)
+
+	dlg.add_child(grid)
+	add_child(dlg)
+
+	dlg.confirmed.connect(func():
+		var new_fields: Dictionary = {}
+		for key: String in fields.keys():
+			new_fields[key] = (fields[key] as LineEdit).text.strip_edges()
+		new_fields["category"] = cat_opt.get_item_text(cat_opt.selected)
+		var cfg_path := addon_path + "/plugin.cfg"
+		if Ops.update_cfg(cfg_path, new_fields):
+			var t := Thread.new()
+			t.start(func():
+				Ops.files_quick_commit(addon_path, ["plugin.cfg"], "meta: update addon metadata", Callable())
+				t.call_deferred("wait_to_finish")
+			)
+			_refresh_addons()
+		dlg.queue_free()
+	)
+	dlg.canceled.connect(func(): dlg.queue_free())
+	dlg.popup_centered()
+
 func _dep_commit_bg(addon_path: String) -> void:
 	var t := Thread.new()
 	t.start(func():
@@ -7433,6 +7506,14 @@ func _refresh_addons() -> void:
 		var captured_addon_name: String = cfg.get("name", folder)
 		edit_btn.pressed.connect(func(): _open_script_editor(captured_edit_folder, captured_addon_name))
 		row.add_child(edit_btn)
+
+		var meta_btn := Button.new()
+		meta_btn.text = "⚙"
+		meta_btn.tooltip_text = "Edit addon metadata (name, description, category…)"
+		var cap_cfg := cfg.duplicate()
+		var cap_folder := folder
+		meta_btn.pressed.connect(func(): _show_addon_meta_dialog(root + "/addons/" + cap_folder, cap_cfg))
+		row.add_child(meta_btn)
 
 		var rm_btn := Button.new()
 		rm_btn.text = "🗑️"

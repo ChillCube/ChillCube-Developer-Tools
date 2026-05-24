@@ -175,6 +175,22 @@ static func parse_cfg(path: String) -> Dictionary:
 				out[key] = val
 	return out
 
+static func update_cfg(path: String, fields: Dictionary) -> bool:
+	var lines := _read(path).split("\n")
+	var updated: Array[String] = []
+	var touched := {}
+	for line: String in lines:
+		var wrote := false
+		for key: String in fields.keys():
+			if line.strip_edges().begins_with(key + "="):
+				updated.append('%s="%s"' % [key, str(fields[key])])
+				touched[key] = true
+				wrote = true
+				break
+		if not wrote:
+			updated.append(line)
+	return _write(path, "\n".join(PackedStringArray(updated)))
+
 static func git_remote(addon_path: String) -> String:
 	# Read .git/config directly — more reliable than running git in Godot's PATH
 	var git_path := addon_path + "/.git"
@@ -535,23 +551,25 @@ static func add_dep(addon_path: String, dep_url: String) -> void:
 		content += "\n" + MANUAL_MARKER + "\n" + clean + "\n"
 	_write(dep_file, content)
 
-static func dep_quick_commit(addon_path: String, log: Callable = Callable()) -> bool:
+static func files_quick_commit(addon_path: String, files: Array[String], message: String, log: Callable = Callable()) -> bool:
 	_fix_git_perms(addon_path)
-	var add_res: Dictionary = _exec_capture("git", ["-C", addon_path, "add", "DEPENDENCIES.txt"])
-	if (add_res.get("code", -1) as int) != OK:
-		if log.is_valid(): log.call("❌ git add failed: " + str(add_res.get("output", "")))
-		return false
+	for f: String in files:
+		_git(["add", f], addon_path, log)
 	var status_out: Array = []
-	OS.execute("git", PackedStringArray(["-C", addon_path, "status", "-s", "DEPENDENCIES.txt"]), status_out, true)
+	var psa := PackedStringArray(["-C", addon_path, "status", "-s"] + files)
+	OS.execute("git", psa, status_out, true)
 	var dirty: bool = not status_out.is_empty() and not (status_out[0] as String).strip_edges().is_empty()
 	if not dirty:
 		if log.is_valid(): log.call("✨ No changes to commit.")
 		return true
-	if _git(["commit", "-m", "deps: update manual dependencies"], addon_path, log) != OK:
+	if _git(["commit", "-m", message], addon_path, log) != OK:
 		if log.is_valid(): log.call("❌ git commit failed.")
 		return false
 	_git(["push", "origin", "main"], addon_path, log)
 	return true
+
+static func dep_quick_commit(addon_path: String, log: Callable = Callable()) -> bool:
+	return files_quick_commit(addon_path, ["DEPENDENCIES.txt"], "deps: update manual dependencies", log)
 
 static func remove_dep(addon_path: String, dep_url: String) -> void:
 	var dep_file := addon_path + "/DEPENDENCIES.txt"
