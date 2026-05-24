@@ -157,6 +157,14 @@ var _docs_review_dialog: AcceptDialog
 var _docs_review_list: VBoxContainer
 var _docs_review_view: RichTextLabel
 
+var _docs_perm_vote_check: CheckBox
+var _docs_perm_vote_section: VBoxContainer
+var _docs_perm_vote_thresh: OptionButton
+
+var _docs_diff_dialog: AcceptDialog
+var _docs_diff_left: RichTextLabel
+var _docs_diff_right: RichTextLabel
+
 var _http: HTTPRequest
 var _registry_list: VBoxContainer
 var _registry_status: Label
@@ -4778,7 +4786,7 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 
 	_docs_perm_dialog = AcceptDialog.new()
 	_docs_perm_dialog.title = "Document Permissions"
-	_docs_perm_dialog.size = Vector2i(380, 300)
+	_docs_perm_dialog.size = Vector2i(400, 420)
 	var perm_vbox := VBoxContainer.new()
 	perm_vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_docs_perm_dialog.add_child(perm_vbox)
@@ -4815,6 +4823,28 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	_docs_perm_mode.item_selected.connect(func(idx: int):
 		if is_instance_valid(_docs_perm_user_section):
 			_docs_perm_user_section.visible = idx == 1
+	)
+	perm_vbox.add_child(HSeparator.new())
+	_docs_perm_vote_check = CheckBox.new()
+	_docs_perm_vote_check.text = "Require team vote to change"
+	perm_vbox.add_child(_docs_perm_vote_check)
+	_docs_perm_vote_section = VBoxContainer.new()
+	_docs_perm_vote_section.visible = false
+	perm_vbox.add_child(_docs_perm_vote_section)
+	var vote_thresh_lbl := Label.new()
+	vote_thresh_lbl.text = "Approval threshold (yes / total votes cast):"
+	vote_thresh_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	_docs_perm_vote_section.add_child(vote_thresh_lbl)
+	_docs_perm_vote_thresh = OptionButton.new()
+	_docs_perm_vote_thresh.add_item("1/3  (any minority)")
+	_docs_perm_vote_thresh.add_item("1/2  (simple majority)")
+	_docs_perm_vote_thresh.add_item("2/3  (supermajority)")
+	_docs_perm_vote_thresh.add_item("3/4  (strong consensus)")
+	_docs_perm_vote_thresh.select(1)
+	_docs_perm_vote_section.add_child(_docs_perm_vote_thresh)
+	_docs_perm_vote_check.toggled.connect(func(on: bool):
+		if is_instance_valid(_docs_perm_vote_section):
+			_docs_perm_vote_section.visible = on
 	)
 	_docs_perm_dialog.confirmed.connect(_docs_perm_save)
 	add_child(_docs_perm_dialog)
@@ -4856,6 +4886,56 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	rev_prev_scroll.add_child(_docs_review_view)
 	rev_vbox.add_child(rev_prev_scroll)
 	add_child(_docs_review_dialog)
+
+	_docs_diff_dialog = AcceptDialog.new()
+	_docs_diff_dialog.title = "Side-by-Side Diff"
+	_docs_diff_dialog.size = Vector2i(960, 640)
+	var diff_root := VBoxContainer.new()
+	diff_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_docs_diff_dialog.add_child(diff_root)
+	var diff_header := HBoxContainer.new()
+	var diff_lbl_orig := Label.new()
+	diff_lbl_orig.text = "Original"
+	diff_lbl_orig.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	diff_lbl_orig.add_theme_color_override("font_color", Color(1.0, 0.5, 0.5))
+	var diff_lbl_prop := Label.new()
+	diff_lbl_prop.text = "Proposed"
+	diff_lbl_prop.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	diff_lbl_prop.add_theme_color_override("font_color", Color(0.5, 1.0, 0.5))
+	diff_header.add_child(diff_lbl_orig)
+	diff_header.add_child(VSeparator.new())
+	diff_header.add_child(diff_lbl_prop)
+	diff_root.add_child(diff_header)
+	diff_root.add_child(HSeparator.new())
+	var diff_scroll := ScrollContainer.new()
+	diff_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	diff_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var diff_cols := HBoxContainer.new()
+	diff_cols.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	diff_cols.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_docs_diff_left = RichTextLabel.new()
+	_docs_diff_left.bbcode_enabled = true
+	_docs_diff_left.fit_content = true
+	_docs_diff_left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_diff_left.scroll_active = false
+	_docs_diff_left.selection_enabled = true
+	var diff_mono: Font = EditorInterface.get_editor_theme().get_font("source", "EditorFonts")
+	if diff_mono:
+		_docs_diff_left.add_theme_font_override("normal_font", diff_mono)
+	diff_cols.add_child(_docs_diff_left)
+	diff_cols.add_child(VSeparator.new())
+	_docs_diff_right = RichTextLabel.new()
+	_docs_diff_right.bbcode_enabled = true
+	_docs_diff_right.fit_content = true
+	_docs_diff_right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_diff_right.scroll_active = false
+	_docs_diff_right.selection_enabled = true
+	if diff_mono:
+		_docs_diff_right.add_theme_font_override("normal_font", diff_mono)
+	diff_cols.add_child(_docs_diff_right)
+	diff_scroll.add_child(diff_cols)
+	diff_root.add_child(diff_scroll)
+	add_child(_docs_diff_dialog)
 
 	_docs_navigate("")
 
@@ -5303,6 +5383,11 @@ func _docs_open_perm_dialog() -> void:
 	_docs_perm_user_section.visible = mode == "specific"
 	_docs_perm_refresh_users(perm.get("users", []))
 	_docs_perm_input.text = ""
+	var req_vote: bool = perm.get("require_vote", false)
+	_docs_perm_vote_check.set_pressed_no_signal(req_vote)
+	_docs_perm_vote_section.visible = req_vote
+	var thresh_map := {"1/3": 0, "1/2": 1, "2/3": 2, "3/4": 3}
+	_docs_perm_vote_thresh.select(thresh_map.get(perm.get("vote_threshold", "1/2"), 1))
 	_docs_perm_dialog.popup_centered()
 
 func _docs_perm_refresh_users(users: Array) -> void:
@@ -5345,11 +5430,45 @@ func _docs_perm_add_user() -> void:
 func _docs_perm_save() -> void:
 	if _docs_perm_path.is_empty():
 		return
-	var perm: Dictionary = _docs_permissions.get(_docs_perm_path, {})
-	perm["mode"] = "anyone" if _docs_perm_mode.selected == 0 else "specific"
-	if perm["mode"] == "anyone":
-		perm.erase("users")
-	_docs_permissions[_docs_perm_path] = perm
+	var old_perm: Dictionary = _docs_permissions.get(_docs_perm_path, {})
+	var new_perm: Dictionary = old_perm.duplicate()
+	new_perm["mode"] = "anyone" if _docs_perm_mode.selected == 0 else "specific"
+	if new_perm["mode"] == "anyone":
+		new_perm.erase("users")
+	new_perm["require_vote"] = _docs_perm_vote_check.button_pressed
+	if new_perm["require_vote"]:
+		var thresh_list := ["1/3", "1/2", "2/3", "3/4"]
+		new_perm["vote_threshold"] = thresh_list[_docs_perm_vote_thresh.selected]
+	else:
+		new_perm.erase("vote_threshold")
+	# If the doc currently requires a vote, changing vote settings itself requires a vote
+	if old_perm.get("require_vote", false):
+		var me := _current_user.get("username", "?")
+		_docs_suggestions.append({
+			"id": str(Time.get_unix_time_from_system()) + "_perm_" + me,
+			"doc_path": _docs_perm_path,
+			"author": me,
+			"timestamp": Time.get_datetime_string_from_system(),
+			"content": _docs_loaded_content,
+			"status": "pending",
+			"type": "permission_change",
+			"new_permissions": new_perm,
+			"vote_required": true,
+			"vote_threshold": old_perm.get("vote_threshold", "1/2"),
+			"votes": {"yes": [], "no": []}
+		})
+		_save_doc_suggestions()
+		var doc_name := _docs_perm_path.get_file().get_basename()
+		_log_activity("doc_suggestion", '"%s" proposed permission change for: "%s"' % [me, doc_name])
+		_docs_perm_dialog.hide()
+		_docs_status_lbl.text = "⏳ Permission change submitted for team vote"
+		get_tree().create_timer(4.0).timeout.connect(func():
+			if is_instance_valid(_docs_status_lbl): _docs_status_lbl.text = ""
+		)
+		if _docs_sel_path == _docs_perm_path:
+			_docs_show_view_buttons(_docs_sel_path)
+		return
+	_docs_permissions[_docs_perm_path] = new_perm
 	_save_doc_permissions()
 	if _docs_sel_path == _docs_perm_path and not _docs_editor.visible:
 		_docs_show_view_buttons(_docs_sel_path)
@@ -5388,13 +5507,15 @@ func _docs_pending_suggestions(full_path: String) -> int:
 
 func _docs_show_view_buttons(full_path: String) -> void:
 	var can_edit := _docs_can_edit(full_path)
-	_docs_edit_btn.visible = can_edit
-	_docs_delete_header_btn.visible = can_edit
-	_docs_suggest_btn.visible = not can_edit and not full_path.is_empty()
-	_docs_perm_btn.visible = not full_path.is_empty()
-	_docs_review_btn.visible = can_edit and not full_path.is_empty()
-	if can_edit and not full_path.is_empty():
-		var pending := _docs_pending_suggestions(full_path)
+	var req_vote := _docs_requires_vote(full_path)
+	_docs_edit_btn.visible = can_edit and not req_vote
+	_docs_delete_header_btn.visible = can_edit and not req_vote
+	_docs_suggest_btn.visible = not full_path.is_empty() and (not can_edit or req_vote)
+	_docs_perm_btn.visible = can_edit and not full_path.is_empty()
+	var pending := _docs_pending_suggestions(full_path)
+	var show_review := not full_path.is_empty() and (can_edit or (req_vote and pending > 0))
+	_docs_review_btn.visible = show_review
+	if show_review:
 		_docs_review_btn.text = ("📬 " + str(pending)) if pending > 0 else "📬"
 
 func _docs_enter_suggest() -> void:
@@ -5411,14 +5532,20 @@ func _docs_suggest_submit() -> void:
 	if _docs_sel_path.is_empty():
 		return
 	var me := _current_user.get("username", "?")
-	_docs_suggestions.append({
+	var sugg: Dictionary = {
 		"id": str(Time.get_unix_time_from_system()) + "_" + me,
 		"doc_path": _docs_sel_path,
 		"author": me,
 		"timestamp": Time.get_datetime_string_from_system(),
 		"content": _docs_editor.text,
 		"status": "pending"
-	})
+	}
+	if _docs_requires_vote(_docs_sel_path):
+		var perm: Dictionary = _docs_permissions.get(_docs_sel_path, {})
+		sugg["vote_required"] = true
+		sugg["vote_threshold"] = perm.get("vote_threshold", "1/2")
+		sugg["votes"] = {"yes": [], "no": []}
+	_docs_suggestions.append(sugg)
 	_save_doc_suggestions()
 	var doc_name := _docs_sel_path.get_file().get_basename()
 	_log_activity("doc_suggestion", '"%s" suggested edits to: "%s"' % [me, doc_name])
@@ -5441,6 +5568,8 @@ func _docs_open_review_dialog() -> void:
 func _docs_review_build(full_path: String) -> void:
 	for c in _docs_review_list.get_children():
 		c.queue_free()
+	var me := _current_user.get("username", "?")
+	var can_edit := _docs_can_edit(full_path)
 	var found := false
 	for i in range(_docs_suggestions.size()):
 		var s: Dictionary = _docs_suggestions[i]
@@ -5448,36 +5577,98 @@ func _docs_review_build(full_path: String) -> void:
 			continue
 		found = true
 		var status: String = s.get("status", "pending")
+		var is_vote: bool = s.get("vote_required", false)
+		var is_perm_change: bool = s.get("type", "") == "permission_change"
 		var cap_i := i
 		var card := PanelContainer.new()
 		var card_vbox := VBoxContainer.new()
 		card.add_child(card_vbox)
+		# ── Title row ────────────────────────────────────────────────────────
 		var top_row := HBoxContainer.new()
 		var status_icon := {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(status, "?")
+		var kind_icon := "🗳" if is_vote else ("🔒" if is_perm_change else "💡")
 		var info_lbl := Label.new()
-		info_lbl.text = status_icon + " " + s.get("author", "?") + "  —  " + s.get("timestamp", "")
+		info_lbl.text = status_icon + " " + kind_icon + " " + s.get("author", "?") + "  —  " + s.get("timestamp", "")
 		info_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		info_lbl.add_theme_color_override("font_color",
 			Color(0.9, 0.9, 0.9) if status == "pending" else Color(0.5, 0.5, 0.5))
 		top_row.add_child(info_lbl)
-		var preview_btn := Button.new()
-		preview_btn.text = "👁"
-		preview_btn.flat = true
-		preview_btn.tooltip_text = "Preview content"
-		preview_btn.pressed.connect(func():
-			_docs_review_view.parse_bbcode(_md_to_bbcode(_docs_suggestions[cap_i].get("content", "")))
-		)
-		top_row.add_child(preview_btn)
-		if status == "pending":
+		if is_perm_change:
+			var what_lbl := Label.new()
+			what_lbl.text = "Permission change"
+			what_lbl.add_theme_color_override("font_color", Color(0.8, 0.7, 1.0))
+			top_row.add_child(what_lbl)
+		else:
+			var diff_btn := Button.new()
+			diff_btn.text = "📊 Diff"
+			diff_btn.flat = true
+			diff_btn.pressed.connect(func(): _docs_open_diff_dialog(cap_i))
+			top_row.add_child(diff_btn)
+			var preview_btn := Button.new()
+			preview_btn.text = "👁"
+			preview_btn.flat = true
+			preview_btn.tooltip_text = "Preview proposed content"
+			preview_btn.pressed.connect(func():
+				_docs_review_view.parse_bbcode(_md_to_bbcode(_docs_suggestions[cap_i].get("content", "")))
+			)
+			top_row.add_child(preview_btn)
+		card_vbox.add_child(top_row)
+		# ── Voting row (vote-required pending) ───────────────────────────────
+		if status == "pending" and is_vote:
+			var votes: Dictionary = s.get("votes", {})
+			var yes_list: Array = votes.get("yes", [])
+			var no_list: Array = votes.get("no", [])
+			var thresh: String = s.get("vote_threshold", "1/2")
+			var vote_row := HBoxContainer.new()
+			var tally_lbl := Label.new()
+			tally_lbl.text = "👍 %d  👎 %d  |  threshold: %s" % [yes_list.size(), no_list.size(), thresh]
+			tally_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			tally_lbl.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
+			vote_row.add_child(tally_lbl)
+			var already_yes := me in yes_list
+			var already_no := me in no_list
+			if not already_yes and not already_no:
+				var yes_btn := Button.new()
+				yes_btn.text = "👍 For"
+				yes_btn.pressed.connect(func(): _docs_vote_cast(cap_i, true))
+				var no_btn := Button.new()
+				no_btn.text = "👎 Against"
+				no_btn.pressed.connect(func(): _docs_vote_cast(cap_i, false))
+				vote_row.add_child(yes_btn)
+				vote_row.add_child(no_btn)
+			else:
+				var voted_lbl := Label.new()
+				voted_lbl.text = "Your vote: " + ("👍" if already_yes else "👎")
+				voted_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+				vote_row.add_child(voted_lbl)
+				var change_btn := Button.new()
+				change_btn.text = "Change"
+				change_btn.flat = true
+				change_btn.pressed.connect(func(): _docs_vote_cast(cap_i, not already_yes))
+				vote_row.add_child(change_btn)
+			if can_edit:
+				var force_yes := Button.new()
+				force_yes.text = "✅ Force"
+				force_yes.tooltip_text = "Force approve without waiting for vote threshold"
+				force_yes.pressed.connect(func(): _docs_review_approve(cap_i))
+				var force_no := Button.new()
+				force_no.text = "❌ Reject"
+				force_no.pressed.connect(func(): _docs_review_reject(cap_i))
+				vote_row.add_child(force_yes)
+				vote_row.add_child(force_no)
+			card_vbox.add_child(vote_row)
+		elif status == "pending" and can_edit:
+			var act_row := HBoxContainer.new()
+			act_row.alignment = BoxContainer.ALIGNMENT_END
 			var approve_btn := Button.new()
 			approve_btn.text = "✅ Approve"
 			approve_btn.pressed.connect(func(): _docs_review_approve(cap_i))
 			var reject_btn := Button.new()
 			reject_btn.text = "❌ Reject"
 			reject_btn.pressed.connect(func(): _docs_review_reject(cap_i))
-			top_row.add_child(approve_btn)
-			top_row.add_child(reject_btn)
-		card_vbox.add_child(top_row)
+			act_row.add_child(approve_btn)
+			act_row.add_child(reject_btn)
+			card_vbox.add_child(act_row)
 		_docs_review_list.add_child(card)
 	if not found:
 		var hint := Label.new()
@@ -5494,6 +5685,18 @@ func _docs_review_approve(idx: int) -> void:
 	_docs_suggestions[idx] = sugg
 	_save_doc_suggestions()
 	_docs_review_dialog.hide()
+	# Permission-change suggestion: apply new_permissions, no vault upload needed
+	if sugg.get("type", "") == "permission_change":
+		var doc_path: String = sugg["doc_path"]
+		_docs_permissions[doc_path] = sugg.get("new_permissions", {})
+		_save_doc_permissions()
+		var doc_name := doc_path.get_file().get_basename()
+		var me := _current_user.get("username", "?")
+		_log_activity("doc_suggestion", '"%s" approved permission change for: "%s"' % [me, doc_name])
+		if _docs_sel_path == doc_path:
+			_docs_show_view_buttons(_docs_sel_path)
+		_docs_status_lbl.text = "✅ Permissions updated"
+		return
 	var doc_path: String = sugg["doc_path"]
 	var new_content: String = sugg["content"]
 	var tmp_dir := OS.get_temp_dir() + "/cc_docs_save"
@@ -5528,6 +5731,128 @@ func _docs_review_reject(idx: int) -> void:
 	_docs_review_build(sugg.get("doc_path", _docs_sel_path))
 	if _docs_sel_path == sugg.get("doc_path", ""):
 		_docs_show_view_buttons(_docs_sel_path)
+
+func _docs_requires_vote(full_path: String) -> bool:
+	return _docs_permissions.get(full_path, {}).get("require_vote", false)
+
+func _docs_vote_threshold_met(sugg: Dictionary) -> bool:
+	var votes: Dictionary = sugg.get("votes", {})
+	var yes_count: int = votes.get("yes", []).size()
+	var no_count: int = votes.get("no", []).size()
+	var total := yes_count + no_count
+	if total == 0:
+		return false
+	match sugg.get("vote_threshold", "1/2"):
+		"1/3": return yes_count * 3 >= total
+		"1/2": return yes_count * 2 > total
+		"2/3": return yes_count * 3 >= total * 2
+		"3/4": return yes_count * 4 >= total * 3
+	return false
+
+func _docs_vote_cast(idx: int, vote_yes: bool) -> void:
+	var sugg: Dictionary = _docs_suggestions[idx]
+	var me := _current_user.get("username", "?")
+	var votes: Dictionary = sugg.get("votes", {})
+	var yes_list: Array = votes.get("yes", [])
+	var no_list: Array = votes.get("no", [])
+	yes_list.erase(me)
+	no_list.erase(me)
+	if vote_yes:
+		yes_list.append(me)
+	else:
+		no_list.append(me)
+	votes["yes"] = yes_list
+	votes["no"] = no_list
+	sugg["votes"] = votes
+	_docs_suggestions[idx] = sugg
+	_save_doc_suggestions()
+	var doc_name := sugg.get("doc_path", "").get_file().get_basename()
+	_log_activity("doc_vote", '"%s" voted %s on suggestion for: "%s"' % [me, "👍" if vote_yes else "👎", doc_name])
+	if _docs_vote_threshold_met(sugg):
+		_docs_review_approve(idx)
+	else:
+		_docs_review_build(sugg.get("doc_path", _docs_sel_path))
+		if _docs_sel_path == sugg.get("doc_path", ""):
+			_docs_show_view_buttons(_docs_sel_path)
+
+func _docs_open_diff_dialog(idx: int) -> void:
+	var sugg: Dictionary = _docs_suggestions[idx]
+	var proposed: String = sugg.get("content", "")
+	var result := _docs_diff_columns(_docs_loaded_content, proposed)
+	_docs_diff_left.parse_bbcode(result["left"])
+	_docs_diff_right.parse_bbcode(result["right"])
+	var doc_name := sugg.get("doc_path", "").get_file().get_basename()
+	_docs_diff_dialog.title = "Diff — " + doc_name + " — by " + sugg.get("author", "?")
+	_docs_diff_dialog.popup_centered()
+
+func _docs_diff_columns(old_text: String, new_text: String) -> Dictionary:
+	var old_lines := Array(old_text.split("\n"))
+	var new_lines := Array(new_text.split("\n"))
+	var diff := _lcs_diff(old_lines, new_lines)
+	var left_bb := PackedStringArray()
+	var right_bb := PackedStringArray()
+	var i := 0
+	while i < diff.size():
+		var entry: Dictionary = diff[i]
+		if entry["type"] == "equal":
+			var escaped: String = (entry["line"] as String).xml_escape()
+			left_bb.append("  " + escaped)
+			right_bb.append("  " + escaped)
+			i += 1
+		else:
+			var removes: Array[String] = []
+			var adds: Array[String] = []
+			while i < diff.size() and (diff[i] as Dictionary)["type"] != "equal":
+				if (diff[i] as Dictionary)["type"] == "remove":
+					removes.append((diff[i] as Dictionary)["line"])
+				else:
+					adds.append((diff[i] as Dictionary)["line"])
+				i += 1
+			var max_len := max(removes.size(), adds.size())
+			for k in range(max_len):
+				if k < removes.size():
+					left_bb.append("[color=#ff6060]- " + (removes[k] as String).xml_escape() + "[/color]")
+				else:
+					left_bb.append("[color=#333333]~[/color]")
+				if k < adds.size():
+					right_bb.append("[color=#60ff60]+ " + (adds[k] as String).xml_escape() + "[/color]")
+				else:
+					right_bb.append("[color=#333333]~[/color]")
+	return {"left": "\n".join(left_bb), "right": "\n".join(right_bb)}
+
+func _lcs_diff(old_lines: Array, new_lines: Array) -> Array:
+	var m := old_lines.size()
+	var n := new_lines.size()
+	# Allocate DP table
+	var dp: Array = []
+	dp.resize(m + 1)
+	for row in range(m + 1):
+		var r: Array = []
+		r.resize(n + 1)
+		r.fill(0)
+		dp[row] = r
+	for row in range(1, m + 1):
+		for col in range(1, n + 1):
+			if old_lines[row - 1] == new_lines[col - 1]:
+				dp[row][col] = dp[row - 1][col - 1] + 1
+			else:
+				dp[row][col] = max(dp[row - 1][col], dp[row][col - 1])
+	# Backtrack
+	var result: Array = []
+	var row := m
+	var col := n
+	while row > 0 or col > 0:
+		if row > 0 and col > 0 and old_lines[row - 1] == new_lines[col - 1]:
+			result.push_front({"type": "equal", "line": old_lines[row - 1]})
+			row -= 1
+			col -= 1
+		elif col > 0 and (row == 0 or dp[row][col - 1] >= dp[row - 1][col]):
+			result.push_front({"type": "add", "line": new_lines[col - 1]})
+			col -= 1
+		else:
+			result.push_front({"type": "remove", "line": old_lines[row - 1]})
+			row -= 1
+	return result
 
 # ─── Markdown renderer ────────────────────────────────────────────────────────
 
@@ -6766,6 +7091,7 @@ func _activity_icon(type: String) -> String:
 		"addon_synced":      return "↺"
 		"doc_edited":        return "📝"
 		"doc_suggestion":    return "💡"
+		"doc_vote":          return "🗳"
 		"todo_added":        return "➕"
 		"vote_created":      return "🗳"
 		"vote_cast":         return "🗳"
@@ -6793,6 +7119,7 @@ func _activity_color(type: String) -> Color:
 		"addon_synced":      return Color(1.0, 0.85, 0.3)
 		"doc_edited":        return Color(0.7, 0.85, 1.0)
 		"doc_suggestion":    return Color(1.0, 0.9, 0.4)
+		"doc_vote":          return Color(0.7, 0.9, 1.0)
 		"todo_added":        return Color(0.75, 0.75, 0.75)
 		"vote_created":      return Color(0.6, 0.8, 1.0)
 		"vote_cast":         return Color(0.6, 0.8, 1.0)
