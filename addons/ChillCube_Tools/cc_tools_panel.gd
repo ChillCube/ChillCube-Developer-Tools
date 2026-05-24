@@ -148,6 +148,15 @@ var _docs_perm_user_list: VBoxContainer
 var _docs_perm_input: LineEdit
 var _docs_perm_path: String = ""
 
+var _docs_suggestions: Array = []
+var _docs_suggest_btn: Button
+var _docs_review_btn: Button
+var _docs_suggest_submit_btn: Button
+var _docs_in_suggest_mode: bool = false
+var _docs_review_dialog: AcceptDialog
+var _docs_review_list: VBoxContainer
+var _docs_review_view: RichTextLabel
+
 var _http: HTTPRequest
 var _registry_list: VBoxContainer
 var _registry_status: Label
@@ -236,6 +245,7 @@ func _ready() -> void:
 	_load_asset_meta()
 	_load_contracts()
 	_load_doc_permissions()
+	_load_doc_suggestions()
 
 	_login_overlay = _build_login_overlay()
 	_login_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -2633,7 +2643,8 @@ func _cc_data_bundle() -> Dictionary:
 		"forum.json": JSON.stringify(_forum_items, "\t") + "\n",
 		"contracts.json": JSON.stringify(_contract_items, "\t") + "\n",
 		"deps.json": JSON.stringify(_deps_items, "\t") + "\n",
-		"doc_permissions.json": JSON.stringify(_docs_permissions, "\t") + "\n"
+		"doc_permissions.json": JSON.stringify(_docs_permissions, "\t") + "\n",
+		"doc_suggestions.json": JSON.stringify(_docs_suggestions, "\t") + "\n"
 	}
 
 func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
@@ -4645,11 +4656,28 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	_docs_perm_btn.tooltip_text = "Edit permissions"
 	_docs_perm_btn.visible = false
 	_docs_perm_btn.pressed.connect(_docs_open_perm_dialog)
+	_docs_suggest_btn = Button.new()
+	_docs_suggest_btn.text = "💡 Suggest Edit"
+	_docs_suggest_btn.tooltip_text = "Propose a change for review"
+	_docs_suggest_btn.visible = false
+	_docs_suggest_btn.pressed.connect(_docs_enter_suggest)
+	_docs_suggest_submit_btn = Button.new()
+	_docs_suggest_submit_btn.text = "📤 Submit"
+	_docs_suggest_submit_btn.visible = false
+	_docs_suggest_submit_btn.pressed.connect(_docs_suggest_submit)
+	_docs_review_btn = Button.new()
+	_docs_review_btn.text = "📬"
+	_docs_review_btn.tooltip_text = "Review suggestions"
+	_docs_review_btn.visible = false
+	_docs_review_btn.pressed.connect(_docs_open_review_dialog)
 	doc_header.add_child(_docs_title_lbl)
 	doc_header.add_child(_docs_edit_btn)
+	doc_header.add_child(_docs_suggest_btn)
 	doc_header.add_child(_docs_delete_header_btn)
 	doc_header.add_child(_docs_save_btn)
+	doc_header.add_child(_docs_suggest_submit_btn)
 	doc_header.add_child(_docs_cancel_btn)
+	doc_header.add_child(_docs_review_btn)
 	doc_header.add_child(_docs_perm_btn)
 	_docs_view_panel.add_child(doc_header)
 	_docs_view_panel.add_child(HSeparator.new())
@@ -4791,6 +4819,44 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	_docs_perm_dialog.confirmed.connect(_docs_perm_save)
 	add_child(_docs_perm_dialog)
 
+	_docs_review_dialog = AcceptDialog.new()
+	_docs_review_dialog.title = "Suggested Edits"
+	_docs_review_dialog.size = Vector2i(620, 520)
+	var rev_vbox := VBoxContainer.new()
+	rev_vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_docs_review_dialog.add_child(rev_vbox)
+	var rev_top := HBoxContainer.new()
+	var rev_title := Label.new()
+	rev_title.name = "_rev_title"
+	rev_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	rev_top.add_child(rev_title)
+	rev_vbox.add_child(rev_top)
+	rev_vbox.add_child(HSeparator.new())
+	var rev_scroll := ScrollContainer.new()
+	rev_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	rev_scroll.custom_minimum_size = Vector2(0, 200)
+	_docs_review_list = VBoxContainer.new()
+	_docs_review_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_review_list.add_theme_constant_override("separation", 4)
+	rev_scroll.add_child(_docs_review_list)
+	rev_vbox.add_child(rev_scroll)
+	rev_vbox.add_child(HSeparator.new())
+	var rev_prev_lbl := Label.new()
+	rev_prev_lbl.text = "Preview:"
+	rev_prev_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	rev_vbox.add_child(rev_prev_lbl)
+	var rev_prev_scroll := ScrollContainer.new()
+	rev_prev_scroll.custom_minimum_size = Vector2(0, 140)
+	_docs_review_view = RichTextLabel.new()
+	_docs_review_view.bbcode_enabled = true
+	_docs_review_view.fit_content = false
+	_docs_review_view.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_review_view.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_docs_review_view.scroll_active = false
+	rev_prev_scroll.add_child(_docs_review_view)
+	rev_vbox.add_child(rev_prev_scroll)
+	add_child(_docs_review_dialog)
+
 	_docs_navigate("")
 
 # ─── Docs logic ───────────────────────────────────────────────────────────────
@@ -4925,9 +4991,12 @@ func _docs_select(full_path: String) -> void:
 	_docs_title_lbl.text = full_path.get_file().get_basename()
 	_docs_title_lbl.add_theme_color_override("font_color", Color(0.9, 0.9, 0.9))
 	_docs_edit_btn.visible = false
+	_docs_suggest_btn.visible = false
 	_docs_delete_header_btn.visible = false
 	_docs_perm_btn.visible = false
+	_docs_review_btn.visible = false
 	_docs_save_btn.visible = false
+	_docs_suggest_submit_btn.visible = false
 	_docs_cancel_btn.visible = false
 	_docs_status_lbl.text = "Loading…"
 	_docs_view.text = ""
@@ -4959,27 +5028,28 @@ func _docs_on_loaded(tmp_file: String) -> void:
 	_docs_loaded_content = f.get_as_text()
 	f.close()
 	_docs_view.parse_bbcode(_md_to_bbcode(_docs_loaded_content))
-	var can_edit := _docs_can_edit(_docs_sel_path)
-	_docs_edit_btn.visible = can_edit
-	_docs_delete_header_btn.visible = can_edit
-	_docs_perm_btn.visible = true
+	_docs_show_view_buttons(_docs_sel_path)
 
 func _docs_enter_edit() -> void:
 	_docs_editor.text = _docs_loaded_content
 	_docs_view_scroll.visible = false
 	_docs_editor.visible = true
 	_docs_edit_btn.visible = false
+	_docs_suggest_btn.visible = false
 	_docs_delete_header_btn.visible = false
+	_docs_review_btn.visible = false
+	_docs_perm_btn.visible = false
 	_docs_save_btn.visible = true
 	_docs_cancel_btn.visible = true
 
 func _docs_exit_edit() -> void:
+	_docs_in_suggest_mode = false
 	_docs_editor.visible = false
 	_docs_view_scroll.visible = true
-	_docs_edit_btn.visible = true
-	_docs_delete_header_btn.visible = true
 	_docs_save_btn.visible = false
+	_docs_suggest_submit_btn.visible = false
 	_docs_cancel_btn.visible = false
+	_docs_show_view_buttons(_docs_sel_path)
 
 func _docs_save() -> void:
 	if _docs_sel_path.is_empty() or (_docs_thread and _docs_thread.is_started()):
@@ -5098,12 +5168,10 @@ func _docs_on_created(full_path: String, content: String) -> void:
 	_docs_view.parse_bbcode(_md_to_bbcode(content))
 	_docs_view_scroll.visible = true
 	_docs_editor.visible = false
-	var can_edit := _docs_can_edit(full_path)
-	_docs_edit_btn.visible = can_edit
-	_docs_delete_header_btn.visible = can_edit
-	_docs_perm_btn.visible = true
 	_docs_save_btn.visible = false
+	_docs_suggest_submit_btn.visible = false
 	_docs_cancel_btn.visible = false
+	_docs_show_view_buttons(full_path)
 
 func _docs_do_mkdir(dir_path: String) -> void:
 	if _docs_thread and _docs_thread.is_started():
@@ -5154,8 +5222,10 @@ func _docs_on_deleted(full_path: String) -> void:
 		_docs_title_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
 		_docs_view.text = ""
 		_docs_edit_btn.visible = false
+		_docs_suggest_btn.visible = false
 		_docs_delete_header_btn.visible = false
 		_docs_perm_btn.visible = false
+		_docs_review_btn.visible = false
 	_docs_navigate(_docs_current_dir)
 
 func _docs_do_move(dest_rel: String) -> void:
@@ -5281,11 +5351,183 @@ func _docs_perm_save() -> void:
 		perm.erase("users")
 	_docs_permissions[_docs_perm_path] = perm
 	_save_doc_permissions()
-	# Refresh Edit/Delete visibility for current doc
-	if _docs_sel_path == _docs_perm_path:
-		var can_edit := _docs_can_edit(_docs_sel_path)
-		_docs_edit_btn.visible = can_edit
-		_docs_delete_header_btn.visible = can_edit
+	if _docs_sel_path == _docs_perm_path and not _docs_editor.visible:
+		_docs_show_view_buttons(_docs_sel_path)
+
+# ─── Docs suggestions ────────────────────────────────────────────────────────
+
+func _docs_sugg_file() -> String:
+	return ProjectSettings.globalize_path("user://cc_doc_suggestions.json")
+
+func _load_doc_suggestions() -> void:
+	_docs_suggestions = []
+	var path := _docs_sugg_file()
+	if not FileAccess.file_exists(path):
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if not f:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if parsed is Array:
+		_docs_suggestions = parsed
+
+func _save_doc_suggestions() -> void:
+	var fw := FileAccess.open(_docs_sugg_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(_docs_suggestions, "\t") + "\n")
+		fw.close()
+	_activity_auto_push()
+
+func _docs_pending_suggestions(full_path: String) -> int:
+	var count := 0
+	for s: Dictionary in _docs_suggestions:
+		if s.get("doc_path", "") == full_path and s.get("status", "") == "pending":
+			count += 1
+	return count
+
+func _docs_show_view_buttons(full_path: String) -> void:
+	var can_edit := _docs_can_edit(full_path)
+	_docs_edit_btn.visible = can_edit
+	_docs_delete_header_btn.visible = can_edit
+	_docs_suggest_btn.visible = not can_edit and not full_path.is_empty()
+	_docs_perm_btn.visible = not full_path.is_empty()
+	_docs_review_btn.visible = can_edit and not full_path.is_empty()
+	if can_edit and not full_path.is_empty():
+		var pending := _docs_pending_suggestions(full_path)
+		_docs_review_btn.text = ("📬 " + str(pending)) if pending > 0 else "📬"
+
+func _docs_enter_suggest() -> void:
+	_docs_in_suggest_mode = true
+	_docs_editor.text = _docs_loaded_content
+	_docs_view_scroll.visible = false
+	_docs_editor.visible = true
+	_docs_suggest_btn.visible = false
+	_docs_perm_btn.visible = false
+	_docs_suggest_submit_btn.visible = true
+	_docs_cancel_btn.visible = true
+
+func _docs_suggest_submit() -> void:
+	if _docs_sel_path.is_empty():
+		return
+	var me := _current_user.get("username", "?")
+	_docs_suggestions.append({
+		"id": str(Time.get_unix_time_from_system()) + "_" + me,
+		"doc_path": _docs_sel_path,
+		"author": me,
+		"timestamp": Time.get_datetime_string_from_system(),
+		"content": _docs_editor.text,
+		"status": "pending"
+	})
+	_save_doc_suggestions()
+	var doc_name := _docs_sel_path.get_file().get_basename()
+	_log_activity("doc_suggestion", '"%s" suggested edits to: "%s"' % [me, doc_name])
+	_docs_exit_edit()
+	_docs_status_lbl.text = "✅ Suggestion submitted"
+	get_tree().create_timer(3.0).timeout.connect(func():
+		if is_instance_valid(_docs_status_lbl): _docs_status_lbl.text = ""
+	)
+
+func _docs_open_review_dialog() -> void:
+	if _docs_sel_path.is_empty():
+		return
+	var title_node := _docs_review_dialog.find_child("_rev_title", true, false)
+	if is_instance_valid(title_node):
+		(title_node as Label).text = "Suggestions for: " + _docs_sel_path.get_file().get_basename()
+	_docs_review_build(_docs_sel_path)
+	_docs_review_view.text = ""
+	_docs_review_dialog.popup_centered()
+
+func _docs_review_build(full_path: String) -> void:
+	for c in _docs_review_list.get_children():
+		c.queue_free()
+	var found := false
+	for i in range(_docs_suggestions.size()):
+		var s: Dictionary = _docs_suggestions[i]
+		if s.get("doc_path", "") != full_path:
+			continue
+		found = true
+		var status: String = s.get("status", "pending")
+		var cap_i := i
+		var card := PanelContainer.new()
+		var card_vbox := VBoxContainer.new()
+		card.add_child(card_vbox)
+		var top_row := HBoxContainer.new()
+		var status_icon := {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(status, "?")
+		var info_lbl := Label.new()
+		info_lbl.text = status_icon + " " + s.get("author", "?") + "  —  " + s.get("timestamp", "")
+		info_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info_lbl.add_theme_color_override("font_color",
+			Color(0.9, 0.9, 0.9) if status == "pending" else Color(0.5, 0.5, 0.5))
+		top_row.add_child(info_lbl)
+		var preview_btn := Button.new()
+		preview_btn.text = "👁"
+		preview_btn.flat = true
+		preview_btn.tooltip_text = "Preview content"
+		preview_btn.pressed.connect(func():
+			_docs_review_view.parse_bbcode(_md_to_bbcode(_docs_suggestions[cap_i].get("content", "")))
+		)
+		top_row.add_child(preview_btn)
+		if status == "pending":
+			var approve_btn := Button.new()
+			approve_btn.text = "✅ Approve"
+			approve_btn.pressed.connect(func(): _docs_review_approve(cap_i))
+			var reject_btn := Button.new()
+			reject_btn.text = "❌ Reject"
+			reject_btn.pressed.connect(func(): _docs_review_reject(cap_i))
+			top_row.add_child(approve_btn)
+			top_row.add_child(reject_btn)
+		card_vbox.add_child(top_row)
+		_docs_review_list.add_child(card)
+	if not found:
+		var hint := Label.new()
+		hint.text = "No suggestions for this document."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_docs_review_list.add_child(hint)
+
+func _docs_review_approve(idx: int) -> void:
+	if _docs_thread and _docs_thread.is_started():
+		return
+	var sugg: Dictionary = _docs_suggestions[idx]
+	sugg["status"] = "approved"
+	sugg["approved_by"] = _current_user.get("username", "?")
+	_docs_suggestions[idx] = sugg
+	_save_doc_suggestions()
+	_docs_review_dialog.hide()
+	var doc_path: String = sugg["doc_path"]
+	var new_content: String = sugg["content"]
+	var tmp_dir := OS.get_temp_dir() + "/cc_docs_save"
+	DirAccess.make_dir_recursive_absolute(tmp_dir)
+	var tmp_file := tmp_dir + "/" + doc_path.get_file()
+	var f := FileAccess.open(tmp_file, FileAccess.WRITE)
+	if not f:
+		_docs_status_lbl.text = "❌ Could not write temp file."
+		return
+	f.store_string(new_content)
+	f.close()
+	var cache := _vault_cache
+	var cap_path := doc_path
+	var cap_content := new_content
+	_docs_status_lbl.text = "Applying…"
+	_docs_thread = Thread.new()
+	_docs_thread.start(func():
+		Ops.vault_upload_file(tmp_file, doc_path.get_base_dir(), Callable())
+		Ops.vault_refresh(cache, Callable())
+		call_deferred("_docs_on_saved", cap_path, cap_content)
+	)
+
+func _docs_review_reject(idx: int) -> void:
+	var sugg: Dictionary = _docs_suggestions[idx]
+	sugg["status"] = "rejected"
+	sugg["rejected_by"] = _current_user.get("username", "?")
+	_docs_suggestions[idx] = sugg
+	_save_doc_suggestions()
+	var doc_name := sugg.get("doc_path", "").get_file().get_basename()
+	var me := _current_user.get("username", "?")
+	_log_activity("doc_suggestion", '"%s" rejected suggestion for: "%s"' % [me, doc_name])
+	_docs_review_build(sugg.get("doc_path", _docs_sel_path))
+	if _docs_sel_path == sugg.get("doc_path", ""):
+		_docs_show_view_buttons(_docs_sel_path)
 
 # ─── Markdown renderer ────────────────────────────────────────────────────────
 
@@ -6523,6 +6765,7 @@ func _activity_icon(type: String) -> String:
 		"addon_pushed":      return "🚀"
 		"addon_synced":      return "↺"
 		"doc_edited":        return "📝"
+		"doc_suggestion":    return "💡"
 		"todo_added":        return "➕"
 		"vote_created":      return "🗳"
 		"vote_cast":         return "🗳"
@@ -6549,6 +6792,7 @@ func _activity_color(type: String) -> Color:
 		"addon_pushed":      return Color(0.5, 0.9, 0.6)
 		"addon_synced":      return Color(1.0, 0.85, 0.3)
 		"doc_edited":        return Color(0.7, 0.85, 1.0)
+		"doc_suggestion":    return Color(1.0, 0.9, 0.4)
 		"todo_added":        return Color(0.75, 0.75, 0.75)
 		"vote_created":      return Color(0.6, 0.8, 1.0)
 		"vote_cast":         return Color(0.6, 0.8, 1.0)
