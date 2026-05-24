@@ -7711,17 +7711,19 @@ func _populate_registry(entries: Array) -> void:
 
 		for cat: String in entry.get("categories", ["Uncategorized"]):
 			var cat_chip := Label.new()
-			cat_chip.text = " " + cat + " "
+			var cat_text := cat if cat.length() <= 14 else cat.left(13) + "…"
+			cat_chip.text = " " + cat_text + " "
 			cat_chip.add_theme_color_override("font_color", Color(0.5, 0.8, 1.0))
 			cat_chip.add_theme_font_size_override("font_size", 10)
 			name_row.add_child(cat_chip)
 		info.add_child(name_row)
 
+		var raw_desc: String = entry.get("desc", "")
 		var desc_lbl := Label.new()
-		desc_lbl.text = entry.get("desc", "")
+		desc_lbl.text = raw_desc if raw_desc.length() <= 100 else raw_desc.left(99) + "…"
 		desc_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
-		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		desc_lbl.size_flags_horizontal = Control.SIZE_FILL
+		desc_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		desc_lbl.clip_text = true
 		desc_lbl.custom_minimum_size = Vector2(0, 0)
 		info.add_child(desc_lbl)
 		row.add_child(info)
