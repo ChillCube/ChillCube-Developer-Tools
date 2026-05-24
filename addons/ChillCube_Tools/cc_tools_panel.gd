@@ -3115,6 +3115,7 @@ func _refresh_vote_list() -> void:
 		var total_n := yes_n + no_n
 		var is_perm: bool = s.get("type", "") == "permission_change"
 		var is_archive: bool = s.get("type", "") == "archive_request"
+		var is_move_req2: bool = s.get("type", "") == "move_request"
 		var panel := PanelContainer.new()
 		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		var cvbox := VBoxContainer.new()
@@ -3126,13 +3127,13 @@ func _refresh_vote_list() -> void:
 		title_lbl.bbcode_enabled = true
 		title_lbl.fit_content = true
 		title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var kind := "🔒 Permission Change" if is_perm else ("📦 Archive Request" if is_archive else "📄 " + doc_name)
+		var kind := "🔒 Permission Change" if is_perm else ("📦 Archive Request" if is_archive else ("📁 Move Request" if is_move_req2 else "📄 " + doc_name))
 		title_lbl.text = "[b]%s[/b]  [color=#aaaaff][DOC VOTE][/color]  [color=#42a5f5][OPEN][/color]" % kind
 		header.add_child(title_lbl)
 		var diff_btn := Button.new()
 		diff_btn.text = "📊 View Diff"
 		diff_btn.flat = false
-		if is_perm or is_archive:
+		if is_perm or is_archive or is_move_req2:
 			diff_btn.disabled = true
 			diff_btn.tooltip_text = "No content diff for this vote type"
 		else:
@@ -5902,12 +5903,12 @@ func _docs_navigate(rel: String) -> void:
 		)
 		row.add_child(file_btn)
 
-		if not in_archive:
+		if not in_archive and _docs_can_edit(cap_full):
 			var ren_btn := Button.new()
 			ren_btn.text = "✏"
 			ren_btn.flat = true
 			ren_btn.custom_minimum_size = Vector2(26, 0)
-			ren_btn.tooltip_text = "Rename / move"
+			ren_btn.tooltip_text = "Rename / move" + (" (requires vote)" if _docs_requires_vote(cap_full) else "")
 			ren_btn.pressed.connect(func():
 				_docs_move_folder_btn.clear()
 				_docs_move_folder_items = _docs_get_folders()
@@ -6225,6 +6226,29 @@ func _docs_do_move(dest_rel: String) -> void:
 	var dest_full := DOCS_PREFIX + "/" + dest_rel.strip_edges().lstrip("/")
 	if not dest_full.ends_with(".md"):
 		dest_full += ".md"
+	if _docs_requires_vote(src):
+		var me := _current_user.get("username", "?")
+		var perm: Dictionary = _docs_permissions.get(src, {})
+		_docs_suggestions.append({
+			"id": str(Time.get_unix_time_from_system()) + "_move_" + me,
+			"doc_path": src,
+			"dest_path": dest_full,
+			"author": me,
+			"timestamp": Time.get_datetime_string_from_system(),
+			"type": "move_request",
+			"status": "pending",
+			"vote_required": true,
+			"vote_threshold": perm.get("vote_threshold", "1/2"),
+			"votes": {"yes": [], "no": []}
+		})
+		_save_doc_suggestions()
+		_log_activity("doc_suggestion", '"%s" requested move of: "%s"' % [me, src.get_file().get_basename()])
+		_docs_status_lbl.text = "⏳ Move request submitted for team vote"
+		get_tree().create_timer(3.0).timeout.connect(func():
+			if is_instance_valid(_docs_status_lbl): _docs_status_lbl.text = ""
+		)
+		_refresh_vote_list()
+		return
 	var cache := _vault_cache
 	var cap_src := src
 	var cap_dest := dest_full
@@ -6241,6 +6265,21 @@ func _docs_on_moved(old_path: String, new_path: String) -> void:
 		_docs_thread.wait_to_finish()
 	_docs_thread = null
 	_docs_status_lbl.text = "✅ Moved"
+	# Migrate permissions so they follow the doc to its new path
+	if _docs_permissions.has(old_path):
+		_docs_permissions[new_path] = _docs_permissions[old_path]
+		_docs_permissions.erase(old_path)
+		_save_doc_permissions()
+	# Update any pending suggestions that referenced the old path
+	var sugg_updated := false
+	for i: int in range(_docs_suggestions.size()):
+		var s: Dictionary = _docs_suggestions[i]
+		if s.get("doc_path", "") == old_path:
+			s["doc_path"] = new_path
+			_docs_suggestions[i] = s
+			sugg_updated = true
+	if sugg_updated:
+		_save_doc_suggestions()
 	_vault_files = Ops.vault_list_files(_vault_cache)
 	_docs_files = _docs_filter_files(_vault_files)
 	if _docs_sel_path == old_path:
@@ -6510,6 +6549,7 @@ func _docs_review_build(full_path: String) -> void:
 		var is_vote: bool = s.get("vote_required", false)
 		var is_perm_change: bool = s.get("type", "") == "permission_change"
 		var is_archive_req: bool = s.get("type", "") == "archive_request"
+		var is_move_req: bool = s.get("type", "") == "move_request"
 		var cap_i := i
 		var card := PanelContainer.new()
 		var card_vbox := VBoxContainer.new()
@@ -6517,7 +6557,7 @@ func _docs_review_build(full_path: String) -> void:
 		# ── Title row ────────────────────────────────────────────────────────
 		var top_row := HBoxContainer.new()
 		var status_icon := {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(status, "?")
-		var kind_icon := "🗳" if is_vote else ("🔒" if is_perm_change else ("📦" if is_archive_req else "💡"))
+		var kind_icon := "🗳" if is_vote else ("🔒" if is_perm_change else ("📦" if is_archive_req else ("📁" if is_move_req else "💡")))
 		var info_lbl := Label.new()
 		info_lbl.text = status_icon + " " + kind_icon + " " + s.get("author", "?") + "  —  " + s.get("timestamp", "")
 		info_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -6533,6 +6573,12 @@ func _docs_review_build(full_path: String) -> void:
 			var what_lbl := Label.new()
 			what_lbl.text = "📦 Archive request"
 			what_lbl.add_theme_color_override("font_color", Color(1.0, 0.75, 0.4))
+			top_row.add_child(what_lbl)
+		elif is_move_req:
+			var what_lbl := Label.new()
+			var dest_rel: String = (s.get("dest_path", "") as String).get_file().get_basename()
+			what_lbl.text = "📁 Move → " + dest_rel
+			what_lbl.add_theme_color_override("font_color", Color(0.5, 0.85, 1.0))
 			top_row.add_child(what_lbl)
 		else:
 			var diff_btn := Button.new()
@@ -6628,6 +6674,23 @@ func _docs_review_approve(idx: int) -> void:
 			Ops.vault_move_file(cap_src, cap_dest, Callable())
 			Ops.vault_refresh(cache, Callable())
 			call_deferred("_docs_on_archived", cap_src, cap_dest)
+		)
+		return
+	# Move request: move the file via vault
+	if sugg.get("type", "") == "move_request":
+		var doc_path: String = sugg["doc_path"]
+		var dest_path: String = sugg.get("dest_path", "")
+		if dest_path.is_empty():
+			return
+		var cache := _vault_cache
+		var me2 := sugg.get("approved_by", "?")
+		_log_activity("doc_suggestion", '"%s" approved move of: "%s"' % [me2, doc_path.get_file().get_basename()])
+		_docs_status_lbl.text = "Moving…"
+		_docs_thread = Thread.new()
+		_docs_thread.start(func():
+			Ops.vault_move_file(doc_path, dest_path, Callable())
+			Ops.vault_refresh(cache, Callable())
+			call_deferred("_docs_on_moved", doc_path, dest_path)
 		)
 		return
 	# Permission-change suggestion: apply new_permissions, no vault upload needed
