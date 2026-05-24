@@ -535,6 +535,24 @@ static func add_dep(addon_path: String, dep_url: String) -> void:
 		content += "\n" + MANUAL_MARKER + "\n" + clean + "\n"
 	_write(dep_file, content)
 
+static func dep_quick_commit(addon_path: String, log: Callable = Callable()) -> bool:
+	_fix_git_perms(addon_path)
+	var add_res: Dictionary = _exec_capture("git", ["-C", addon_path, "add", "DEPENDENCIES.txt"])
+	if (add_res.get("code", -1) as int) != OK:
+		if log.is_valid(): log.call("❌ git add failed: " + str(add_res.get("output", "")))
+		return false
+	var status_out: Array = []
+	OS.execute("git", PackedStringArray(["-C", addon_path, "status", "-s", "DEPENDENCIES.txt"]), status_out, true)
+	var dirty: bool = not status_out.is_empty() and not (status_out[0] as String).strip_edges().is_empty()
+	if not dirty:
+		if log.is_valid(): log.call("✨ No changes to commit.")
+		return true
+	if _git(["commit", "-m", "deps: update manual dependencies"], addon_path, log) != OK:
+		if log.is_valid(): log.call("❌ git commit failed.")
+		return false
+	_git(["push", "origin", "main"], addon_path, log)
+	return true
+
 static func remove_dep(addon_path: String, dep_url: String) -> void:
 	var dep_file := addon_path + "/DEPENDENCIES.txt"
 	var content := _read(dep_file)

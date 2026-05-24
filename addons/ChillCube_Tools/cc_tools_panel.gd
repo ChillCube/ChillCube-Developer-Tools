@@ -599,6 +599,7 @@ func _refresh_dep_details() -> void:
 			rm_btn.pressed.connect(func():
 				Ops.remove_dep(root + "/addons/" + folder, cap_url)
 				_refresh_dep_details()
+				_dep_commit_bg(root + "/addons/" + folder)
 			)
 			row.add_child(dep_lbl)
 			row.add_child(rm_btn)
@@ -610,9 +611,22 @@ func _refresh_dep_details() -> void:
 	add_lbl.text = "Add dependency:"
 	_dep_details.add_child(add_lbl)
 
+	var dep_status_lbl := Label.new()
+	dep_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.9, 0.5))
+	dep_status_lbl.visible = false
+	_dep_details.add_child(dep_status_lbl)
+
 	_dep_search_widget(_dep_details, _build_dep_candidates(folder, deps), func(url: String):
 		Ops.add_dep(root + "/addons/" + folder, url)
 		_refresh_dep_details()
+		_dep_commit_bg(root + "/addons/" + folder)
+	)
+
+func _dep_commit_bg(addon_path: String) -> void:
+	var t := Thread.new()
+	t.start(func():
+		Ops.dep_quick_commit(addon_path, func(msg): call_deferred("_append_log", _installed_log, msg))
+		t.call_deferred("wait_to_finish")
 	)
 
 func _build_dep_candidates(current_folder: String, current_deps: Array) -> Array:
@@ -7306,15 +7320,46 @@ func _refresh_addons() -> void:
 	var dependents: Dictionary = Ops.get_dependents(root)
 	var in_dev := _get_in_dev_folders()
 
+	var leaf_folders: Array[String] = []
+	var dep_folders: Array[String] = []
 	for folder: String in addons:
 		if folder in in_dev:
 			continue
-		var cfg := Ops.parse_cfg(root + "/addons/" + folder + "/plugin.cfg")
 		if not query.is_empty():
-			var name_lower: String = (cfg.get("name", folder) as String).to_lower()
-			var desc_lower: String = (cfg.get("description", "") as String).to_lower()
+			var cfg2 := Ops.parse_cfg(root + "/addons/" + folder + "/plugin.cfg")
+			var name_lower: String = (cfg2.get("name", folder) as String).to_lower()
+			var desc_lower: String = (cfg2.get("description", "") as String).to_lower()
 			if not (query in name_lower or query in desc_lower or query in folder.to_lower()):
 				continue
+		if (dependents.get(folder, []) as Array).is_empty():
+			leaf_folders.append(folder)
+		else:
+			dep_folders.append(folder)
+
+	if not leaf_folders.is_empty() and not dep_folders.is_empty():
+		var your_lbl := Label.new()
+		your_lbl.text = "Your Addons"
+		your_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+		your_lbl.add_theme_font_size_override("font_size", 11)
+		_addon_list.add_child(your_lbl)
+		_addon_list.add_child(HSeparator.new())
+
+	var ordered_folders: Array[String] = []
+	ordered_folders.append_array(leaf_folders)
+	if not leaf_folders.is_empty() and not dep_folders.is_empty():
+		ordered_folders.append("")  # sentinel for separator
+	ordered_folders.append_array(dep_folders)
+
+	for folder: String in ordered_folders:
+		if folder == "":
+			var dep_section_lbl := Label.new()
+			dep_section_lbl.text = "Dependencies"
+			dep_section_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+			dep_section_lbl.add_theme_font_size_override("font_size", 11)
+			_addon_list.add_child(dep_section_lbl)
+			_addon_list.add_child(HSeparator.new())
+			continue
+		var cfg := Ops.parse_cfg(root + "/addons/" + folder + "/plugin.cfg")
 		var row := HBoxContainer.new()
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
