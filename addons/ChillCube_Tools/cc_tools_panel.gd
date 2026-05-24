@@ -3310,7 +3310,7 @@ func _refresh_vote_list() -> void:
 # ─── Decision Log tab ─────────────────────────────────────────────────────────
 
 func _build_decision_log_tab(tabs: TabContainer) -> void:
-	var root := _vbox("Log", tabs)
+	var root := _vbox("Decisions", tabs)
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
