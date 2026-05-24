@@ -1132,7 +1132,7 @@ static func _update_tree(root: String, log: Callable) -> void:
 		var from_id := _make_id(rname)
 		var dep_lines: Array[String] = []
 		if rurl in local_addons:
-			var dep_file := local_addons[rurl] + "/DEPENDENCIES.txt"
+			var dep_file: String = str(local_addons[rurl]) + "/DEPENDENCIES.txt"
 			if FileAccess.file_exists(dep_file):
 				for dl: String in _read(dep_file).split("\n"):
 					dep_lines.append(dl)
