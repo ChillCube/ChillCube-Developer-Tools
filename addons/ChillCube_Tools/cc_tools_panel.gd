@@ -124,6 +124,7 @@ var _docs_view_scroll: ScrollContainer
 var _docs_editor: TextEdit
 var _docs_view_panel: VBoxContainer
 var _docs_edit_btn: Button
+var _docs_delete_header_btn: Button
 var _docs_save_btn: Button
 var _docs_cancel_btn: Button
 var _docs_status_lbl: Label
@@ -4612,6 +4613,14 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	_docs_edit_btn.text = "✏️ Edit"
 	_docs_edit_btn.visible = false
 	_docs_edit_btn.pressed.connect(_docs_enter_edit)
+	_docs_delete_header_btn = Button.new()
+	_docs_delete_header_btn.text = "🗑 Delete"
+	_docs_delete_header_btn.visible = false
+	_docs_delete_header_btn.pressed.connect(func():
+		if not _docs_sel_path.is_empty():
+			_docs_pending_delete = _docs_sel_path
+			_docs_delete_dialog.popup_centered()
+	)
 	_docs_save_btn = Button.new()
 	_docs_save_btn.text = "💾 Save"
 	_docs_save_btn.visible = false
@@ -4622,6 +4631,7 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	_docs_cancel_btn.pressed.connect(_docs_exit_edit)
 	doc_header.add_child(_docs_title_lbl)
 	doc_header.add_child(_docs_edit_btn)
+	doc_header.add_child(_docs_delete_header_btn)
 	doc_header.add_child(_docs_save_btn)
 	doc_header.add_child(_docs_cancel_btn)
 	_docs_view_panel.add_child(doc_header)
@@ -4855,6 +4865,7 @@ func _docs_select(full_path: String) -> void:
 	_docs_title_lbl.text = full_path.get_file().get_basename()
 	_docs_title_lbl.add_theme_color_override("font_color", Color(0.9, 0.9, 0.9))
 	_docs_edit_btn.visible = false
+	_docs_delete_header_btn.visible = false
 	_docs_save_btn.visible = false
 	_docs_cancel_btn.visible = false
 	_docs_status_lbl.text = "Loading…"
@@ -4888,12 +4899,14 @@ func _docs_on_loaded(tmp_file: String) -> void:
 	f.close()
 	_docs_view.parse_bbcode(_md_to_bbcode(_docs_loaded_content))
 	_docs_edit_btn.visible = true
+	_docs_delete_header_btn.visible = true
 
 func _docs_enter_edit() -> void:
 	_docs_editor.text = _docs_loaded_content
 	_docs_view_scroll.visible = false
 	_docs_editor.visible = true
 	_docs_edit_btn.visible = false
+	_docs_delete_header_btn.visible = false
 	_docs_save_btn.visible = true
 	_docs_cancel_btn.visible = true
 
@@ -4901,6 +4914,7 @@ func _docs_exit_edit() -> void:
 	_docs_editor.visible = false
 	_docs_view_scroll.visible = true
 	_docs_edit_btn.visible = true
+	_docs_delete_header_btn.visible = true
 	_docs_save_btn.visible = false
 	_docs_cancel_btn.visible = false
 
@@ -5004,8 +5018,11 @@ func _docs_on_created(full_path: String, content: String) -> void:
 		_docs_thread.wait_to_finish()
 	_docs_thread = null
 	_docs_status_lbl.text = "✅ Created"
+	# Refresh file list; if the vault fetch hasn't caught up yet, add it manually
 	_vault_files = Ops.vault_list_files(_vault_cache)
 	_docs_files = _docs_filter_files(_vault_files)
+	if full_path not in _docs_files:
+		_docs_files.append(full_path)
 	_docs_sel_path = full_path
 	var folder := _docs_rel(full_path).get_base_dir()
 	if folder == ".":
@@ -5019,6 +5036,7 @@ func _docs_on_created(full_path: String, content: String) -> void:
 	_docs_view_scroll.visible = true
 	_docs_editor.visible = false
 	_docs_edit_btn.visible = true
+	_docs_delete_header_btn.visible = true
 	_docs_save_btn.visible = false
 	_docs_cancel_btn.visible = false
 
@@ -5071,6 +5089,7 @@ func _docs_on_deleted(full_path: String) -> void:
 		_docs_title_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
 		_docs_view.text = ""
 		_docs_edit_btn.visible = false
+		_docs_delete_header_btn.visible = false
 	_docs_navigate(_docs_current_dir)
 
 func _docs_do_move(dest_rel: String) -> void:

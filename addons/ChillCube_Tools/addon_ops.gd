@@ -1187,6 +1187,7 @@ static func _update_tree(root: String, log: Callable) -> void:
 const CC_DATA_DIR := "_cc_tools"
 
 static func cc_data_push(data: Dictionary, log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
 	var tmp := OS.get_temp_dir() + "/.cc_data_" + str(int(Time.get_unix_time_from_system()))
 	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
 		log.call("❌ Could not reach vault.")
@@ -1219,6 +1220,7 @@ const VAULT_REPO := "ChillCube/vault"
 
 # Fetch or create a lightweight metadata cache (tree objects only, no blobs).
 static func vault_refresh(cache_dir: String, log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
 	if DirAccess.dir_exists_absolute(cache_dir + "/.git"):
 		log.call("🔄 Refreshing file list...")
 		_git(["fetch", "--quiet", "origin"], cache_dir, log)
@@ -1248,6 +1250,7 @@ static func vault_list_files(cache_dir: String) -> Array[String]:
 
 # Extract a single file from the vault without checking out anything else.
 static func vault_download_file(cache_dir: String, remote_rel: String, local_dest: String, log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
 	var dest_dir: String
 	if local_dest.begins_with("res://") or local_dest.begins_with("user://"):
 		dest_dir = ProjectSettings.globalize_path(local_dest).rstrip("/")
@@ -1272,6 +1275,7 @@ static func vault_download_file(cache_dir: String, remote_rel: String, local_des
 
 # Upload a local file into the vault via a temporary shallow clone.
 static func vault_upload_file(local_file: String, remote_dir: String, log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
 	var tmp := OS.get_temp_dir() + "/.cc_vaultup_" + str(int(Time.get_unix_time_from_system()))
 	log.call("📥 Preparing upload (shallow clone)...")
 	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
@@ -1296,6 +1300,7 @@ static func vault_upload_file(local_file: String, remote_dir: String, log: Calla
 	return ok
 
 static func vault_move_file(src_rel: String, dest_rel: String, log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
 	var tmp := OS.get_temp_dir() + "/.cc_vaultmv_" + str(int(Time.get_unix_time_from_system()))
 	log.call("📥 Preparing move (shallow clone)...")
 	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
@@ -1322,6 +1327,7 @@ static func vault_move_file(src_rel: String, dest_rel: String, log: Callable) ->
 	return ok
 
 static func vault_delete_file(remote_rel: String, log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
 	var tmp := OS.get_temp_dir() + "/.cc_vaultdel_" + str(int(Time.get_unix_time_from_system()))
 	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
 		log.call("❌ Could not clone assets.")
@@ -1342,6 +1348,7 @@ static func vault_delete_file(remote_rel: String, log: Callable) -> bool:
 	return ok
 
 static func vault_mkdir(dir_path: String, log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
 	var tmp := OS.get_temp_dir() + "/.cc_vaultmkdir_" + str(int(Time.get_unix_time_from_system()))
 	log.call("📥 Preparing (shallow clone)...")
 	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
