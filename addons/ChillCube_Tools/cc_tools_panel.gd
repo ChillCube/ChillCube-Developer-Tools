@@ -6914,7 +6914,7 @@ func _docs_diff_columns(old_text: String, new_text: String) -> Dictionary:
 				else:
 					adds.append((diff[i] as Dictionary)["line"])
 				i += 1
-			var max_len := max(removes.size(), adds.size())
+			var max_len: int = max(removes.size(), adds.size())
 			for k in range(max_len):
 				if k < removes.size():
 					left_bb.append("[color=#ff6060]- " + (removes[k] as String).xml_escape() + "[/color]")
@@ -9388,7 +9388,7 @@ func _election_eval_takeovers(role: String) -> void:
 				continue
 			if not _election_is_candidate(role, uname) or not _election_meets_threshold(role, uname):
 				continue
-			var candidate_avg := _election_avg(role, uname)
+			var candidate_avg: float = _election_avg(role, uname)
 			if candidate_avg > best_avg:
 				best_avg = candidate_avg
 				best_challenger = uname
