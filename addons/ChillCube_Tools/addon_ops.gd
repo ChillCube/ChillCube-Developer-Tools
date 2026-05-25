@@ -659,7 +659,7 @@ static func build_graph_data(local_root: String) -> Dictionary:
 		if int(layers.get(id, 0)) > max_layer:
 			max_layer = int(layers.get(id, 0))
 
-	# Barycenter heuristic
+	# Build layer buckets and reverse-dep map
 	var by_layer: Dictionary = {}
 	for id: String in has_edge:
 		var l: int = int(layers.get(id, 0))
@@ -667,66 +667,88 @@ static func build_graph_data(local_root: String) -> Dictionary:
 			by_layer[l] = []
 		(by_layer[l] as Array).append(id)
 
-	var pos_in_layer: Dictionary = {}
+	var rev_deps: Dictionary = {}
+	for id: String in deps_map:
+		for dep: String in (deps_map[id] as Array):
+			if dep not in rev_deps:
+				rev_deps[dep] = []
+			(rev_deps[dep] as Array).append(id)
+
+	# Y-position layout: nodes are placed at the average Y of connected neighbors.
+	# Step = NH + gap = 56 (matches GraphCanvas.RY).  Pad = 30 (matches GraphCanvas.PAD).
+	var STEP := 56.0
+	var GPAD := 30.0
+	var node_y: Dictionary = {}  # id -> actual world Y
+
+	# Layer 0 seed: sort alphabetically, uniform spacing
 	if 0 in by_layer:
 		var l0: Array = (by_layer[0] as Array).duplicate()
 		l0.sort()
 		by_layer[0] = l0
 		for i: int in range(l0.size()):
-			pos_in_layer[l0[i]] = float(i)
+			node_y[l0[i]] = GPAD + float(i) * STEP
 
+	# Upward pass then downward pass, repeat twice for convergence
 	for _pass: int in range(2):
+		# Forward: each layer centers on the mean Y of its dependencies
 		for l: int in range(1, max_layer + 1):
 			if l not in by_layer:
 				continue
 			var l_nodes: Array = (by_layer[l] as Array).duplicate()
-			var bary: Dictionary = {}
+			var targets: Dictionary = {}
 			for id: String in l_nodes:
-				var sum_p := 0.0
+				var sum_y := 0.0
 				var cnt := 0
 				for dep: String in deps_map.get(id, []):
-					if dep in pos_in_layer:
-						sum_p += float(pos_in_layer[dep])
+					if dep in node_y:
+						sum_y += float(node_y[dep])
 						cnt += 1
-				bary[id] = sum_p / float(cnt) if cnt > 0 else -1.0
+				targets[id] = sum_y / float(cnt) if cnt > 0 else GPAD
 			l_nodes.sort_custom(func(a: String, b: String) -> bool:
-				return float(bary.get(a, -1.0)) < float(bary.get(b, -1.0)))
-			for i: int in range(l_nodes.size()):
-				pos_in_layer[l_nodes[i]] = float(i)
+				return float(targets.get(a, GPAD)) < float(targets.get(b, GPAD)))
 			by_layer[l] = l_nodes
-		var rev_deps: Dictionary = {}
-		for id: String in deps_map:
-			for dep: String in (deps_map[id] as Array):
-				if dep not in rev_deps:
-					rev_deps[dep] = []
-				(rev_deps[dep] as Array).append(id)
+			var mean_y := 0.0
+			for id: String in l_nodes:
+				mean_y += float(targets.get(id, GPAD))
+			mean_y /= float(l_nodes.size())
+			var start_y := maxf(GPAD, mean_y - float(l_nodes.size() - 1) * STEP * 0.5)
+			for i: int in range(l_nodes.size()):
+				node_y[l_nodes[i]] = start_y + float(i) * STEP
+
+		# Backward: each layer centers on the mean Y of its dependents (above)
 		for l: int in range(max_layer - 1, -1, -1):
 			if l not in by_layer:
 				continue
 			var l_nodes: Array = (by_layer[l] as Array).duplicate()
-			var bary2: Dictionary = {}
+			var targets: Dictionary = {}
 			for id: String in l_nodes:
-				var sum_p := 0.0
+				var sum_y := 0.0
 				var cnt := 0
 				for up: String in rev_deps.get(id, []):
-					if up in pos_in_layer:
-						sum_p += float(pos_in_layer[up])
+					if up in node_y:
+						sum_y += float(node_y[up])
 						cnt += 1
-				bary2[id] = sum_p / float(cnt) if cnt > 0 else float(pos_in_layer.get(id, -1.0))
+				# Also weight by existing Y so it doesn't thrash
+				if cnt > 0:
+					targets[id] = sum_y / float(cnt)
+				else:
+					targets[id] = float(node_y.get(id, GPAD))
 			l_nodes.sort_custom(func(a: String, b: String) -> bool:
-				return float(bary2.get(a, -1.0)) < float(bary2.get(b, -1.0)))
-			for i: int in range(l_nodes.size()):
-				pos_in_layer[l_nodes[i]] = float(i)
+				return float(targets.get(a, GPAD)) < float(targets.get(b, GPAD)))
 			by_layer[l] = l_nodes
+			var mean_y := 0.0
+			for id: String in l_nodes:
+				mean_y += float(targets.get(id, GPAD))
+			mean_y /= float(l_nodes.size())
+			var start_y := maxf(GPAD, mean_y - float(l_nodes.size() - 1) * STEP * 0.5)
+			for i: int in range(l_nodes.size()):
+				node_y[l_nodes[i]] = start_y + float(i) * STEP
 
-	# Write layer + rank into connected nodes
-	for l: int in by_layer:
-		var l_nodes: Array = by_layer[l]
-		for rank: int in range(l_nodes.size()):
-			var id: String = l_nodes[rank]
-			if id in nodes:
-				(nodes[id] as Dictionary)["layer"] = int(layers.get(id, 0))
-				(nodes[id] as Dictionary)["rank"] = rank
+	# Write layer + y into connected nodes
+	for id: String in node_y:
+		if id in nodes:
+			(nodes[id] as Dictionary)["layer"] = int(layers.get(id, 0))
+			(nodes[id] as Dictionary)["y"] = float(node_y[id])
 
 	# Isolated nodes (no edges at all) → layer=-1, compact grid rank
 	var isolated_ids: Array[String] = []

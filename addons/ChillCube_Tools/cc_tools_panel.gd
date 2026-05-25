@@ -320,7 +320,7 @@ class GraphCanvas extends Control:
 		for id: String in nodes:
 			var n: Dictionary = nodes[id]
 			if int(n.get("layer", -1)) >= 0:
-				var y := PAD + int(n.get("rank", 0)) * RY + NH
+				var y := float(n.get("y", PAD)) + NH
 				if y > max_y:
 					max_y = y
 		return max_y + 60.0
@@ -350,7 +350,7 @@ class GraphCanvas extends Control:
 		var rank: int = int(n.get("rank", 0))
 		if l < 0:
 			return Vector2(PAD + (rank % ICOLS) * ICX, _isolated_y + (rank / ICOLS) * IRY)
-		return Vector2(PAD + l * CX, PAD + rank * RY)
+		return Vector2(PAD + l * CX, float(n.get("y", PAD + rank * RY)))
 
 	func _draw() -> void:
 		draw_rect(Rect2(Vector2.ZERO, size), Color(0.11, 0.11, 0.13))
