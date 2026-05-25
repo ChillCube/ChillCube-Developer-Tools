@@ -430,9 +430,9 @@ class GraphCanvas extends Control:
 			var missing_dep: bool = edge.size() > 3 and bool(edge[3])
 			var ec: Color = edge[2] if edge.size() > 2 else Color(0.55, 0.55, 0.60)
 			if missing_dep:
-				ec = Color(1.0, 0.25, 0.15, 0.9 if active else 0.12)
+				ec = Color(1.0, 0.25, 0.15, 0.75 if active else 0.10)
 			else:
-				ec.a = 0.85 if active else 0.08
+				ec.a = 0.38 if active else 0.06
 			var tid_deg := float((nodes.get(tid, {}) as Dictionary).get("indegree", 1))
 			var elw := lw * (1.0 + clampf(tid_deg * 0.5, 0.0, 3.0)) * (1.5 if active else 0.7)
 			if missing_dep and active:
