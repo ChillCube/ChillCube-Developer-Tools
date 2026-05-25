@@ -280,6 +280,7 @@ class GraphCanvas extends Control:
 	var nodes: Dictionary = {}
 	var edges: Array = []
 	var loading := false
+	var filter_installed := false
 	var selected_id: String = ""
 	var pan := Vector2(PAD, PAD)
 	var zoom := 1.0
@@ -299,6 +300,9 @@ class GraphCanvas extends Control:
 	func _nh(id: String) -> float:
 		var score := float((nodes.get(id, {}) as Dictionary).get("influence", 0.0))
 		return clampf(NH_BASE + score * 7.0, NH_BASE, NH_MAX)
+
+	func _vis(id: String) -> bool:
+		return not filter_installed or bool((nodes.get(id, {}) as Dictionary).get("local", false))
 
 	func _gui_input(ev: InputEvent) -> void:
 		if ev is InputEventMouseButton:
@@ -328,6 +332,8 @@ class GraphCanvas extends Control:
 		var world := (screen_pos - pan) / zoom
 		var hit := ""
 		for id: String in nodes:
+			if not _vis(id):
+				continue
 			var np := _npos(id)
 			var l: int = int((nodes[id] as Dictionary).get("layer", -1))
 			var w := _nw(id) if l >= 0 else INW
@@ -348,7 +354,7 @@ class GraphCanvas extends Control:
 	func _compute_isolated_y() -> float:
 		var max_y := PAD
 		for id: String in nodes:
-			if int((nodes[id] as Dictionary).get("layer", -1)) >= 0:
+			if int((nodes[id] as Dictionary).get("layer", -1)) >= 0 and _vis(id):
 				var y := float((nodes[id] as Dictionary).get("y", PAD)) + _nh(id)
 				if y > max_y:
 					max_y = y
@@ -361,6 +367,8 @@ class GraphCanvas extends Control:
 		var min_p := Vector2(1e9, 1e9)
 		var max_p := Vector2(-1e9, -1e9)
 		for id: String in nodes:
+			if not _vis(id):
+				continue
 			var p := _npos(id)
 			var l: int = int((nodes[id] as Dictionary).get("layer", -1))
 			var w := _nw(id) if l >= 0 else INW
@@ -424,6 +432,8 @@ class GraphCanvas extends Control:
 			var tid := str(edge[1])
 			if fid not in nodes or tid not in nodes:
 				continue
+			if not _vis(fid) or not _vis(tid):
+				continue
 			var active := not has_sel or (fid in hl and tid in hl)
 			var dep_p  := _npos(tid) + Vector2(_nw(tid), _nh(tid) * 0.5)
 			var depr_p := _npos(fid) + Vector2(0.0, _nh(fid) * 0.5)
@@ -459,6 +469,8 @@ class GraphCanvas extends Control:
 		for id: String in nodes:
 			var n: Dictionary = nodes[id]
 			if int(n.get("layer", -1)) < 0:
+				continue
+			if not _vis(id):
 				continue
 			var active := not has_sel or id in hl
 			var np  := _npos(id)
@@ -513,6 +525,8 @@ class GraphCanvas extends Control:
 			var n: Dictionary = nodes[id]
 			if int(n.get("layer", -1)) >= 0:
 				continue
+			if not _vis(id):
+				continue
 			var active := not has_sel or id in hl
 			var np  := _npos(id)
 			var col: Color = n.get("color", Color(0.35, 0.35, 0.35))
@@ -530,11 +544,14 @@ class GraphCanvas extends Control:
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 		# ── Stats overlay (screen-space, top-right) ───────────────────────────
-		var total_n := nodes.size()
+		var total_n := 0
 		var installed_n := 0
 		var max_l := 0
 		var leaf_n := 0
 		for sid: String in nodes:
+			if not _vis(sid):
+				continue
+			total_n += 1
 			var sn: Dictionary = nodes[sid]
 			if sn.get("local", false):
 				installed_n += 1
@@ -1123,8 +1140,17 @@ func _build_graph_tab(tabs: TabContainer) -> void:
 	refresh_btn.text = "↺ Refresh"
 	refresh_btn.pressed.connect(_refresh_graph)
 	toolbar.add_child(refresh_btn)
+	var filter_btn := Button.new()
+	filter_btn.text = "Installed only"
+	filter_btn.toggle_mode = true
+	filter_btn.toggled.connect(func(on: bool) -> void:
+		_graph_canvas.filter_installed = on
+		_graph_canvas._isolated_y = 0.0
+		_graph_canvas.fit_to(_graph_canvas.size)
+		_graph_canvas.queue_redraw())
+	toolbar.add_child(filter_btn)
 	var hint := Label.new()
-	hint.text = "   Scroll = zoom · Drag = pan · Click = highlight neighbors     Yellow ring = nothing depends on it yet · Wider = more things rely on it"
+	hint.text = "   Scroll = zoom · Drag = pan · Click = highlight neighbors     Yellow ring = nothing depends on it yet · Wider/taller = more things rely on it"
 	hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hint.clip_text = true
