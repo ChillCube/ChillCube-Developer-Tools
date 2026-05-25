@@ -623,7 +623,9 @@ static func build_graph_data(local_root: String) -> Dictionary:
 			(nodes[to_id] as Dictionary)["indegree"] = int((nodes[to_id] as Dictionary).get("indegree", 0)) + 1
 			has_edge[from_id] = true
 			has_edge[to_id] = true
-			edges.append([from_id, to_id])
+			var from_is_local: bool = rurl in local_addons
+			var dep_is_local: bool = dep_url in local_addons
+			edges.append([from_id, to_id, from_is_local and not dep_is_local])
 			if from_id not in deps_map:
 				deps_map[from_id] = []
 			(deps_map[from_id] as Array).append(to_id)

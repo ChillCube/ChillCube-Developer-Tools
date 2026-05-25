@@ -427,11 +427,25 @@ class GraphCanvas extends Control:
 			var active := not has_sel or (fid in hl and tid in hl)
 			var dep_p  := _npos(tid) + Vector2(_nw(tid), _nh(tid) * 0.5)
 			var depr_p := _npos(fid) + Vector2(0.0, _nh(fid) * 0.5)
+			var missing_dep: bool = edge.size() > 3 and bool(edge[3])
 			var ec: Color = edge[2] if edge.size() > 2 else Color(0.55, 0.55, 0.60)
-			ec.a = 0.85 if active else 0.08
+			if missing_dep:
+				ec = Color(1.0, 0.25, 0.15, 0.9 if active else 0.12)
+			else:
+				ec.a = 0.85 if active else 0.08
 			var tid_deg := float((nodes.get(tid, {}) as Dictionary).get("indegree", 1))
 			var elw := lw * (1.0 + clampf(tid_deg * 0.5, 0.0, 3.0)) * (1.5 if active else 0.7)
-			draw_line(dep_p, depr_p, ec, elw)
+			if missing_dep and active:
+				var seg := 8.0 / zoom
+				var gap := 5.0 / zoom
+				var total_len := dep_p.distance_to(depr_p)
+				var edir := (depr_p - dep_p).normalized()
+				var t := 0.0
+				while t < total_len:
+					draw_line(dep_p + edir * t, dep_p + edir * minf(t + seg, total_len), ec, elw)
+					t += seg + gap
+			else:
+				draw_line(dep_p, depr_p, ec, elw)
 			if active:
 				var dir := (depr_p - dep_p).normalized()
 				if dir.length_squared() > 0.01:
@@ -1207,7 +1221,8 @@ func _on_graph_data(data: Dictionary) -> void:
 		var dep_id := str(edge[1])
 		var ec: Color = node_color.get(dep_id, Color(0.55, 0.55, 0.60)) as Color
 		ec.a = 0.80
-		colored_edges.append([str(edge[0]), dep_id, ec])
+		var missing_dep: bool = edge.size() > 2 and bool(edge[2])
+		colored_edges.append([str(edge[0]), dep_id, ec, missing_dep])
 
 	_graph_canvas.loading = false
 	_graph_canvas.selected_id = ""
