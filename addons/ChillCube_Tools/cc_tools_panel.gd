@@ -344,6 +344,10 @@ class GraphCanvas extends Control:
 		zoom = clampf(z, 0.05, 2.0)
 		pan = canvas_size * 0.5 - (min_p + bounds * 0.5) * zoom
 
+	func _text_color(bg: Color) -> Color:
+		var lum := 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b
+		return Color(0.06, 0.06, 0.06) if lum > 0.52 else Color.WHITE
+
 	func _npos(id: String) -> Vector2:
 		var n: Dictionary = nodes.get(id, {})
 		var l: int = int(n.get("layer", 0))
@@ -404,7 +408,7 @@ class GraphCanvas extends Control:
 			var ts := font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 11)
 			var tx := np.x + maxf(4.0, (NW - minf(ts.x, max_lbl_w)) * 0.5)
 			draw_string(font, Vector2(tx, np.y + (NH + 11.0) * 0.5 - 2.0),
-			            lbl, HORIZONTAL_ALIGNMENT_LEFT, int(max_lbl_w), 11, Color.WHITE)
+			            lbl, HORIZONTAL_ALIGNMENT_LEFT, int(max_lbl_w), 11, _text_color(col))
 
 		# Separator before isolated section
 		var sep_lbl_col := Color(0.45, 0.45, 0.50)
@@ -427,7 +431,7 @@ class GraphCanvas extends Control:
 			var ts := font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 9)
 			var tx := np.x + maxf(3.0, (INW - minf(ts.x, max_lbl_w)) * 0.5)
 			draw_string(font, Vector2(tx, np.y + (INH + 9.0) * 0.5 - 1.0),
-			            lbl, HORIZONTAL_ALIGNMENT_LEFT, int(max_lbl_w), 9, Color.WHITE)
+			            lbl, HORIZONTAL_ALIGNMENT_LEFT, int(max_lbl_w), 9, _text_color(col))
 
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
