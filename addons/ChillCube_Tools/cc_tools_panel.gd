@@ -268,6 +268,8 @@ var _timeline_play_btn: Button = null
 
 # ─── Dependency graph canvas ──────────────────────────────────────────────────
 class GraphCanvas extends Control:
+	signal install_requested(url: String, label: String)
+
 	const NW_BASE := 100.0   # node width for indegree=0
 	const NW_MAX  := 220.0   # cap for heavily relied-on nodes
 	const NH_BASE := 30.0
@@ -294,9 +296,38 @@ class GraphCanvas extends Control:
 	var _drag_start := Vector2.ZERO
 	var _pan_start := Vector2.ZERO
 	var _click_moved := false
+	var _ctx_menu: PopupMenu
+	var _ctx_node_id: String = ""
+	# spawn animation: id -> [0..1] scale progress
+	var _spawn_anim: Dictionary = {}
+	var _anim_speed := 6.0
 
 	func _ready() -> void:
 		focus_mode = Control.FOCUS_CLICK
+		_ctx_menu = PopupMenu.new()
+		add_child(_ctx_menu)
+		_ctx_menu.id_pressed.connect(_on_ctx_menu)
+
+	func _process(delta: float) -> void:
+		if _spawn_anim.is_empty():
+			return
+		var still_going := false
+		for id: String in _spawn_anim.keys():
+			var t: float = float(_spawn_anim[id])
+			t = minf(t + delta * _anim_speed, 1.0)
+			_spawn_anim[id] = t
+			if t < 1.0:
+				still_going = true
+			else:
+				_spawn_anim.erase(id)
+				still_going = still_going  # keep flag
+		queue_redraw()
+		if not still_going and _spawn_anim.is_empty():
+			set_process(false)
+
+	func spawn_node(id: String) -> void:
+		_spawn_anim[id] = 0.0
+		set_process(true)
 
 	func _nw(id: String) -> float:
 		var score := float((nodes.get(id, {}) as Dictionary).get("influence", 0.0))
@@ -334,6 +365,9 @@ class GraphCanvas extends Control:
 						_dragging = false
 						if not _click_moved:
 							_handle_click(mb.position)
+				MOUSE_BUTTON_RIGHT:
+					if not mb.pressed:
+						_handle_right_click(mb.position); accept_event()
 		elif ev is InputEventMouseMotion and _dragging:
 			if (ev as InputEventMouseMotion).relative.length() > 3.0:
 				_click_moved = true
@@ -355,6 +389,42 @@ class GraphCanvas extends Control:
 				break
 		selected_id = "" if hit == selected_id else hit
 		queue_redraw()
+
+	func _handle_right_click(screen_pos: Vector2) -> void:
+		var world := (screen_pos - pan) / zoom
+		var hit := ""
+		for id: String in nodes:
+			if not _vis(id):
+				continue
+			var np := _npos(id)
+			var l: int = int((nodes[id] as Dictionary).get("layer", -1))
+			var w := _nw(id) if l >= 0 else INW
+			var h := _nh(id) if l >= 0 else INH
+			if Rect2(np, Vector2(w, h)).has_point(world):
+				hit = id
+				break
+		if hit.is_empty():
+			return
+		var n: Dictionary = nodes[hit]
+		var url: String = n.get("url", "")
+		if url.is_empty():
+			return
+		_ctx_node_id = hit
+		_ctx_menu.clear()
+		if not bool(n.get("local", false)):
+			_ctx_menu.add_item("📥 Install " + str(n.get("label", hit)), 0)
+		_ctx_menu.add_item("🔗 Open repo", 1)
+		if _ctx_menu.item_count > 0:
+			_ctx_menu.popup(Rect2i(int(get_global_mouse_position().x),
+			                      int(get_global_mouse_position().y), 1, 1))
+
+	func _on_ctx_menu(id: int) -> void:
+		var n: Dictionary = nodes.get(_ctx_node_id, {})
+		match id:
+			0:
+				install_requested.emit(str(n.get("url", "")), str(n.get("label", _ctx_node_id)))
+			1:
+				OS.shell_open(str(n.get("url", "")))
 
 	func _zoom_at(screen_pt: Vector2, new_zoom: float) -> void:
 		new_zoom = clampf(new_zoom, 0.08, 6.0)
@@ -397,6 +467,11 @@ class GraphCanvas extends Control:
 	func _text_color(bg: Color) -> Color:
 		return Color(0.06, 0.06, 0.06) if 0.299*bg.r + 0.587*bg.g + 0.114*bg.b > 0.52 \
 		       else Color.WHITE
+
+	static func _ease_back(t: float) -> float:
+		var c1 := 1.70158
+		var c3 := c1 + 1.0
+		return 1.0 + c3 * pow(t - 1.0, 3.0) + c1 * pow(t - 1.0, 2.0)
 
 	func _npos(id: String) -> Vector2:
 		var n: Dictionary = nodes.get(id, {})
@@ -492,14 +567,24 @@ class GraphCanvas extends Control:
 			var deg := int(n.get("indegree", 0))
 			var is_leaf := deg == 0
 
+			# Spawn animation: scale from center with ease-out-back overshoot
+			var anim_t := float(_spawn_anim.get(id, 1.0)) if id in _spawn_anim else 1.0
+			var anim_s := _ease_back(anim_t)
+			var animated := anim_s < 0.999
+			if animated:
+				var center := np + Vector2(nw, nh) * 0.5
+				draw_set_transform(pan + center * zoom * (1.0 - anim_s), 0.0,
+				                   Vector2(anim_s * zoom, anim_s * zoom))
+
 			var draw_col := col if active else Color(col.r, col.g, col.b, 0.12)
+			draw_col.a *= anim_t  # fade in alongside scale
 			draw_rect(Rect2(np, Vector2(nw, nh)), draw_col)
 			draw_rect(Rect2(np, Vector2(nw, nh)), draw_col.darkened(0.28), false, lw)
 
 			# Yellow ring for leaf nodes (nothing depends on them = build opportunity)
 			if is_leaf and active:
 				var ring := Rect2(np - Vector2(3, 3), Vector2(nw + 6, nh + 6))
-				draw_rect(ring, Color(1.0, 0.88, 0.1, 0.85), false, 2.0 / zoom)
+				draw_rect(ring, Color(1.0, 0.88, 0.1, 0.85 * anim_t), false, 2.0 / zoom)
 
 			# Bold white ring for selected node
 			if id == selected_id:
@@ -512,7 +597,8 @@ class GraphCanvas extends Control:
 				var ts  := font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 11)
 				var tx  := np.x + maxf(4.0, (nw - minf(ts.x, mlw)) * 0.5)
 				draw_string(font, Vector2(tx, np.y + (nh + 11.0) * 0.5 - 2.0),
-				            lbl, HORIZONTAL_ALIGNMENT_LEFT, int(mlw), 11, _text_color(col))
+				            lbl, HORIZONTAL_ALIGNMENT_LEFT, int(mlw), 11,
+				            _text_color(col).lerp(Color.TRANSPARENT, 1.0 - anim_t))
 				# Size badge (bottom-right corner, only for locally installed addons)
 				var size_kb := int(n.get("size_kb", 0))
 				if size_kb > 0:
@@ -521,9 +607,12 @@ class GraphCanvas extends Control:
 					var bts2 := font.get_string_size(btxt, HORIZONTAL_ALIGNMENT_LEFT, -1, bfs)
 					var bx := np.x + nw - bts2.x - 4.0
 					var by := np.y + nh - bfs - 3.0
-					draw_rect(Rect2(bx - 2, by - 1, bts2.x + 4, bfs + 2), Color(0.0, 0.0, 0.0, 0.40))
+					draw_rect(Rect2(bx - 2, by - 1, bts2.x + 4, bfs + 2), Color(0.0, 0.0, 0.0, 0.40 * anim_t))
 					draw_string(font, Vector2(bx, by + bfs), btxt, HORIZONTAL_ALIGNMENT_LEFT,
-					            -1, bfs, Color(0.85, 0.85, 0.85, 0.80))
+					            -1, bfs, Color(0.85, 0.85, 0.85, 0.80 * anim_t))
+
+			if animated:
+				draw_set_transform(pan, 0.0, Vector2(zoom, zoom))
 
 		# ── Standalone separator ───────────────────────────────────────────────
 		var sep_col := Color(0.45, 0.45, 0.50, 0.5 if has_sel else 1.0)
@@ -1184,6 +1273,7 @@ func _build_graph_tab(tabs: TabContainer) -> void:
 	_graph_canvas.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_graph_canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_graph_canvas.clip_contents = true
+	_graph_canvas.install_requested.connect(_install_from_graph)
 	root.add_child(_graph_canvas)
 
 	call_deferred("_refresh_graph")
@@ -1319,8 +1409,16 @@ func _advance_timeline() -> void:
 	if _timeline_idx >= _timeline_dates.size():
 		_stop_timeline()
 		return
-	_graph_canvas.timeline_cutoff = _timeline_dates[_timeline_idx]
+	var prev_cutoff := _graph_canvas.timeline_cutoff
+	var new_cutoff := _timeline_dates[_timeline_idx]
 	_timeline_idx += 1
+	_graph_canvas.timeline_cutoff = new_cutoff
+	# Trigger spawn animation for nodes that just became visible
+	for id: String in _graph_canvas.nodes:
+		var n: Dictionary = _graph_canvas.nodes[id]
+		var d: String = n.get("created_at", "")
+		if not d.is_empty() and d > prev_cutoff and d <= new_cutoff:
+			_graph_canvas.spawn_node(id)
 	_graph_canvas._isolated_y = 0.0
 	_graph_canvas.fit_to(_graph_canvas.size)
 	_graph_canvas.queue_redraw()
@@ -1334,6 +1432,21 @@ func _stop_timeline() -> void:
 	_graph_canvas.queue_redraw()
 	if is_instance_valid(_timeline_play_btn):
 		_timeline_play_btn.set_pressed_no_signal(false)
+
+func _install_from_graph(url: String, _label: String) -> void:
+	if url.is_empty():
+		return
+	var local_root := ProjectSettings.globalize_path("res://").rstrip("/")
+	if _graph_thread != null and _graph_thread.is_started():
+		return
+	_graph_canvas.loading = true
+	_graph_canvas.queue_redraw()
+	_graph_thread = Thread.new()
+	_graph_thread.start(func():
+		Ops.clone_addon(local_root, url, func(_msg): pass)
+		call_deferred("_refresh_graph")
+		call_deferred("_refresh_addons")
+	)
 
 # ─── Workspace tab ────────────────────────────────────────────────────────────
 
