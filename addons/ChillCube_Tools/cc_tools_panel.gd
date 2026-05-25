@@ -380,12 +380,12 @@ class GraphCanvas extends Control:
 				continue
 			var dep_p := _npos(tid) + Vector2(NW, NH * 0.5)
 			var depr_p := _npos(fid) + Vector2(0.0, NH * 0.5)
-			var ec := Color(0.55, 0.55, 0.60, 0.80)
-			draw_line(dep_p, depr_p, ec, lw)
+			var ec: Color = edge[2] if edge.size() > 2 else Color(0.55, 0.55, 0.60, 0.80)
+			draw_line(dep_p, depr_p, ec, lw * 1.5)
 			var dir := (depr_p - dep_p).normalized()
 			if dir.length_squared() > 0.01:
-				var perp := Vector2(-dir.y, dir.x) * (5.0 / zoom)
-				var tl := 9.0 / zoom
+				var perp := Vector2(-dir.y, dir.x) * (5.5 / zoom)
+				var tl := 10.0 / zoom
 				draw_polygon(
 					PackedVector2Array([depr_p, depr_p - dir * tl + perp, depr_p - dir * tl - perp]),
 					PackedColorArray([ec, ec, ec]))
@@ -1002,31 +1002,84 @@ func _on_graph_data(data: Dictionary) -> void:
 		_graph_thread = null
 	if not is_instance_valid(_graph_canvas):
 		return
+
 	var g_nodes: Dictionary = data.get("nodes", {})
-	# Assign colors
+	var raw_edges: Array = data.get("edges", [])
+
+	# ── Step 1: Unique hues for L0 (foundation) nodes ────────────────────────
+	var l0_ids: Array[String] = []
+	for id: String in g_nodes:
+		if int((g_nodes[id] as Dictionary).get("layer", -1)) == 0:
+			l0_ids.append(id)
+	l0_ids.sort()
+
+	var node_color: Dictionary = {}  # id -> Color
+	var n0 := l0_ids.size()
+	for i: int in range(n0):
+		# Spread hues evenly; use golden ratio offset for better visual separation
+		var hue := fmod(float(i) / float(max(n0, 1)) + 0.05, 1.0)
+		node_color[l0_ids[i]] = Color.from_hsv(hue, 0.68, 0.88)
+
+	# ── Step 2: Propagate colors up through layers using circular HSV mean ────
+	var max_l := 0
+	for id: String in g_nodes:
+		var l: int = int((g_nodes[id] as Dictionary).get("layer", -1))
+		if l > max_l:
+			max_l = l
+
+	for l: int in range(1, max_l + 1):
+		for id: String in g_nodes:
+			if int((g_nodes[id] as Dictionary).get("layer", -1)) != l:
+				continue
+			# Collect dep colors
+			var dep_colors: Array[Color] = []
+			for edge: Array in raw_edges:
+				if str(edge[0]) == id and str(edge[1]) in node_color:
+					dep_colors.append(node_color[str(edge[1])])
+			if dep_colors.is_empty():
+				node_color[id] = Color.from_hsv(0.0, 0.0, 0.50)
+				continue
+			# Circular mean of hue, linear mean of S and V
+			var sin_h := 0.0
+			var cos_h := 0.0
+			var sum_s := 0.0
+			var sum_v := 0.0
+			for c: Color in dep_colors:
+				sin_h += sin(c.h * TAU)
+				cos_h += cos(c.h * TAU)
+				sum_s += c.s
+				sum_v += c.v
+			var nd := float(dep_colors.size())
+			var avg_h := fmod(atan2(sin_h / nd, cos_h / nd) / TAU + 1.0, 1.0)
+			# Slightly desaturate blended nodes so you can tell they're derived
+			var avg_s := (sum_s / nd) * 0.88
+			var avg_v := sum_v / nd
+			node_color[id] = Color.from_hsv(avg_h, avg_s, avg_v)
+
+	# ── Step 3: Apply colors to nodes ────────────────────────────────────────
 	for id: String in g_nodes:
 		var n: Dictionary = g_nodes[id]
-		var l: int = int(n.get("layer", 0))
-		var deg: int = int(n.get("indegree", 0))
-		var internal_node: bool = bool(n.get("internal", true))
-		var col: Color
-		if not internal_node:
-			col = Color(0.99, 0.59, 0.27)
-		elif l < 0:
-			col = Color(0.28, 0.55, 0.45)   # muted teal = isolated / not yet connected
-		elif l == 0:
-			col = Color(0.0, 0.72, 0.58)
-		elif deg >= 2:
-			col = Color(0.29, 0.61, 1.0)
-		elif deg == 1:
-			col = Color(0.64, 0.61, 1.0)
+		var l: int = int(n.get("layer", -1))
+		if l < 0:
+			n["color"] = Color(0.28, 0.55, 0.45) if bool(n.get("internal", true)) \
+			             else Color(0.99, 0.59, 0.27)
+		elif id in node_color:
+			n["color"] = node_color[id]
 		else:
-			col = Color(0.39, 0.43, 0.45)
-		n["color"] = col
+			n["color"] = Color(0.40, 0.40, 0.42)
 		g_nodes[id] = n
+
+	# ── Step 4: Color edges by their dependency (source) node ────────────────
+	var colored_edges: Array = []
+	for edge: Array in raw_edges:
+		var dep_id := str(edge[1])
+		var ec: Color = node_color.get(dep_id, Color(0.55, 0.55, 0.60)) as Color
+		ec.a = 0.80
+		colored_edges.append([str(edge[0]), dep_id, ec])
+
 	_graph_canvas.loading = false
 	_graph_canvas.nodes = g_nodes
-	_graph_canvas.edges = data.get("edges", [])
+	_graph_canvas.edges = colored_edges
 	_graph_canvas.fit_to(_graph_canvas.size)
 	_graph_canvas.queue_redraw()
 
