@@ -266,9 +266,10 @@ var _graph_thread: Thread = null
 class GraphCanvas extends Control:
 	const NW_BASE := 100.0   # node width for indegree=0
 	const NW_MAX  := 220.0   # cap for heavily relied-on nodes
-	const NH      := 40.0
+	const NH_BASE := 30.0
+	const NH_MAX  := 60.0
 	const CX      := 260.0   # column spacing (must be > NW_MAX)
-	const RY      := 56.0
+	const RY      := 76.0
 	const PAD     := 30.0
 	const INW := 118.0
 	const INH := 28.0
@@ -294,6 +295,10 @@ class GraphCanvas extends Control:
 	func _nw(id: String) -> float:
 		var score := float((nodes.get(id, {}) as Dictionary).get("influence", 0.0))
 		return clampf(NW_BASE + score * 14.0, NW_BASE, NW_MAX)
+
+	func _nh(id: String) -> float:
+		var score := float((nodes.get(id, {}) as Dictionary).get("influence", 0.0))
+		return clampf(NH_BASE + score * 7.0, NH_BASE, NH_MAX)
 
 	func _gui_input(ev: InputEvent) -> void:
 		if ev is InputEventMouseButton:
@@ -326,7 +331,7 @@ class GraphCanvas extends Control:
 			var np := _npos(id)
 			var l: int = int((nodes[id] as Dictionary).get("layer", -1))
 			var w := _nw(id) if l >= 0 else INW
-			var h := NH if l >= 0 else INH
+			var h := _nh(id) if l >= 0 else INH
 			if Rect2(np, Vector2(w, h)).has_point(world):
 				hit = id
 				break
@@ -344,7 +349,7 @@ class GraphCanvas extends Control:
 		var max_y := PAD
 		for id: String in nodes:
 			if int((nodes[id] as Dictionary).get("layer", -1)) >= 0:
-				var y := float((nodes[id] as Dictionary).get("y", PAD)) + NH
+				var y := float((nodes[id] as Dictionary).get("y", PAD)) + _nh(id)
 				if y > max_y:
 					max_y = y
 		return max_y + 60.0
@@ -359,7 +364,7 @@ class GraphCanvas extends Control:
 			var p := _npos(id)
 			var l: int = int((nodes[id] as Dictionary).get("layer", -1))
 			var w := _nw(id) if l >= 0 else INW
-			var h := NH if l >= 0 else INH
+			var h := _nh(id) if l >= 0 else INH
 			min_p = min_p.min(p)
 			max_p = max_p.max(p + Vector2(w, h))
 		var bounds := max_p - min_p
@@ -420,8 +425,8 @@ class GraphCanvas extends Control:
 			if fid not in nodes or tid not in nodes:
 				continue
 			var active := not has_sel or (fid in hl and tid in hl)
-			var dep_p  := _npos(tid) + Vector2(_nw(tid), NH * 0.5)
-			var depr_p := _npos(fid) + Vector2(0.0, NH * 0.5)
+			var dep_p  := _npos(tid) + Vector2(_nw(tid), _nh(tid) * 0.5)
+			var depr_p := _npos(fid) + Vector2(0.0, _nh(fid) * 0.5)
 			var ec: Color = edge[2] if edge.size() > 2 else Color(0.55, 0.55, 0.60)
 			ec.a = 0.85 if active else 0.08
 			var elw := lw * (2.0 if active else 1.0)
@@ -443,22 +448,23 @@ class GraphCanvas extends Control:
 			var active := not has_sel or id in hl
 			var np  := _npos(id)
 			var nw  := _nw(id)
+			var nh  := _nh(id)
 			var col: Color = n.get("color", Color(0.35, 0.35, 0.35))
 			var deg := int(n.get("indegree", 0))
 			var is_leaf := deg == 0
 
 			var draw_col := col if active else Color(col.r, col.g, col.b, 0.12)
-			draw_rect(Rect2(np, Vector2(nw, NH)), draw_col)
-			draw_rect(Rect2(np, Vector2(nw, NH)), draw_col.darkened(0.28), false, lw)
+			draw_rect(Rect2(np, Vector2(nw, nh)), draw_col)
+			draw_rect(Rect2(np, Vector2(nw, nh)), draw_col.darkened(0.28), false, lw)
 
 			# Yellow ring for leaf nodes (nothing depends on them = build opportunity)
 			if is_leaf and active:
-				var ring := Rect2(np - Vector2(3, 3), Vector2(nw + 6, NH + 6))
+				var ring := Rect2(np - Vector2(3, 3), Vector2(nw + 6, nh + 6))
 				draw_rect(ring, Color(1.0, 0.88, 0.1, 0.85), false, 2.0 / zoom)
 
 			# Bold white ring for selected node
 			if id == selected_id:
-				draw_rect(Rect2(np - Vector2(4, 4), Vector2(nw + 8, NH + 8)),
+				draw_rect(Rect2(np - Vector2(4, 4), Vector2(nw + 8, nh + 8)),
 				          Color.WHITE, false, 2.5 / zoom)
 
 			if active:
@@ -466,7 +472,7 @@ class GraphCanvas extends Control:
 				var mlw := nw - 8.0
 				var ts  := font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 11)
 				var tx  := np.x + maxf(4.0, (nw - minf(ts.x, mlw)) * 0.5)
-				draw_string(font, Vector2(tx, np.y + (NH + 11.0) * 0.5 - 2.0),
+				draw_string(font, Vector2(tx, np.y + (nh + 11.0) * 0.5 - 2.0),
 				            lbl, HORIZONTAL_ALIGNMENT_LEFT, int(mlw), 11, _text_color(col))
 
 		# ── Standalone separator ───────────────────────────────────────────────
@@ -496,6 +502,37 @@ class GraphCanvas extends Control:
 				            lbl, HORIZONTAL_ALIGNMENT_LEFT, int(mlw), 9, _text_color(col))
 
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+		# ── Stats overlay (screen-space, top-right) ───────────────────────────
+		var total_n := nodes.size()
+		var installed_n := 0
+		var max_l := 0
+		var leaf_n := 0
+		for sid: String in nodes:
+			var sn: Dictionary = nodes[sid]
+			if sn.get("local", false):
+				installed_n += 1
+			var sl := int(sn.get("layer", -1))
+			if sl >= 0:
+				if sl > max_l:
+					max_l = sl
+				if int(sn.get("indegree", 0)) == 0:
+					leaf_n += 1
+		var stat_lines: Array[String] = [
+			"%d addons · %d edges" % [total_n, edges.size()],
+			"%d installed · depth %d" % [installed_n, max_l],
+			"%d ready to build next" % leaf_n,
+		]
+		var sfs := 11
+		var slh := 17.0
+		var sbw := 210.0
+		var sbh := slh * stat_lines.size() + 10.0
+		var sbx := size.x - sbw - 10.0
+		var sby := 10.0
+		draw_rect(Rect2(sbx - 8, sby - 6, sbw + 16, sbh), Color(0.0, 0.0, 0.0, 0.5))
+		for si: int in range(stat_lines.size()):
+			draw_string(font, Vector2(sbx, sby + si * slh + sfs),
+			            stat_lines[si], HORIZONTAL_ALIGNMENT_LEFT, -1, sfs, Color(0.78, 0.82, 0.90))
 
 # ─── Setup ───────────────────────────────────────────────────────────────────
 

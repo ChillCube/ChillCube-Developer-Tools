@@ -675,8 +675,8 @@ static func build_graph_data(local_root: String) -> Dictionary:
 			(rev_deps[dep] as Array).append(id)
 
 	# Y-position layout: nodes are placed at the average Y of connected neighbors.
-	# Step = NH + gap = 56 (matches GraphCanvas.RY).  Pad = 30 (matches GraphCanvas.PAD).
-	var STEP := 56.0
+	# Step = NH_MAX + gap = 76 (matches GraphCanvas.RY).  Pad = 30 (matches GraphCanvas.PAD).
+	var STEP := 76.0
 	var GPAD := 30.0
 	var node_y: Dictionary = {}  # id -> actual world Y
 
