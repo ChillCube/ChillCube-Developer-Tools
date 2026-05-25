@@ -264,49 +264,74 @@ var _graph_thread: Thread = null
 
 # ─── Dependency graph canvas ──────────────────────────────────────────────────
 class GraphCanvas extends Control:
-	# Connected graph (layered, left-to-right)
-	const NW := 150
-	const NH := 40
-	const CX := 210
-	const RY := 56
-	const PAD := 30.0
-	# Isolated grid (compact, below main graph)
-	const INW := 120
-	const INH := 28
-	const ICX := 132
-	const IRY := 38
+	const NW_BASE := 100.0   # node width for indegree=0
+	const NW_MAX  := 220.0   # cap for heavily relied-on nodes
+	const NH      := 40.0
+	const CX      := 260.0   # column spacing (must be > NW_MAX)
+	const RY      := 56.0
+	const PAD     := 30.0
+	const INW := 118.0
+	const INH := 28.0
+	const ICX := 130.0
+	const IRY := 38.0
 	const ICOLS := 6
 
 	var nodes: Dictionary = {}
 	var edges: Array = []
 	var loading := false
+	var selected_id: String = ""
 	var pan := Vector2(PAD, PAD)
 	var zoom := 1.0
-	var _isolated_y := 0.0  # world-y where isolated section starts
+	var _isolated_y := 0.0
 	var _dragging := false
 	var _drag_start := Vector2.ZERO
 	var _pan_start := Vector2.ZERO
+	var _click_moved := false
 
 	func _ready() -> void:
 		focus_mode = Control.FOCUS_CLICK
+
+	func _nw(id: String) -> float:
+		var deg := int((nodes.get(id, {}) as Dictionary).get("indegree", 0))
+		return minf(NW_BASE + deg * 16.0, NW_MAX)
 
 	func _gui_input(ev: InputEvent) -> void:
 		if ev is InputEventMouseButton:
 			var mb := ev as InputEventMouseButton
 			match mb.button_index:
 				MOUSE_BUTTON_WHEEL_UP:
-					_zoom_at(mb.position, zoom * 1.12)
-					accept_event()
+					_zoom_at(mb.position, zoom * 1.12); accept_event()
 				MOUSE_BUTTON_WHEEL_DOWN:
-					_zoom_at(mb.position, zoom / 1.12)
-					accept_event()
+					_zoom_at(mb.position, zoom / 1.12); accept_event()
 				MOUSE_BUTTON_LEFT:
-					_dragging = mb.pressed
-					_drag_start = mb.position
-					_pan_start = pan
+					if mb.pressed:
+						_dragging = true
+						_drag_start = mb.position
+						_pan_start = pan
+						_click_moved = false
+					else:
+						_dragging = false
+						if not _click_moved:
+							_handle_click(mb.position)
 		elif ev is InputEventMouseMotion and _dragging:
+			if (ev as InputEventMouseMotion).relative.length() > 3.0:
+				_click_moved = true
 			pan = _pan_start + (ev as InputEventMouseMotion).position - _drag_start
 			queue_redraw()
+
+	func _handle_click(screen_pos: Vector2) -> void:
+		var world := (screen_pos - pan) / zoom
+		var hit := ""
+		for id: String in nodes:
+			var np := _npos(id)
+			var l: int = int((nodes[id] as Dictionary).get("layer", -1))
+			var w := _nw(id) if l >= 0 else INW
+			var h := NH if l >= 0 else INH
+			if Rect2(np, Vector2(w, h)).has_point(world):
+				hit = id
+				break
+		selected_id = "" if hit == selected_id else hit
+		queue_redraw()
 
 	func _zoom_at(screen_pt: Vector2, new_zoom: float) -> void:
 		new_zoom = clampf(new_zoom, 0.08, 6.0)
@@ -318,9 +343,8 @@ class GraphCanvas extends Control:
 	func _compute_isolated_y() -> float:
 		var max_y := PAD
 		for id: String in nodes:
-			var n: Dictionary = nodes[id]
-			if int(n.get("layer", -1)) >= 0:
-				var y := float(n.get("y", PAD)) + NH
+			if int((nodes[id] as Dictionary).get("layer", -1)) >= 0:
+				var y := float((nodes[id] as Dictionary).get("y", PAD)) + NH
 				if y > max_y:
 					max_y = y
 		return max_y + 60.0
@@ -333,20 +357,21 @@ class GraphCanvas extends Control:
 		var max_p := Vector2(-1e9, -1e9)
 		for id: String in nodes:
 			var p := _npos(id)
-			var w := INW if int((nodes[id] as Dictionary).get("layer", 0)) < 0 else NW
-			var h := INH if int((nodes[id] as Dictionary).get("layer", 0)) < 0 else NH
+			var l: int = int((nodes[id] as Dictionary).get("layer", -1))
+			var w := _nw(id) if l >= 0 else INW
+			var h := NH if l >= 0 else INH
 			min_p = min_p.min(p)
 			max_p = max_p.max(p + Vector2(w, h))
 		var bounds := max_p - min_p
 		if bounds.x < 1 or bounds.y < 1:
 			return
-		var z := minf((canvas_size.x - PAD * 2) / bounds.x, (canvas_size.y - PAD * 2) / bounds.y)
-		zoom = clampf(z, 0.05, 2.0)
+		zoom = clampf(minf((canvas_size.x - PAD * 2) / bounds.x,
+		                   (canvas_size.y - PAD * 2) / bounds.y), 0.05, 2.0)
 		pan = canvas_size * 0.5 - (min_p + bounds * 0.5) * zoom
 
 	func _text_color(bg: Color) -> Color:
-		var lum := 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b
-		return Color(0.06, 0.06, 0.06) if lum > 0.52 else Color.WHITE
+		return Color(0.06, 0.06, 0.06) if 0.299*bg.r + 0.587*bg.g + 0.114*bg.b > 0.52 \
+		       else Color.WHITE
 
 	func _npos(id: String) -> Vector2:
 		var n: Dictionary = nodes.get(id, {})
@@ -356,12 +381,22 @@ class GraphCanvas extends Control:
 			return Vector2(PAD + (rank % ICOLS) * ICX, _isolated_y + (rank / ICOLS) * IRY)
 		return Vector2(PAD + l * CX, float(n.get("y", PAD + rank * RY)))
 
+	func _neighbors() -> Dictionary:
+		if selected_id.is_empty():
+			return {}
+		var h: Dictionary = {selected_id: true}
+		for edge: Array in edges:
+			if str(edge[0]) == selected_id:
+				h[str(edge[1])] = true
+			elif str(edge[1]) == selected_id:
+				h[str(edge[0])] = true
+		return h
+
 	func _draw() -> void:
 		draw_rect(Rect2(Vector2.ZERO, size), Color(0.11, 0.11, 0.13))
 		var font := ThemeDB.fallback_font
 		if loading:
-			draw_string(font, size * 0.5 - Vector2(90, 0),
-			            "⟳ Fetching registry...",
+			draw_string(font, size * 0.5 - Vector2(90, 0), "⟳ Fetching registry...",
 			            HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.5, 0.8, 1.0))
 			return
 		if nodes.is_empty():
@@ -373,65 +408,92 @@ class GraphCanvas extends Control:
 		if _isolated_y < 1.0:
 			_isolated_y = _compute_isolated_y()
 
+		var hl := _neighbors()  # empty when nothing selected
+		var has_sel := not selected_id.is_empty()
 		draw_set_transform(pan, 0.0, Vector2(zoom, zoom))
 		var lw := maxf(0.5, 1.5 / zoom)
 
-		# Edges (connected nodes only)
+		# ── Edges ──────────────────────────────────────────────────────────────
 		for edge: Array in edges:
 			var fid := str(edge[0])
 			var tid := str(edge[1])
 			if fid not in nodes or tid not in nodes:
 				continue
-			var dep_p := _npos(tid) + Vector2(NW, NH * 0.5)
+			var active := not has_sel or (fid in hl and tid in hl)
+			var dep_p  := _npos(tid) + Vector2(_nw(tid), NH * 0.5)
 			var depr_p := _npos(fid) + Vector2(0.0, NH * 0.5)
-			var ec: Color = edge[2] if edge.size() > 2 else Color(0.55, 0.55, 0.60, 0.80)
-			draw_line(dep_p, depr_p, ec, lw * 1.5)
-			var dir := (depr_p - dep_p).normalized()
-			if dir.length_squared() > 0.01:
-				var perp := Vector2(-dir.y, dir.x) * (5.5 / zoom)
-				var tl := 10.0 / zoom
-				draw_polygon(
-					PackedVector2Array([depr_p, depr_p - dir * tl + perp, depr_p - dir * tl - perp]),
-					PackedColorArray([ec, ec, ec]))
+			var ec: Color = edge[2] if edge.size() > 2 else Color(0.55, 0.55, 0.60)
+			ec.a = 0.85 if active else 0.08
+			var elw := lw * (2.0 if active else 1.0)
+			draw_line(dep_p, depr_p, ec, elw)
+			if active:
+				var dir := (depr_p - dep_p).normalized()
+				if dir.length_squared() > 0.01:
+					var perp := Vector2(-dir.y, dir.x) * (5.5 / zoom)
+					var tl := 10.0 / zoom
+					draw_polygon(
+						PackedVector2Array([depr_p, depr_p - dir*tl + perp, depr_p - dir*tl - perp]),
+						PackedColorArray([ec, ec, ec]))
 
-		# Connected nodes (full size)
+		# ── Connected nodes ────────────────────────────────────────────────────
 		for id: String in nodes:
 			var n: Dictionary = nodes[id]
 			if int(n.get("layer", -1)) < 0:
 				continue
-			var np := _npos(id)
+			var active := not has_sel or id in hl
+			var np  := _npos(id)
+			var nw  := _nw(id)
 			var col: Color = n.get("color", Color(0.35, 0.35, 0.35))
-			draw_rect(Rect2(np, Vector2(NW, NH)), col)
-			draw_rect(Rect2(np, Vector2(NW, NH)), col.darkened(0.28), false, lw)
-			var lbl: String = n.get("label", id)
-			var max_lbl_w := float(NW) - 8.0
-			var ts := font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 11)
-			var tx := np.x + maxf(4.0, (NW - minf(ts.x, max_lbl_w)) * 0.5)
-			draw_string(font, Vector2(tx, np.y + (NH + 11.0) * 0.5 - 2.0),
-			            lbl, HORIZONTAL_ALIGNMENT_LEFT, int(max_lbl_w), 11, _text_color(col))
+			var deg := int(n.get("indegree", 0))
+			var is_leaf := deg == 0
 
-		# Separator before isolated section
-		var sep_lbl_col := Color(0.45, 0.45, 0.50)
+			var draw_col := col if active else Color(col.r, col.g, col.b, 0.12)
+			draw_rect(Rect2(np, Vector2(nw, NH)), draw_col)
+			draw_rect(Rect2(np, Vector2(nw, NH)), draw_col.darkened(0.28), false, lw)
+
+			# Yellow ring for leaf nodes (nothing depends on them = build opportunity)
+			if is_leaf and active:
+				var ring := Rect2(np - Vector2(3, 3), Vector2(nw + 6, NH + 6))
+				draw_rect(ring, Color(1.0, 0.88, 0.1, 0.85), false, 2.0 / zoom)
+
+			# Bold white ring for selected node
+			if id == selected_id:
+				draw_rect(Rect2(np - Vector2(4, 4), Vector2(nw + 8, NH + 8)),
+				          Color.WHITE, false, 2.5 / zoom)
+
+			if active:
+				var lbl: String = n.get("label", id)
+				var mlw := nw - 8.0
+				var ts  := font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 11)
+				var tx  := np.x + maxf(4.0, (nw - minf(ts.x, mlw)) * 0.5)
+				draw_string(font, Vector2(tx, np.y + (NH + 11.0) * 0.5 - 2.0),
+				            lbl, HORIZONTAL_ALIGNMENT_LEFT, int(mlw), 11, _text_color(col))
+
+		# ── Standalone separator ───────────────────────────────────────────────
+		var sep_col := Color(0.45, 0.45, 0.50, 0.5 if has_sel else 1.0)
 		draw_line(Vector2(PAD, _isolated_y - 20.0),
-		          Vector2(PAD + ICOLS * ICX, _isolated_y - 20.0), sep_lbl_col, lw)
+		          Vector2(PAD + ICOLS * ICX, _isolated_y - 20.0), sep_col, lw)
 		draw_string(font, Vector2(PAD, _isolated_y - 6.0),
-		            "Standalone (no connections yet)", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, sep_lbl_col)
+		            "Standalone (no connections yet)", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, sep_col)
 
-		# Isolated nodes (compact)
+		# ── Isolated nodes (compact) ───────────────────────────────────────────
 		for id: String in nodes:
 			var n: Dictionary = nodes[id]
 			if int(n.get("layer", -1)) >= 0:
 				continue
-			var np := _npos(id)
+			var active := not has_sel or id in hl
+			var np  := _npos(id)
 			var col: Color = n.get("color", Color(0.35, 0.35, 0.35))
-			draw_rect(Rect2(np, Vector2(INW, INH)), col)
-			draw_rect(Rect2(np, Vector2(INW, INH)), col.darkened(0.28), false, lw)
-			var lbl: String = n.get("label", id)
-			var max_lbl_w := float(INW) - 6.0
-			var ts := font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 9)
-			var tx := np.x + maxf(3.0, (INW - minf(ts.x, max_lbl_w)) * 0.5)
-			draw_string(font, Vector2(tx, np.y + (INH + 9.0) * 0.5 - 1.0),
-			            lbl, HORIZONTAL_ALIGNMENT_LEFT, int(max_lbl_w), 9, _text_color(col))
+			var draw_col := col if active else Color(col.r, col.g, col.b, 0.10)
+			draw_rect(Rect2(np, Vector2(INW, INH)), draw_col)
+			draw_rect(Rect2(np, Vector2(INW, INH)), draw_col.darkened(0.28), false, lw)
+			if active:
+				var lbl: String = n.get("label", id)
+				var mlw := INW - 6.0
+				var ts  := font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 9)
+				var tx  := np.x + maxf(3.0, (INW - minf(ts.x, mlw)) * 0.5)
+				draw_string(font, Vector2(tx, np.y + (INH + 9.0) * 0.5 - 1.0),
+				            lbl, HORIZONTAL_ALIGNMENT_LEFT, int(mlw), 9, _text_color(col))
 
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
@@ -969,7 +1031,7 @@ func _build_graph_tab(tabs: TabContainer) -> void:
 	refresh_btn.pressed.connect(_refresh_graph)
 	toolbar.add_child(refresh_btn)
 	var hint := Label.new()
-	hint.text = "   Scroll = zoom · Drag = pan     Green=foundation  Blue=core  Purple=shared  Gray=leaf  Orange=external"
+	hint.text = "   Scroll = zoom · Drag = pan · Click = highlight neighbors     Yellow ring = nothing depends on it yet · Wider = more things rely on it"
 	hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hint.clip_text = true
@@ -1082,6 +1144,7 @@ func _on_graph_data(data: Dictionary) -> void:
 		colored_edges.append([str(edge[0]), dep_id, ec])
 
 	_graph_canvas.loading = false
+	_graph_canvas.selected_id = ""
 	_graph_canvas.nodes = g_nodes
 	_graph_canvas.edges = colored_edges
 	_graph_canvas.fit_to(_graph_canvas.size)
