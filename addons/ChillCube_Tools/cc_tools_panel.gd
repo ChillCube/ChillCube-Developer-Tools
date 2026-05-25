@@ -261,6 +261,10 @@ var _election_settings_inner: VBoxContainer
 
 var _graph_canvas: GraphCanvas
 var _graph_thread: Thread = null
+var _timeline_timer: Timer = null
+var _timeline_dates: Array[String] = []
+var _timeline_idx := 0
+var _timeline_play_btn: Button = null
 
 # ─── Dependency graph canvas ──────────────────────────────────────────────────
 class GraphCanvas extends Control:
@@ -281,6 +285,7 @@ class GraphCanvas extends Control:
 	var edges: Array = []
 	var loading := false
 	var filter_installed := false
+	var timeline_cutoff: String = ""
 	var selected_id: String = ""
 	var pan := Vector2(PAD, PAD)
 	var zoom := 1.0
@@ -302,7 +307,14 @@ class GraphCanvas extends Control:
 		return clampf(NH_BASE + score * 7.0, NH_BASE, NH_MAX)
 
 	func _vis(id: String) -> bool:
-		return not filter_installed or bool((nodes.get(id, {}) as Dictionary).get("local", false))
+		var n: Dictionary = nodes.get(id, {})
+		if filter_installed and not bool(n.get("local", false)):
+			return false
+		if not timeline_cutoff.is_empty():
+			var d: String = n.get("created_at", "")
+			if d.is_empty() or d > timeline_cutoff:
+				return false
+		return true
 
 	func _gui_input(ev: InputEvent) -> void:
 		if ev is InputEventMouseButton:
@@ -566,6 +578,8 @@ class GraphCanvas extends Control:
 			"%d installed · depth %d" % [installed_n, max_l],
 			"%d ready to build next" % leaf_n,
 		]
+		if not timeline_cutoff.is_empty():
+			stat_lines.append("Timeline: " + timeline_cutoff)
 		var sfs := 11
 		var slh := 17.0
 		var sbw := 210.0
@@ -1149,6 +1163,15 @@ func _build_graph_tab(tabs: TabContainer) -> void:
 		_graph_canvas.fit_to(_graph_canvas.size)
 		_graph_canvas.queue_redraw())
 	toolbar.add_child(filter_btn)
+	_timeline_play_btn = Button.new()
+	_timeline_play_btn.text = "▶ Play Timeline"
+	_timeline_play_btn.toggle_mode = true
+	_timeline_play_btn.toggled.connect(func(on: bool) -> void:
+		if on:
+			_start_timeline()
+		else:
+			_stop_timeline())
+	toolbar.add_child(_timeline_play_btn)
 	var hint := Label.new()
 	hint.text = "   Scroll = zoom · Drag = pan · Click = highlight neighbors     Yellow ring = nothing depends on it yet · Wider/taller = more things rely on it"
 	hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
@@ -1269,6 +1292,48 @@ func _on_graph_data(data: Dictionary) -> void:
 	_graph_canvas.edges = colored_edges
 	_graph_canvas.fit_to(_graph_canvas.size)
 	_graph_canvas.queue_redraw()
+
+func _start_timeline() -> void:
+	_timeline_dates.clear()
+	for id: String in _graph_canvas.nodes:
+		var d: String = (_graph_canvas.nodes[id] as Dictionary).get("created_at", "")
+		if not d.is_empty() and d not in _timeline_dates:
+			_timeline_dates.append(d)
+	if _timeline_dates.is_empty():
+		if is_instance_valid(_timeline_play_btn):
+			_timeline_play_btn.set_pressed_no_signal(false)
+		return
+	_timeline_dates.sort()
+	_timeline_idx = 0
+	_graph_canvas.timeline_cutoff = "0000-00-00"
+	_graph_canvas._isolated_y = 0.0
+	_graph_canvas.queue_redraw()
+	if _timeline_timer == null:
+		_timeline_timer = Timer.new()
+		_timeline_timer.wait_time = 0.9
+		_timeline_timer.timeout.connect(_advance_timeline)
+		add_child(_timeline_timer)
+	_timeline_timer.start()
+
+func _advance_timeline() -> void:
+	if _timeline_idx >= _timeline_dates.size():
+		_stop_timeline()
+		return
+	_graph_canvas.timeline_cutoff = _timeline_dates[_timeline_idx]
+	_timeline_idx += 1
+	_graph_canvas._isolated_y = 0.0
+	_graph_canvas.fit_to(_graph_canvas.size)
+	_graph_canvas.queue_redraw()
+
+func _stop_timeline() -> void:
+	if _timeline_timer != null:
+		_timeline_timer.stop()
+	_graph_canvas.timeline_cutoff = ""
+	_graph_canvas._isolated_y = 0.0
+	_graph_canvas.fit_to(_graph_canvas.size)
+	_graph_canvas.queue_redraw()
+	if is_instance_valid(_timeline_play_btn):
+		_timeline_play_btn.set_pressed_no_signal(false)
 
 # ─── Workspace tab ────────────────────────────────────────────────────────────
 

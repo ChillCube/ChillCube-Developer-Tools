@@ -605,6 +605,23 @@ static func build_graph_data(local_root: String) -> Dictionary:
 		             "indegree": 0, "internal": true, "local": rurl in local_addons,
 		             "size_kb": sz_kb}
 
+	# Fetch repo creation dates from GitHub API
+	var re_created := RegEx.new()
+	re_created.compile('"created_at":\\s*"(\\d{4}-\\d{2}-\\d{2})')
+	for rurl2: String in registry_addons:
+		var rname2: String = (registry_addons[rurl2] as Dictionary).get("name", rurl2.get_file())
+		var nid2 := _make_id(rname2)
+		if nid2 not in nodes:
+			continue
+		var repo2 := rurl2.get_file()
+		var api2_out: Array = []
+		OS.execute("curl", ["-sf", "--connect-timeout", "5", "--max-time", "10",
+		                    "https://api.github.com/repos/ChillCube/" + repo2], api2_out, true)
+		if not api2_out.is_empty():
+			var dm2 := re_created.search(api2_out[0] as String)
+			if dm2:
+				(nodes[nid2] as Dictionary)["created_at"] = dm2.get_string(1)
+
 	# Build edges — read local DEPENDENCIES.txt or curl from GitHub
 	var edges: Array[Array] = []
 	var deps_map: Dictionary = {}
