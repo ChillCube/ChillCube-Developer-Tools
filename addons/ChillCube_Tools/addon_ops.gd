@@ -537,6 +537,206 @@ static func read_dep_urls(addon_path: String) -> Array[String]:
 				result.append(clean)
 	return result
 
+static func build_graph_data(local_root: String) -> Dictionary:
+	var addons_dir := local_root + "/addons"
+
+	# Curl ADDONS.md from registry (faster than a full clone)
+	var raw_addons_url := "https://raw.githubusercontent.com/ChillCube/.github/main/ADDONS.md"
+	var curl_out: Array = []
+	OS.execute("curl", ["-sf", "--connect-timeout", "8", "--max-time", "15", raw_addons_url], curl_out, true)
+	var content: String = curl_out[0] if not curl_out.is_empty() else ""
+
+	# Parse registry
+	var registry_addons: Dictionary = {}
+	var re_entry := RegEx.new()
+	re_entry.compile("\\*\\s*\\[([^\\]]+)\\]\\(([^)]+)\\)")
+	for line: String in content.split("\n"):
+		var rm := re_entry.search(line)
+		if rm:
+			var rname: String = rm.get_string(1)
+			var rurl: String = _normalise_remote_url(rm.get_string(2))
+			if not rurl.is_empty():
+				registry_addons[rurl] = {"name": rname, "url": rurl}
+
+	# Build local addon url→path map
+	var local_addons: Dictionary = {}
+	var dir := DirAccess.open(addons_dir)
+	if dir:
+		dir.list_dir_begin()
+		var lname := dir.get_next()
+		while lname != "":
+			if dir.current_is_dir() and not lname.begins_with("."):
+				var apath := addons_dir + "/" + lname
+				var u := _normalise_remote_url(git_remote(apath))
+				if not u.is_empty():
+					local_addons[u] = apath
+			lname = dir.get_next()
+		dir.list_dir_end()
+
+	# Seed nodes from full registry
+	var nodes: Dictionary = {}
+	for rurl: String in registry_addons:
+		var rinfo: Dictionary = registry_addons[rurl]
+		var rname: String = rinfo.get("name", rurl.get_file())
+		var id := _make_id(rname)
+		nodes[id] = {"label": _clean_label(rname), "url": rurl,
+		             "indegree": 0, "internal": true, "local": rurl in local_addons}
+
+	# Build edges — read local DEPENDENCIES.txt or curl from GitHub
+	var edges: Array[Array] = []
+	var deps_map: Dictionary = {}
+	var has_edge: Dictionary = {}
+	for rurl: String in registry_addons:
+		var rinfo: Dictionary = registry_addons[rurl]
+		var rname: String = rinfo.get("name", rurl.get_file())
+		var from_id := _make_id(rname)
+		var dep_lines: Array[String] = []
+		if rurl in local_addons:
+			var dep_file: String = str(local_addons[rurl]) + "/DEPENDENCIES.txt"
+			if FileAccess.file_exists(dep_file):
+				for dl: String in _read(dep_file).split("\n"):
+					dep_lines.append(dl)
+		else:
+			var repo_name := rurl.get_file()
+			var rdep_url := "https://raw.githubusercontent.com/ChillCube/" + repo_name + "/main/DEPENDENCIES.txt"
+			var dep_out: Array = []
+			OS.execute("curl", ["-sf", "--connect-timeout", "5", "--max-time", "10", rdep_url], dep_out, true)
+			if not dep_out.is_empty():
+				for dl: String in (dep_out[0] as String).split("\n"):
+					dep_lines.append(dl)
+		for dline: String in dep_lines:
+			dline = dline.strip_edges()
+			if not dline.begins_with("http"):
+				continue
+			var dep_url := _normalise_remote_url(dline)
+			var to_id: String
+			if dep_url in registry_addons:
+				to_id = _make_id((registry_addons[dep_url] as Dictionary).get("name", dep_url.get_file()))
+			else:
+				var dep_repo := dep_url.rstrip("/").get_file().replace(".git", "")
+				to_id = _make_id(dep_repo)
+				if to_id not in nodes:
+					nodes[to_id] = {"label": _clean_label(dep_repo), "url": dep_url,
+					                "indegree": 0, "internal": false, "local": false}
+			if from_id.is_empty() or to_id.is_empty() or from_id == to_id:
+				continue
+			(nodes[to_id] as Dictionary)["indegree"] = int((nodes[to_id] as Dictionary).get("indegree", 0)) + 1
+			has_edge[from_id] = true
+			has_edge[to_id] = true
+			edges.append([from_id, to_id])
+			if from_id not in deps_map:
+				deps_map[from_id] = []
+			(deps_map[from_id] as Array).append(to_id)
+
+	# Include isolated registry nodes (no edges) so everything appears
+	for rurl: String in registry_addons:
+		var rname2: String = (registry_addons[rurl] as Dictionary).get("name", rurl.get_file())
+		var rid := _make_id(rname2)
+		if rid not in has_edge:
+			has_edge[rid] = true
+
+	# Topological layers (L0 = no outgoing deps)
+	var layers: Dictionary = {}
+	for id: String in has_edge:
+		if id not in deps_map or (deps_map[id] as Array).is_empty():
+			layers[id] = 0
+	var changed := true
+	while changed:
+		changed = false
+		for id: String in has_edge:
+			if id in layers:
+				continue
+			var all_ok := true
+			var max_l := -1
+			for dep: String in deps_map.get(id, []):
+				if dep not in layers:
+					all_ok = false
+					break
+				if int(layers[dep]) > max_l:
+					max_l = int(layers[dep])
+			if all_ok:
+				layers[id] = max_l + 1
+				changed = true
+	for id: String in has_edge:
+		if id not in layers:
+			layers[id] = 0
+
+	var max_layer := 0
+	for id: String in has_edge:
+		if int(layers.get(id, 0)) > max_layer:
+			max_layer = int(layers.get(id, 0))
+
+	# Barycenter heuristic
+	var by_layer: Dictionary = {}
+	for id: String in has_edge:
+		var l: int = int(layers.get(id, 0))
+		if l not in by_layer:
+			by_layer[l] = []
+		(by_layer[l] as Array).append(id)
+
+	var pos_in_layer: Dictionary = {}
+	if 0 in by_layer:
+		var l0: Array = (by_layer[0] as Array).duplicate()
+		l0.sort()
+		by_layer[0] = l0
+		for i: int in range(l0.size()):
+			pos_in_layer[l0[i]] = float(i)
+
+	for _pass: int in range(2):
+		for l: int in range(1, max_layer + 1):
+			if l not in by_layer:
+				continue
+			var l_nodes: Array = (by_layer[l] as Array).duplicate()
+			var bary: Dictionary = {}
+			for id: String in l_nodes:
+				var sum_p := 0.0
+				var cnt := 0
+				for dep: String in deps_map.get(id, []):
+					if dep in pos_in_layer:
+						sum_p += float(pos_in_layer[dep])
+						cnt += 1
+				bary[id] = sum_p / float(cnt) if cnt > 0 else -1.0
+			l_nodes.sort_custom(func(a: String, b: String) -> bool:
+				return float(bary.get(a, -1.0)) < float(bary.get(b, -1.0)))
+			for i: int in range(l_nodes.size()):
+				pos_in_layer[l_nodes[i]] = float(i)
+			by_layer[l] = l_nodes
+		var rev_deps: Dictionary = {}
+		for id: String in deps_map:
+			for dep: String in (deps_map[id] as Array):
+				if dep not in rev_deps:
+					rev_deps[dep] = []
+				(rev_deps[dep] as Array).append(id)
+		for l: int in range(max_layer - 1, -1, -1):
+			if l not in by_layer:
+				continue
+			var l_nodes: Array = (by_layer[l] as Array).duplicate()
+			var bary2: Dictionary = {}
+			for id: String in l_nodes:
+				var sum_p := 0.0
+				var cnt := 0
+				for up: String in rev_deps.get(id, []):
+					if up in pos_in_layer:
+						sum_p += float(pos_in_layer[up])
+						cnt += 1
+				bary2[id] = sum_p / float(cnt) if cnt > 0 else float(pos_in_layer.get(id, -1.0))
+			l_nodes.sort_custom(func(a: String, b: String) -> bool:
+				return float(bary2.get(a, -1.0)) < float(bary2.get(b, -1.0)))
+			for i: int in range(l_nodes.size()):
+				pos_in_layer[l_nodes[i]] = float(i)
+			by_layer[l] = l_nodes
+
+	# Write layer + rank into each node
+	for l: int in by_layer:
+		var l_nodes: Array = by_layer[l]
+		for rank: int in range(l_nodes.size()):
+			var id: String = l_nodes[rank]
+			if id in nodes:
+				(nodes[id] as Dictionary)["layer"] = int(layers.get(id, 0))
+				(nodes[id] as Dictionary)["rank"] = rank
+
+	return {"nodes": nodes, "edges": edges}
+
 static func add_dep(addon_path: String, dep_url: String) -> void:
 	var dep_file := addon_path + "/DEPENDENCIES.txt"
 	var content := _read(dep_file)

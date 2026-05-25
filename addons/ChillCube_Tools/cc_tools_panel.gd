@@ -260,17 +260,19 @@ var _election_settings_dialog: AcceptDialog
 var _election_settings_inner: VBoxContainer
 
 var _graph_canvas: GraphCanvas
+var _graph_thread: Thread = null
 
 # ─── Dependency graph canvas ──────────────────────────────────────────────────
 class GraphCanvas extends Control:
-	const NW := 130
+	const NW := 150
 	const NH := 40
-	const CX := 190
+	const CX := 210
 	const RY := 56
 	const PAD := 30.0
 
 	var nodes: Dictionary = {}  # id -> {label, layer:int, rank:int, color:Color}
 	var edges: Array = []       # [[depender_id, dep_id]]
+	var loading := false
 	var pan := Vector2(PAD, PAD)
 	var zoom := 1.0
 	var _dragging := false
@@ -329,13 +331,19 @@ class GraphCanvas extends Control:
 	func _draw() -> void:
 		draw_rect(Rect2(Vector2.ZERO, size), Color(0.11, 0.11, 0.13))
 		var font := ThemeDB.fallback_font
+		if loading:
+			draw_string(font, size * 0.5 - Vector2(90, 0),
+			            "⟳ Fetching registry...",
+			            HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.5, 0.8, 1.0))
+			return
 		if nodes.is_empty():
-			draw_string(font, size * 0.5 - Vector2(120, 0),
+			draw_string(font, size * 0.5 - Vector2(130, 0),
 			            "No dependencies found. Add some in the Dependencies tab.",
 			            HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.5, 0.5, 0.5))
 			return
 		draw_set_transform(pan, 0.0, Vector2(zoom, zoom))
 		var lw := maxf(0.5, 1.5 / zoom)
+		var max_lbl_w := float(NW) - 8.0
 		for edge: Array in edges:
 			var fid := str(edge[0])
 			var tid := str(edge[1])
@@ -360,9 +368,11 @@ class GraphCanvas extends Control:
 			draw_rect(Rect2(np, Vector2(NW, NH)), col.darkened(0.28), false, lw)
 			var lbl: String = n.get("label", id)
 			var ts := font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 11)
-			var tx := np.x + maxf(0.0, (NW - ts.x) * 0.5)
+			var display_w := minf(ts.x, max_lbl_w)
+			var tx := np.x + maxf(4.0, (NW - display_w) * 0.5)
 			var ty := np.y + (NH + 11.0) * 0.5 - 2.0
-			draw_string(font, Vector2(tx, ty), lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.WHITE)
+			draw_string(font, Vector2(tx, ty), lbl, HORIZONTAL_ALIGNMENT_LEFT,
+			            int(max_lbl_w), 11, Color.WHITE)
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 # ─── Setup ───────────────────────────────────────────────────────────────────
@@ -909,204 +919,56 @@ func _build_graph_tab(tabs: TabContainer) -> void:
 	_graph_canvas = GraphCanvas.new()
 	_graph_canvas.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_graph_canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_graph_canvas.clip_contents = true
 	root.add_child(_graph_canvas)
 
 	call_deferred("_refresh_graph")
 
-func _graph_make_id(s: String) -> String:
-	var result := ""
-	for ch: String in s.to_lower():
-		var code := ch.unicode_at(0)
-		if (code >= 97 and code <= 122) or (code >= 48 and code <= 57):
-			result += ch
-		else:
-			result += "_"
-	return result
-
 func _refresh_graph() -> void:
 	if not is_instance_valid(_graph_canvas):
 		return
-
-	var root := ProjectSettings.globalize_path("res://").rstrip("/")
-	var addons_dir := root + "/addons"
-
-	var folder_to_id: Dictionary = {}
-	var id_to_label: Dictionary = {}
-	var id_to_url: Dictionary = {}
-	var g_nodes: Dictionary = {}
-	var g_edges: Array = []
-	var deps_map: Dictionary = {}
-	var has_edge: Dictionary = {}
-
-	var dir := DirAccess.open(addons_dir)
-	if not dir:
-		_graph_canvas.nodes = {}
-		_graph_canvas.edges = []
-		_graph_canvas.queue_redraw()
+	if _graph_thread != null and _graph_thread.is_started():
 		return
+	_graph_canvas.nodes = {}
+	_graph_canvas.edges = []
+	_graph_canvas.loading = true
+	_graph_canvas.queue_redraw()
+	var local_root := ProjectSettings.globalize_path("res://").rstrip("/")
+	_graph_thread = Thread.new()
+	_graph_thread.start(func():
+		var data := Ops.build_graph_data(local_root)
+		call_deferred("_on_graph_data", data)
+	)
 
-	dir.list_dir_begin()
-	var fname := dir.get_next()
-	while fname != "":
-		if dir.current_is_dir() and not fname.begins_with("."):
-			var cfg := Ops.parse_cfg(addons_dir + "/" + fname + "/plugin.cfg")
-			var lbl: String = cfg.get("name", fname)
-			var id := _graph_make_id(lbl)
-			folder_to_id[fname] = id
-			id_to_label[id] = lbl
-			id_to_url[id] = Ops.git_remote(addons_dir + "/" + fname)
-			g_nodes[id] = {"label": lbl, "indegree": 0, "internal": true}
-		fname = dir.get_next()
-	dir.list_dir_end()
-
-	var url_to_id: Dictionary = {}
-	for id: String in id_to_url:
-		var u: String = Ops._normalise_remote_url(id_to_url[id])
-		if not u.is_empty():
-			url_to_id[u] = id
-
-	for folder: String in folder_to_id:
-		var from_id: String = folder_to_id[folder]
-		var dep_urls := Ops.read_dep_urls(addons_dir + "/" + folder)
-		for durl: String in dep_urls:
-			var norm := Ops._normalise_remote_url(durl)
-			var to_id: String
-			if norm in url_to_id:
-				to_id = url_to_id[norm]
-			else:
-				var repo_name := durl.rstrip("/").get_file().replace(".git", "")
-				to_id = _graph_make_id(repo_name)
-				if to_id not in g_nodes:
-					g_nodes[to_id] = {"label": repo_name, "indegree": 0, "internal": false}
-			if from_id.is_empty() or to_id.is_empty() or from_id == to_id:
-				continue
-			(g_nodes[to_id] as Dictionary)["indegree"] = int((g_nodes[to_id] as Dictionary).get("indegree", 0)) + 1
-			has_edge[from_id] = true
-			has_edge[to_id] = true
-			g_edges.append([from_id, to_id])
-			if from_id not in deps_map:
-				deps_map[from_id] = []
-			(deps_map[from_id] as Array).append(to_id)
-
-	# Topological layers (L0 = no outgoing deps = foundation)
-	var layers: Dictionary = {}
-	for id: String in has_edge:
-		if id not in deps_map or (deps_map[id] as Array).is_empty():
-			layers[id] = 0
-	var changed := true
-	while changed:
-		changed = false
-		for id: String in has_edge:
-			if id in layers:
-				continue
-			var all_ok := true
-			var max_l := -1
-			for dep: String in deps_map.get(id, []):
-				if dep not in layers:
-					all_ok = false
-					break
-				if int(layers[dep]) > max_l:
-					max_l = int(layers[dep])
-			if all_ok:
-				layers[id] = max_l + 1
-				changed = true
-	for id: String in has_edge:
-		if id not in layers:
-			layers[id] = 0
-
-	var max_layer := 0
-	for id: String in has_edge:
-		if int(layers.get(id, 0)) > max_layer:
-			max_layer = int(layers.get(id, 0))
-
-	# Barycenter heuristic
-	var by_layer: Dictionary = {}
-	for id: String in has_edge:
-		var l: int = int(layers.get(id, 0))
-		if l not in by_layer:
-			by_layer[l] = []
-		(by_layer[l] as Array).append(id)
-
-	var pos_in_layer: Dictionary = {}
-	if 0 in by_layer:
-		var l0: Array = (by_layer[0] as Array).duplicate()
-		l0.sort()
-		by_layer[0] = l0
-		for i: int in range(l0.size()):
-			pos_in_layer[l0[i]] = float(i)
-
-	for _pass: int in range(2):
-		for l: int in range(1, max_layer + 1):
-			if l not in by_layer:
-				continue
-			var l_nodes: Array = (by_layer[l] as Array).duplicate()
-			var bary: Dictionary = {}
-			for id: String in l_nodes:
-				var sum_p := 0.0
-				var cnt := 0
-				for dep: String in deps_map.get(id, []):
-					if dep in pos_in_layer:
-						sum_p += float(pos_in_layer[dep])
-						cnt += 1
-				bary[id] = sum_p / float(cnt) if cnt > 0 else -1.0
-			l_nodes.sort_custom(func(a: String, b: String) -> bool:
-				return float(bary.get(a, -1.0)) < float(bary.get(b, -1.0)))
-			for i: int in range(l_nodes.size()):
-				pos_in_layer[l_nodes[i]] = float(i)
-			by_layer[l] = l_nodes
-		var rev_deps: Dictionary = {}
-		for id: String in deps_map:
-			for dep: String in (deps_map[id] as Array):
-				if dep not in rev_deps:
-					rev_deps[dep] = []
-				(rev_deps[dep] as Array).append(id)
-		for l: int in range(max_layer - 1, -1, -1):
-			if l not in by_layer:
-				continue
-			var l_nodes: Array = (by_layer[l] as Array).duplicate()
-			var bary2: Dictionary = {}
-			for id: String in l_nodes:
-				var sum_p := 0.0
-				var cnt := 0
-				for up: String in rev_deps.get(id, []):
-					if up in pos_in_layer:
-						sum_p += float(pos_in_layer[up])
-						cnt += 1
-				bary2[id] = sum_p / float(cnt) if cnt > 0 else float(pos_in_layer.get(id, -1.0))
-			l_nodes.sort_custom(func(a: String, b: String) -> bool:
-				return float(bary2.get(a, -1.0)) < float(bary2.get(b, -1.0)))
-			for i: int in range(l_nodes.size()):
-				pos_in_layer[l_nodes[i]] = float(i)
-			by_layer[l] = l_nodes
-
-	# Assign rank and color
-	for l: int in by_layer:
-		var l_nodes: Array = by_layer[l]
-		for rank: int in range(l_nodes.size()):
-			var id: String = l_nodes[rank]
-			if id not in g_nodes:
-				continue
-			var n: Dictionary = g_nodes[id]
-			n["layer"] = int(layers.get(id, 0))
-			n["rank"] = rank
-			var deg: int = int(n.get("indegree", 0))
-			var internal_node: bool = bool(n.get("internal", true))
-			var col: Color
-			if not internal_node:
-				col = Color(0.99, 0.59, 0.27)
-			elif l == 0:
-				col = Color(0.0, 0.72, 0.58)
-			elif deg >= 2:
-				col = Color(0.29, 0.61, 1.0)
-			elif deg == 1:
-				col = Color(0.64, 0.61, 1.0)
-			else:
-				col = Color(0.39, 0.43, 0.45)
-			n["color"] = col
-			g_nodes[id] = n
-
+func _on_graph_data(data: Dictionary) -> void:
+	if _graph_thread != null:
+		_graph_thread.wait_to_finish()
+		_graph_thread = null
+	if not is_instance_valid(_graph_canvas):
+		return
+	var g_nodes: Dictionary = data.get("nodes", {})
+	# Assign colors
+	for id: String in g_nodes:
+		var n: Dictionary = g_nodes[id]
+		var l: int = int(n.get("layer", 0))
+		var deg: int = int(n.get("indegree", 0))
+		var internal_node: bool = bool(n.get("internal", true))
+		var col: Color
+		if not internal_node:
+			col = Color(0.99, 0.59, 0.27)
+		elif l == 0:
+			col = Color(0.0, 0.72, 0.58)
+		elif deg >= 2:
+			col = Color(0.29, 0.61, 1.0)
+		elif deg == 1:
+			col = Color(0.64, 0.61, 1.0)
+		else:
+			col = Color(0.39, 0.43, 0.45)
+		n["color"] = col
+		g_nodes[id] = n
+	_graph_canvas.loading = false
 	_graph_canvas.nodes = g_nodes
-	_graph_canvas.edges = g_edges
+	_graph_canvas.edges = data.get("edges", [])
 	_graph_canvas.fit_to(_graph_canvas.size)
 	_graph_canvas.queue_redraw()
 
