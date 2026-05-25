@@ -628,13 +628,6 @@ static func build_graph_data(local_root: String) -> Dictionary:
 				deps_map[from_id] = []
 			(deps_map[from_id] as Array).append(to_id)
 
-	# Include isolated registry nodes (no edges) so everything appears
-	for rurl: String in registry_addons:
-		var rname2: String = (registry_addons[rurl] as Dictionary).get("name", rurl.get_file())
-		var rid := _make_id(rname2)
-		if rid not in has_edge:
-			has_edge[rid] = true
-
 	# Topological layers (L0 = no outgoing deps)
 	var layers: Dictionary = {}
 	for id: String in has_edge:
@@ -726,7 +719,7 @@ static func build_graph_data(local_root: String) -> Dictionary:
 				pos_in_layer[l_nodes[i]] = float(i)
 			by_layer[l] = l_nodes
 
-	# Write layer + rank into each node
+	# Write layer + rank into connected nodes
 	for l: int in by_layer:
 		var l_nodes: Array = by_layer[l]
 		for rank: int in range(l_nodes.size()):
@@ -734,6 +727,17 @@ static func build_graph_data(local_root: String) -> Dictionary:
 			if id in nodes:
 				(nodes[id] as Dictionary)["layer"] = int(layers.get(id, 0))
 				(nodes[id] as Dictionary)["rank"] = rank
+
+	# Isolated nodes (no edges at all) → layer=-1, compact grid rank
+	var isolated_ids: Array[String] = []
+	for id: String in nodes:
+		if id not in has_edge:
+			isolated_ids.append(id)
+	isolated_ids.sort_custom(func(a: String, b: String) -> bool:
+		return str((nodes[a] as Dictionary).get("label", a)) < str((nodes[b] as Dictionary).get("label", b)))
+	for i: int in range(isolated_ids.size()):
+		(nodes[isolated_ids[i]] as Dictionary)["layer"] = -1
+		(nodes[isolated_ids[i]] as Dictionary)["rank"] = i
 
 	return {"nodes": nodes, "edges": edges}
 

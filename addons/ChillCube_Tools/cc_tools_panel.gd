@@ -264,17 +264,25 @@ var _graph_thread: Thread = null
 
 # ─── Dependency graph canvas ──────────────────────────────────────────────────
 class GraphCanvas extends Control:
+	# Connected graph (layered, left-to-right)
 	const NW := 150
 	const NH := 40
 	const CX := 210
 	const RY := 56
 	const PAD := 30.0
+	# Isolated grid (compact, below main graph)
+	const INW := 120
+	const INH := 28
+	const ICX := 132
+	const IRY := 38
+	const ICOLS := 6
 
-	var nodes: Dictionary = {}  # id -> {label, layer:int, rank:int, color:Color}
-	var edges: Array = []       # [[depender_id, dep_id]]
+	var nodes: Dictionary = {}
+	var edges: Array = []
 	var loading := false
 	var pan := Vector2(PAD, PAD)
 	var zoom := 1.0
+	var _isolated_y := 0.0  # world-y where isolated section starts
 	var _dragging := false
 	var _drag_start := Vector2.ZERO
 	var _pan_start := Vector2.ZERO
@@ -307,26 +315,42 @@ class GraphCanvas extends Control:
 		pan = screen_pt - world_pt * zoom
 		queue_redraw()
 
+	func _compute_isolated_y() -> float:
+		var max_y := PAD
+		for id: String in nodes:
+			var n: Dictionary = nodes[id]
+			if int(n.get("layer", -1)) >= 0:
+				var y := PAD + int(n.get("rank", 0)) * RY + NH
+				if y > max_y:
+					max_y = y
+		return max_y + 60.0
+
 	func fit_to(canvas_size: Vector2) -> void:
 		if nodes.is_empty() or canvas_size.x < 1 or canvas_size.y < 1:
 			return
+		_isolated_y = _compute_isolated_y()
 		var min_p := Vector2(1e9, 1e9)
 		var max_p := Vector2(-1e9, -1e9)
 		for id: String in nodes:
 			var p := _npos(id)
+			var w := INW if int((nodes[id] as Dictionary).get("layer", 0)) < 0 else NW
+			var h := INH if int((nodes[id] as Dictionary).get("layer", 0)) < 0 else NH
 			min_p = min_p.min(p)
-			max_p = max_p.max(p + Vector2(NW, NH))
+			max_p = max_p.max(p + Vector2(w, h))
 		var bounds := max_p - min_p
 		if bounds.x < 1 or bounds.y < 1:
 			return
 		var z := minf((canvas_size.x - PAD * 2) / bounds.x, (canvas_size.y - PAD * 2) / bounds.y)
-		zoom = clampf(z, 0.08, 2.0)
+		zoom = clampf(z, 0.05, 2.0)
 		pan = canvas_size * 0.5 - (min_p + bounds * 0.5) * zoom
 
 	func _npos(id: String) -> Vector2:
 		var n: Dictionary = nodes.get(id, {})
-		return Vector2(PAD + int(n.get("layer", 0)) * CX,
-		               PAD + int(n.get("rank", 0)) * RY)
+		var l: int = int(n.get("layer", 0))
+		var rank: int = int(n.get("rank", 0))
+		if l < 0:
+			return Vector2(PAD + (rank % ICOLS) * ICX, _isolated_y + (rank / ICOLS) * IRY)
+		return Vector2(PAD + l * CX, PAD + rank * RY)
 
 	func _draw() -> void:
 		draw_rect(Rect2(Vector2.ZERO, size), Color(0.11, 0.11, 0.13))
@@ -341,9 +365,14 @@ class GraphCanvas extends Control:
 			            "No dependencies found. Add some in the Dependencies tab.",
 			            HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.5, 0.5, 0.5))
 			return
+
+		if _isolated_y < 1.0:
+			_isolated_y = _compute_isolated_y()
+
 		draw_set_transform(pan, 0.0, Vector2(zoom, zoom))
 		var lw := maxf(0.5, 1.5 / zoom)
-		var max_lbl_w := float(NW) - 8.0
+
+		# Edges (connected nodes only)
 		for edge: Array in edges:
 			var fid := str(edge[0])
 			var tid := str(edge[1])
@@ -360,19 +389,46 @@ class GraphCanvas extends Control:
 				draw_polygon(
 					PackedVector2Array([depr_p, depr_p - dir * tl + perp, depr_p - dir * tl - perp]),
 					PackedColorArray([ec, ec, ec]))
+
+		# Connected nodes (full size)
 		for id: String in nodes:
 			var n: Dictionary = nodes[id]
+			if int(n.get("layer", -1)) < 0:
+				continue
 			var np := _npos(id)
 			var col: Color = n.get("color", Color(0.35, 0.35, 0.35))
 			draw_rect(Rect2(np, Vector2(NW, NH)), col)
 			draw_rect(Rect2(np, Vector2(NW, NH)), col.darkened(0.28), false, lw)
 			var lbl: String = n.get("label", id)
+			var max_lbl_w := float(NW) - 8.0
 			var ts := font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 11)
-			var display_w := minf(ts.x, max_lbl_w)
-			var tx := np.x + maxf(4.0, (NW - display_w) * 0.5)
-			var ty := np.y + (NH + 11.0) * 0.5 - 2.0
-			draw_string(font, Vector2(tx, ty), lbl, HORIZONTAL_ALIGNMENT_LEFT,
-			            int(max_lbl_w), 11, Color.WHITE)
+			var tx := np.x + maxf(4.0, (NW - minf(ts.x, max_lbl_w)) * 0.5)
+			draw_string(font, Vector2(tx, np.y + (NH + 11.0) * 0.5 - 2.0),
+			            lbl, HORIZONTAL_ALIGNMENT_LEFT, int(max_lbl_w), 11, Color.WHITE)
+
+		# Separator before isolated section
+		var sep_lbl_col := Color(0.45, 0.45, 0.50)
+		draw_line(Vector2(PAD, _isolated_y - 20.0),
+		          Vector2(PAD + ICOLS * ICX, _isolated_y - 20.0), sep_lbl_col, lw)
+		draw_string(font, Vector2(PAD, _isolated_y - 6.0),
+		            "Standalone (no connections yet)", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, sep_lbl_col)
+
+		# Isolated nodes (compact)
+		for id: String in nodes:
+			var n: Dictionary = nodes[id]
+			if int(n.get("layer", -1)) >= 0:
+				continue
+			var np := _npos(id)
+			var col: Color = n.get("color", Color(0.35, 0.35, 0.35))
+			draw_rect(Rect2(np, Vector2(INW, INH)), col)
+			draw_rect(Rect2(np, Vector2(INW, INH)), col.darkened(0.28), false, lw)
+			var lbl: String = n.get("label", id)
+			var max_lbl_w := float(INW) - 6.0
+			var ts := font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 9)
+			var tx := np.x + maxf(3.0, (INW - minf(ts.x, max_lbl_w)) * 0.5)
+			draw_string(font, Vector2(tx, np.y + (INH + 9.0) * 0.5 - 1.0),
+			            lbl, HORIZONTAL_ALIGNMENT_LEFT, int(max_lbl_w), 9, Color.WHITE)
+
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 # ─── Setup ───────────────────────────────────────────────────────────────────
@@ -956,6 +1012,8 @@ func _on_graph_data(data: Dictionary) -> void:
 		var col: Color
 		if not internal_node:
 			col = Color(0.99, 0.59, 0.27)
+		elif l < 0:
+			col = Color(0.28, 0.55, 0.45)   # muted teal = isolated / not yet connected
 		elif l == 0:
 			col = Color(0.0, 0.72, 0.58)
 		elif deg >= 2:
