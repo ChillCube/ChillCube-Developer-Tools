@@ -535,6 +535,34 @@ class GraphCanvas extends Control:
 			draw_string(font, Vector2(sbx, sby + si * slh + sfs),
 			            stat_lines[si], HORIZONTAL_ALIGNMENT_LEFT, -1, sfs, Color(0.78, 0.82, 0.90))
 
+		# ── Info panel for selected node (screen-space, bottom-left) ─────────
+		if not selected_id.is_empty() and selected_id in nodes:
+			var sel: Dictionary = nodes[selected_id]
+			var sel_layer := int(sel.get("layer", -1))
+			var sel_inf   := float(sel.get("influence", 0.0))
+			var sel_deg   := int(sel.get("indegree", 0))
+			var sel_url: String = sel.get("url", "")
+			var sel_local: bool = sel.get("local", false)
+			var info_lines: Array[String] = [
+				str(sel.get("label", selected_id)),
+				"Layer %d  ·  %d depend on it  ·  influence %.1f" % [sel_layer, sel_deg, sel_inf],
+				"Installed: %s" % ("yes" if sel_local else "no"),
+				sel_url,
+			]
+			var ifs := 11
+			var ilh := 17.0
+			var ibw := 380.0
+			var ibh := ilh * info_lines.size() + 12.0
+			var ibx := 10.0
+			var iby := size.y - ibh - 10.0
+			draw_rect(Rect2(ibx - 8, iby - 6, ibw + 16, ibh), Color(0.0, 0.0, 0.0, 0.55))
+			var sel_col: Color = sel.get("color", Color(0.4, 0.4, 0.4))
+			draw_rect(Rect2(ibx - 8, iby - 6, 3, ibh), sel_col)
+			for ii: int in range(info_lines.size()):
+				var ic := Color(0.95, 0.95, 1.0) if ii == 0 else Color(0.65, 0.70, 0.78)
+				draw_string(font, Vector2(ibx, iby + ii * ilh + ifs),
+				            info_lines[ii], HORIZONTAL_ALIGNMENT_LEFT, int(ibw), ifs, ic)
+
 # ─── Setup ───────────────────────────────────────────────────────────────────
 
 func _ready() -> void:
