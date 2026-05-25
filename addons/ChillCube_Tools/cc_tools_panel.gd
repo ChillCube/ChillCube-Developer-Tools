@@ -489,6 +489,17 @@ class GraphCanvas extends Control:
 				var tx  := np.x + maxf(4.0, (nw - minf(ts.x, mlw)) * 0.5)
 				draw_string(font, Vector2(tx, np.y + (nh + 11.0) * 0.5 - 2.0),
 				            lbl, HORIZONTAL_ALIGNMENT_LEFT, int(mlw), 11, _text_color(col))
+				# Size badge (bottom-right corner, only for locally installed addons)
+				var size_kb := int(n.get("size_kb", 0))
+				if size_kb > 0:
+					var bfs := clampi(8 + int(sqrt(float(size_kb))), 8, 13)
+					var btxt := "%dKB" % size_kb
+					var bts2 := font.get_string_size(btxt, HORIZONTAL_ALIGNMENT_LEFT, -1, bfs)
+					var bx := np.x + nw - bts2.x - 4.0
+					var by := np.y + nh - bfs - 3.0
+					draw_rect(Rect2(bx - 2, by - 1, bts2.x + 4, bfs + 2), Color(0.0, 0.0, 0.0, 0.40))
+					draw_string(font, Vector2(bx, by + bfs), btxt, HORIZONTAL_ALIGNMENT_LEFT,
+					            -1, bfs, Color(0.85, 0.85, 0.85, 0.80))
 
 		# ── Standalone separator ───────────────────────────────────────────────
 		var sep_col := Color(0.45, 0.45, 0.50, 0.5 if has_sel else 1.0)
@@ -557,10 +568,12 @@ class GraphCanvas extends Control:
 			var sel_deg   := int(sel.get("indegree", 0))
 			var sel_url: String = sel.get("url", "")
 			var sel_local: bool = sel.get("local", false)
+			var sel_size_kb := int(sel.get("size_kb", 0))
+			var size_str := ("%d KB" % sel_size_kb) if sel_size_kb > 0 else "not installed"
 			var info_lines: Array[String] = [
 				str(sel.get("label", selected_id)),
 				"Layer %d  ·  %d depend on it  ·  influence %.1f" % [sel_layer, sel_deg, sel_inf],
-				"Installed: %s" % ("yes" if sel_local else "no"),
+				"Size: %s" % size_str,
 				sel_url,
 			]
 			var ifs := 11

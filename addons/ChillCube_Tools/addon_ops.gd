@@ -118,6 +118,27 @@ static func _write(path: String, content: String) -> bool:
 static func _rm_rf(path: String) -> void:
 	_exec("rm", ["-rf", path], Callable())
 
+static func _folder_size_kb(path: String) -> int:
+	var total := 0
+	var dir := DirAccess.open(path)
+	if not dir:
+		return 0
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while name != "":
+		if not name.begins_with("."):
+			var full := path + "/" + name
+			if dir.current_is_dir():
+				total += _folder_size_kb(full)
+			else:
+				var f := FileAccess.open(full, FileAccess.READ)
+				if f:
+					total += int(f.get_length())
+					f.close()
+		name = dir.get_next()
+	dir.list_dir_end()
+	return total / 1024
+
 static func _mv(from: String, to: String) -> void:
 	_exec("mv", [from, to], Callable())
 
@@ -579,8 +600,10 @@ static func build_graph_data(local_root: String) -> Dictionary:
 		var rinfo: Dictionary = registry_addons[rurl]
 		var rname: String = rinfo.get("name", rurl.get_file())
 		var id := _make_id(rname)
+		var sz_kb := _folder_size_kb(str(local_addons[rurl])) if rurl in local_addons else 0
 		nodes[id] = {"label": _clean_label(rname), "url": rurl,
-		             "indegree": 0, "internal": true, "local": rurl in local_addons}
+		             "indegree": 0, "internal": true, "local": rurl in local_addons,
+		             "size_kb": sz_kb}
 
 	# Build edges — read local DEPENDENCIES.txt or curl from GitHub
 	var edges: Array[Array] = []
