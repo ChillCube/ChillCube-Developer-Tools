@@ -429,7 +429,8 @@ class GraphCanvas extends Control:
 			var depr_p := _npos(fid) + Vector2(0.0, _nh(fid) * 0.5)
 			var ec: Color = edge[2] if edge.size() > 2 else Color(0.55, 0.55, 0.60)
 			ec.a = 0.85 if active else 0.08
-			var elw := lw * (2.0 if active else 1.0)
+			var tid_deg := float((nodes.get(tid, {}) as Dictionary).get("indegree", 1))
+			var elw := lw * (1.0 + clampf(tid_deg * 0.5, 0.0, 3.0)) * (1.5 if active else 0.7)
 			draw_line(dep_p, depr_p, ec, elw)
 			if active:
 				var dir := (depr_p - dep_p).normalized()
