@@ -292,8 +292,8 @@ class GraphCanvas extends Control:
 		focus_mode = Control.FOCUS_CLICK
 
 	func _nw(id: String) -> float:
-		var deg := int((nodes.get(id, {}) as Dictionary).get("indegree", 0))
-		return minf(NW_BASE + deg * 16.0, NW_MAX)
+		var score := float((nodes.get(id, {}) as Dictionary).get("influence", 0.0))
+		return clampf(NW_BASE + score * 14.0, NW_BASE, NW_MAX)
 
 	func _gui_input(ev: InputEvent) -> void:
 		if ev is InputEventMouseButton:

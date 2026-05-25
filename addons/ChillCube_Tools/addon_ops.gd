@@ -744,11 +744,32 @@ static func build_graph_data(local_root: String) -> Dictionary:
 			for i: int in range(l_nodes.size()):
 				node_y[l_nodes[i]] = start_y + float(i) * STEP
 
-	# Write layer + y into connected nodes
+	# Influence score: each dependent contributes 1, each hop further contributes 0.5x.
+	# Formula: score(N) = |direct_dependents| + 0.5 * sum(score(M) for M in dependents)
+	# Process highest layer first so transitive scores are ready when lower layers are computed.
+	var inf_rev: Dictionary = {}  # node -> [nodes that directly depend on it]
+	for id: String in deps_map:
+		for dep: String in (deps_map[id] as Array):
+			if dep not in inf_rev:
+				inf_rev[dep] = []
+			(inf_rev[dep] as Array).append(id)
+	var influence: Dictionary = {}
+	for l: int in range(max_layer, -1, -1):
+		if l not in by_layer:
+			continue
+		for id: String in (by_layer[l] as Array):
+			var direct: Array = inf_rev.get(id, [])
+			var score := float(direct.size())
+			for dep: String in direct:
+				score += 0.5 * float(influence.get(dep, 0.0))
+			influence[id] = score
+
+	# Write layer + y + influence into connected nodes
 	for id: String in node_y:
 		if id in nodes:
 			(nodes[id] as Dictionary)["layer"] = int(layers.get(id, 0))
 			(nodes[id] as Dictionary)["y"] = float(node_y[id])
+			(nodes[id] as Dictionary)["influence"] = float(influence.get(id, 0.0))
 
 	# Isolated nodes (no edges at all) → layer=-1, compact grid rank
 	var isolated_ids: Array[String] = []
