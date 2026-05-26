@@ -8280,6 +8280,11 @@ func _finish_update_plugin(result: int) -> void:
 	_update_plugin_btn.disabled = false
 	if result == 2:
 		EditorInterface.restart_editor(true)
+	elif result == -1:
+		var plugin_dir := ProjectSettings.globalize_path(
+			(get_script() as Script).resource_path.get_base_dir()
+		)
+		_show_perm_error_dialog(plugin_dir + "/.git/objects")
 
 func _start_push() -> void:
 	_installed_log.text = ""

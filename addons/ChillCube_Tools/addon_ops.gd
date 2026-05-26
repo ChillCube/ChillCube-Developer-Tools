@@ -967,15 +967,23 @@ static func remove_addon(root: String, addon_name: String, log: Callable) -> boo
 
 # ─── UPDATE PLUGIN ───────────────────────────────────────────────────────────
 
-## Returns: 0 = failed, 1 = already up to date, 2 = updated (restart needed)
+## Returns: 0 = failed, -1 = failed (permission error), 1 = up to date, 2 = updated
 static func update_plugin(plugin_dir: String, log: Callable) -> int:
 	log.call("⬆️  Pulling latest ChillCube Tools...")
 	var url := git_remote(plugin_dir)
 	if url.is_empty():
 		url = "https://github.com/ChillCube/ChillCube-Developer-Tools"
 	var before := _exec_capture("git", ["-C", plugin_dir, "rev-parse", "HEAD"]).output.strip_edges()
-	var code := _git(["pull", "--rebase", url, "main"], plugin_dir, log)
+	var perm_err := [false]
+	var code := _git(["pull", "--rebase", url, "main"], plugin_dir, func(msg: String):
+		if "insufficient permission" in msg or "Permission denied" in msg:
+			perm_err[0] = true
+		log.call(msg)
+	)
 	if code != OK:
+		if perm_err[0]:
+			log.call("💡 Fix: sudo chown -R $(whoami) \"%s/.git/objects\"" % plugin_dir)
+			return -1
 		log.call("⚠️  Pull failed — resolve conflicts manually.")
 		_git(["rebase", "--abort"], plugin_dir, Callable())
 		return 0

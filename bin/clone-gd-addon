@@ -55,11 +55,13 @@ git clone --quiet "$REPO_URL" "$TEMP_CLONE" || { echo "❌ Clone failed"; exit 1
 INSTALLED_ADDONS=()
 mapfile -d '' PLUGIN_CFGS < <(find "$TEMP_CLONE" -name "plugin.cfg" -print0 2>/dev/null)
 
+_safe_rm() { [ -d "$1" ] && { chmod -R u+rw "$1" 2>/dev/null; rm -rf "$1"; }; }
+
 if [ ${#PLUGIN_CFGS[@]} -eq 0 ]; then
     ADDON_NAME=$(basename "$REPO_URL" .git)
     TARGET_DIR="addons/$ADDON_NAME"
     echo "📦 No plugin.cfg found — installing as: $ADDON_NAME"
-    rm -rf "$TARGET_DIR"
+    _safe_rm "$TARGET_DIR"
     mv "$TEMP_CLONE" "$TARGET_DIR"
     INSTALLED_ADDONS+=("$TARGET_DIR")
 else
@@ -69,7 +71,7 @@ else
             ADDON_NAME=$(basename "$REPO_URL" .git)
             TARGET_DIR="addons/$ADDON_NAME"
             echo "📦 Installing: $ADDON_NAME (repo root)"
-            rm -rf "$TARGET_DIR"
+            _safe_rm "$TARGET_DIR"
             mv "$TEMP_CLONE" "$TARGET_DIR"
             INSTALLED_ADDONS+=("$TARGET_DIR")
             break
@@ -78,7 +80,7 @@ else
             TARGET_DIR="addons/$ADDON_NAME"
             REL_PATH="${ADDON_DIR#$TEMP_CLONE/}"
             echo "📦 Installing: $ADDON_NAME (from $REL_PATH/)"
-            rm -rf "$TARGET_DIR"
+            _safe_rm "$TARGET_DIR"
             mv "$ADDON_DIR" "$TARGET_DIR"
             pushd "$TARGET_DIR" > /dev/null
             git init -q
@@ -90,7 +92,7 @@ else
 fi
 
 # 4. Cleanup
-[ -d "$TEMP_CLONE" ] && rm -rf "$TEMP_CLONE"
+_safe_rm "$TEMP_CLONE"
 
 # 5. Auto-enable plugin(s) in project.godot
 _enable_plugin() {
