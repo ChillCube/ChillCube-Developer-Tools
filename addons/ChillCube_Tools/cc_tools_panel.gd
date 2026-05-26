@@ -243,6 +243,11 @@ var _contract_errors: Array = []
 var _contracts_status_lbl: Label
 var _contracts_scroll_list: VBoxContainer
 
+var _dashboard_list: VBoxContainer
+var _dashboard_welcome_lbl: Label
+var _dashboard_status_lbl: Label
+var _dashboard_thread: Thread = null
+
 var _feedback_file_path: String = ""
 var _feedback_file_lbl: Label
 var _feedback_folder_input: LineEdit
@@ -746,11 +751,17 @@ func _ready() -> void:
 	tabs.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(tabs)
 
+	_build_dashboard_tab(tabs)
 	_build_addons_supertab(tabs)
 	_build_planning_tab(tabs)
 	_build_team_supertab(tabs)
 	_build_vault_tab(tabs)
 	_build_account_tab(tabs)
+
+	tabs.tab_changed.connect(func(idx: int):
+		if tabs.get_tab_title(idx) == "Dashboard":
+			_refresh_dashboard()
+	)
 
 	_refresh_addons()
 	_vault_connect()
@@ -784,6 +795,8 @@ func _exit_tree() -> void:
 		_docs_thread.wait_to_finish()
 	if _feedback_thread and _feedback_thread.is_started():
 		_feedback_thread.wait_to_finish()
+	if _dashboard_thread and _dashboard_thread.is_started():
+		_dashboard_thread.wait_to_finish()
 	if _activity_thread and _activity_thread.is_started():
 		_activity_thread.wait_to_finish()
 	if _vote_thread and _vote_thread.is_started():
@@ -796,6 +809,154 @@ func _exit_tree() -> void:
 		_election_thread.wait_to_finish()
 
 # ─── Tab builders ─────────────────────────────────────────────────────────────
+
+func _build_dashboard_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Dashboard", tabs)
+
+	var toolbar := HBoxContainer.new()
+	_dashboard_welcome_lbl = Label.new()
+	_dashboard_welcome_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_dashboard_welcome_lbl.add_theme_font_size_override("font_size", 13)
+	_dashboard_status_lbl = Label.new()
+	_dashboard_status_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	var refresh_btn := Button.new()
+	refresh_btn.text = "↺ Refresh"
+	refresh_btn.pressed.connect(_refresh_dashboard)
+	toolbar.add_child(_dashboard_welcome_lbl)
+	toolbar.add_child(_dashboard_status_lbl)
+	toolbar.add_child(refresh_btn)
+	root.add_child(toolbar)
+	root.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_dashboard_list = VBoxContainer.new()
+	_dashboard_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_dashboard_list.add_theme_constant_override("separation", 6)
+	scroll.add_child(_dashboard_list)
+	root.add_child(scroll)
+
+func _refresh_dashboard() -> void:
+	for c in _dashboard_list.get_children():
+		c.queue_free()
+
+	var me: String = _current_user.get("username", "")
+	if me.is_empty():
+		_dashboard_welcome_lbl.text = "Sign in to see your tasks."
+		return
+	_dashboard_welcome_lbl.text = "👋 " + me
+
+	# ── Unvoted votes ─────────────────────────────────────────────────────────
+	var pending_votes: Array = []
+	for vi in range(_vote_items.size()):
+		var vote: Dictionary = _vote_items[vi]
+		if not _vote_is_expired(vote) and not (me in (vote.get("votes", {}) as Dictionary)):
+			pending_votes.append({"vote": vote, "idx": vi})
+	_dashboard_section("🗳 Votes needing your input", pending_votes.size(), func():
+		for entry: Dictionary in pending_votes:
+			_dashboard_list.add_child(_dashboard_vote_card(entry["vote"], entry["idx"]))
+	)
+
+	# ── Assigned todos ────────────────────────────────────────────────────────
+	var my_todos: Array = []
+	for ti in range(_todo_items.size()):
+		var item: Dictionary = _todo_items[ti]
+		if not item.get("done", false) and item.get("assigned_to", "") == me:
+			my_todos.append({"item": item, "idx": ti})
+	_dashboard_section("📋 Assigned to you", my_todos.size(), func():
+		for entry: Dictionary in my_todos:
+			_dashboard_list.add_child(_dashboard_todo_card(entry["item"], entry["idx"]))
+	)
+
+	# ── Feedback (async from vault) ───────────────────────────────────────────
+	_dashboard_status_lbl.text = "⏳ Fetching feedback tasks..."
+	if _dashboard_thread and _dashboard_thread.is_started():
+		return
+	_dashboard_thread = Thread.new()
+	_dashboard_thread.start(func():
+		var tasks := Ops.fetch_feedback_tasks(me, func(_m): pass)
+		call_deferred("_dashboard_add_feedback", tasks)
+	)
+
+func _dashboard_section(title: String, count: int, build: Callable) -> void:
+	var hdr := Label.new()
+	hdr.text = title + (" (%d)" % count if count > 0 else " — nothing here")
+	hdr.add_theme_font_size_override("font_size", 12)
+	hdr.add_theme_color_override("font_color",
+		Color(0.9, 0.9, 0.9) if count > 0 else Color(0.5, 0.5, 0.5))
+	_dashboard_list.add_child(hdr)
+	if count > 0:
+		build.call()
+	_dashboard_list.add_child(HSeparator.new())
+
+func _dashboard_vote_card(vote: Dictionary, vote_idx: int) -> Control:
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 4)
+	card.add_child(vb)
+	var title_lbl := Label.new()
+	title_lbl.text = vote.get("title", "Untitled vote")
+	vb.add_child(title_lbl)
+	var desc: String = vote.get("description", "")
+	if not desc.is_empty():
+		var desc_lbl := Label.new()
+		desc_lbl.text = desc
+		desc_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		vb.add_child(desc_lbl)
+	var opts_row := HBoxContainer.new()
+	for opt: String in (vote.get("options", []) as Array):
+		var btn := Button.new()
+		btn.text = opt
+		var cap_opt := opt
+		btn.pressed.connect(func():
+			_cast_vote(vote_idx, cap_opt)
+			_refresh_dashboard()
+		)
+		opts_row.add_child(btn)
+	vb.add_child(opts_row)
+	return card
+
+func _dashboard_todo_card(item: Dictionary, item_idx: int) -> Control:
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var row := HBoxContainer.new()
+	card.add_child(row)
+	var lbl := Label.new()
+	lbl.text = item.get("text", "")
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var done_btn := Button.new()
+	done_btn.text = "✓ Done"
+	var cap_idx := item_idx
+	done_btn.pressed.connect(func():
+		if cap_idx < _todo_items.size():
+			var done_text: String = _todo_items[cap_idx].get("text", "")
+			_todo_items.remove_at(cap_idx)
+			_save_todo()
+			_log_activity("task_completed", 'Task completed: "%s"' % done_text)
+			_refresh_todo()
+			_refresh_dashboard()
+	)
+	row.add_child(lbl)
+	row.add_child(done_btn)
+	return card
+
+func _dashboard_add_feedback(tasks: Array) -> void:
+	if _dashboard_thread:
+		_dashboard_thread.wait_to_finish()
+	_dashboard_thread = null
+	_dashboard_status_lbl.text = ""
+	if not is_instance_valid(_dashboard_list):
+		return
+	var me: String = _current_user.get("username", "")
+	var pending: Array = tasks.filter(func(t): return t.get("reviewer", "") == me and t.get("status", "") == "pending")
+	_dashboard_section("✍️ Feedback requested from you", pending.size(), func():
+		for task: Dictionary in pending:
+			_dashboard_list.add_child(_feedback_task_card(task, me))
+	)
 
 func _build_addons_supertab(tabs: TabContainer) -> void:
 	var outer := _vbox("Addons", tabs)
