@@ -17,9 +17,25 @@ A **🧊 CC Tools** panel added to the top of the Godot editor. No terminal requ
 
 ## Installation
 
-1. Download this repo as a ZIP: **Code → Download ZIP**
-2. Extract it, then copy the `addons/ChillCube_Tools` folder into your Godot project's `addons/` folder
-3. In Godot: **Project → Project Settings → Plugins → enable ChillCube Tools**
+Run from the **root of your Godot project**, then enable **ChillCube Tools** in **Project → Project Settings → Plugins**.
+
+**Linux / macOS**
+```bash
+git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git /tmp/cc-tools && mkdir -p addons && cp -r /tmp/cc-tools/addons/ChillCube_Tools addons/ && rm -rf /tmp/cc-tools
+```
+
+**Windows (PowerShell)**
+```powershell
+git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git "$env:TEMP\cc-tools"; New-Item -ItemType Directory -Force addons | Out-Null; Copy-Item -Recurse "$env:TEMP\cc-tools\addons\ChillCube_Tools" addons\; Remove-Item -Recurse -Force "$env:TEMP\cc-tools"
+```
+
+**Windows (Git Bash)**
+```bash
+git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git /tmp/cc-tools && mkdir -p addons && cp -r /tmp/cc-tools/addons/ChillCube_Tools addons/ && rm -rf /tmp/cc-tools
+```
+
+> [!NOTE]
+> No terminal? Download the repo as a ZIP via **Code → Download ZIP**, extract it, and copy the `addons/ChillCube_Tools` folder into your project's `addons/` folder manually.
 
 ## Updating the plugin
 
