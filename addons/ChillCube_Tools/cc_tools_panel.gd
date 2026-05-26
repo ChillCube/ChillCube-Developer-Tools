@@ -8260,9 +8260,12 @@ func _start_clone() -> void:
 
 func _start_update_plugin() -> void:
 	_installed_log.text = ""
+	var plugin_dir := ProjectSettings.globalize_path(
+		(get_script() as Script).resource_path.get_base_dir()
+	)
 	_run_op(_update_plugin_btn, _installed_log, func():
 		Ops.update_plugin(
-			ProjectSettings.globalize_path("res://").rstrip("/"),
+			plugin_dir,
 			func(msg): call_deferred("_append_log", _installed_log, msg)
 		)
 	)

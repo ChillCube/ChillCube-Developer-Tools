@@ -967,12 +967,12 @@ static func remove_addon(root: String, addon_name: String, log: Callable) -> boo
 
 # ─── UPDATE PLUGIN ───────────────────────────────────────────────────────────
 
-static func update_plugin(root: String, log: Callable) -> bool:
+static func update_plugin(plugin_dir: String, log: Callable) -> bool:
 	log.call("⬆️  Pulling latest ChillCube Tools...")
-	var code := _git(["pull", "--rebase", "origin", "main"], root, log)
+	var code := _git(["pull", "--rebase", "origin", "main"], plugin_dir, log)
 	if code != OK:
 		log.call("⚠️  Pull failed — resolve conflicts manually.")
-		_git(["rebase", "--abort"], root, Callable())
+		_git(["rebase", "--abort"], plugin_dir, Callable())
 		return false
 	log.call("✅ Plugin updated! Restart Godot to apply changes.")
 	return true
