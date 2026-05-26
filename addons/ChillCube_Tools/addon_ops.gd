@@ -1787,6 +1787,121 @@ static func cc_data_read(cache_dir: String, fname: String) -> String:
 
 const VAULT_SSH := "git@github.com:ChillCube/vault.git"
 const VAULT_REPO := "ChillCube/vault"
+const FEEDBACK_DIR := "_cc_feedback"
+
+# ─── FEEDBACK ────────────────────────────────────────────────────────────────
+
+static func submit_feedback_request(
+		local_file: String, vault_folder: String,
+		reviewer: String, requester: String, message: String,
+		log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
+	var tmp := OS.get_temp_dir() + "/.cc_feedback_" + str(int(Time.get_unix_time_from_system()))
+	log.call("📥 Preparing vault upload...")
+	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+		log.call("❌ Could not clone vault.")
+		_rm_rf(tmp)
+		return false
+
+	var rdir := vault_folder.strip_edges().lstrip("/").rstrip("/")
+	var dest_folder := tmp + ("/" + rdir if not rdir.is_empty() else "")
+	DirAccess.make_dir_recursive_absolute(dest_folder)
+	_copy_file(local_file, dest_folder + "/" + local_file.get_file())
+	log.call("📄 Staged: " + local_file.get_file())
+
+	var req_id := requester + "_" + str(int(Time.get_unix_time_from_system()))
+	var req := {
+		"id": req_id,
+		"file": (rdir + "/" if not rdir.is_empty() else "") + local_file.get_file(),
+		"requester": requester,
+		"reviewer": reviewer,
+		"message": message,
+		"status": "pending",
+		"created_at": int(Time.get_unix_time_from_system())
+	}
+	var req_dir := tmp + "/" + FEEDBACK_DIR + "/requests"
+	DirAccess.make_dir_recursive_absolute(req_dir)
+	var f := FileAccess.open(req_dir + "/" + req_id + ".json", FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(req, "\t"))
+		f.close()
+
+	_git(["add", "."], tmp, log)
+	_git(["commit", "-m", "feedback: %s requests review from %s" % [requester, reviewer]], tmp, log)
+	var ok := _git(["push", "origin", "main"], tmp, log) == OK
+	_rm_rf(tmp)
+	log.call("✅ Request sent!" if ok else "❌ Push failed.")
+	return ok
+
+static func fetch_feedback_tasks(username: String, log: Callable) -> Array:
+	if not log.is_valid(): log = func(_m): pass
+	var tmp := OS.get_temp_dir() + "/.cc_feedback_fetch_" + str(int(Time.get_unix_time_from_system()))
+	var tasks: Array = []
+	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+		_rm_rf(tmp)
+		return tasks
+	var req_dir := tmp + "/" + FEEDBACK_DIR + "/requests"
+	if DirAccess.dir_exists_absolute(req_dir):
+		var dir := DirAccess.open(req_dir)
+		if dir:
+			dir.list_dir_begin()
+			var name := dir.get_next()
+			while not name.is_empty():
+				if name.ends_with(".json"):
+					var fh := FileAccess.open(req_dir + "/" + name, FileAccess.READ)
+					if fh:
+						var parsed: Variant = JSON.parse_string(fh.get_as_text())
+						fh.close()
+						if parsed is Dictionary:
+							var req := parsed as Dictionary
+							if req.get("reviewer", "") == username or req.get("requester", "") == username:
+								tasks.append(req)
+				name = dir.get_next()
+			dir.list_dir_end()
+	_rm_rf(tmp)
+	tasks.sort_custom(func(a, b): return int(a.get("created_at", 0)) > int(b.get("created_at", 0)))
+	return tasks
+
+static func submit_feedback_response(req_id: String, response_text: String, reviewer: String, log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
+	var tmp := OS.get_temp_dir() + "/.cc_feedback_resp_" + str(int(Time.get_unix_time_from_system()))
+	log.call("📥 Connecting to vault...")
+	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+		log.call("❌ Could not clone vault.")
+		_rm_rf(tmp)
+		return false
+	var req_path := tmp + "/" + FEEDBACK_DIR + "/requests/" + req_id + ".json"
+	if FileAccess.file_exists(req_path):
+		var fh := FileAccess.open(req_path, FileAccess.READ)
+		if fh:
+			var parsed: Variant = JSON.parse_string(fh.get_as_text())
+			fh.close()
+			if parsed is Dictionary:
+				var req := parsed as Dictionary
+				req["status"] = "reviewed"
+				req["reviewed_at"] = int(Time.get_unix_time_from_system())
+				var fw := FileAccess.open(req_path, FileAccess.WRITE)
+				if fw:
+					fw.store_string(JSON.stringify(req, "\t"))
+					fw.close()
+	var resp_dir := tmp + "/" + FEEDBACK_DIR + "/responses"
+	DirAccess.make_dir_recursive_absolute(resp_dir)
+	var resp := {
+		"request_id": req_id,
+		"reviewer": reviewer,
+		"text": response_text,
+		"created_at": int(Time.get_unix_time_from_system())
+	}
+	var fr := FileAccess.open(resp_dir + "/" + req_id + ".json", FileAccess.WRITE)
+	if fr:
+		fr.store_string(JSON.stringify(resp, "\t"))
+		fr.close()
+	_git(["add", "."], tmp, log)
+	_git(["commit", "-m", "feedback: response from " + reviewer], tmp, log)
+	var ok := _git(["push", "origin", "main"], tmp, log) == OK
+	_rm_rf(tmp)
+	log.call("✅ Feedback submitted!" if ok else "❌ Push failed.")
+	return ok
 
 # Fetch or create a lightweight metadata cache (tree objects only, no blobs).
 static func vault_refresh(cache_dir: String, log: Callable) -> bool:

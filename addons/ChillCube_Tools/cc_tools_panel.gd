@@ -243,6 +243,16 @@ var _contract_errors: Array = []
 var _contracts_status_lbl: Label
 var _contracts_scroll_list: VBoxContainer
 
+var _feedback_file_path: String = ""
+var _feedback_file_lbl: Label
+var _feedback_folder_input: LineEdit
+var _feedback_reviewer_input: LineEdit
+var _feedback_message_input: TextEdit
+var _feedback_submit_btn: Button
+var _feedback_log: TextEdit
+var _feedback_task_list: VBoxContainer
+var _feedback_thread: Thread = null
+
 var _current_user: Dictionary = {}
 var _login_overlay: Control
 var _login_status_lbl: Label
@@ -772,6 +782,8 @@ func _exit_tree() -> void:
 		_vault_preview_thread.wait_to_finish()
 	if _docs_thread and _docs_thread.is_started():
 		_docs_thread.wait_to_finish()
+	if _feedback_thread and _feedback_thread.is_started():
+		_feedback_thread.wait_to_finish()
 	if _activity_thread and _activity_thread.is_started():
 		_activity_thread.wait_to_finish()
 	if _vote_thread and _vote_thread.is_started():
@@ -2069,6 +2081,281 @@ func _build_planning_tab(tabs: TabContainer) -> void:
 	_build_ideas_subtab(inner_tabs)
 	_build_bugs_subtab(inner_tabs)
 	_build_todo_subtab(inner_tabs)
+	_build_feedback_subtab(inner_tabs)
+
+func _build_feedback_subtab(tabs: TabContainer) -> void:
+	var root := _vbox("Feedback", tabs)
+
+	var split := VSplitContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.add_child(split)
+
+	# ── Request section ───────────────────────────────────────────────────────
+	var req_box := VBoxContainer.new()
+	req_box.add_theme_constant_override("separation", 6)
+	req_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	split.add_child(req_box)
+
+	var req_heading := Label.new()
+	req_heading.text = "Request Feedback"
+	req_heading.add_theme_font_size_override("font_size", 13)
+	req_box.add_child(req_heading)
+
+	var file_row := HBoxContainer.new()
+	_feedback_file_lbl = Label.new()
+	_feedback_file_lbl.text = "No file selected"
+	_feedback_file_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_feedback_file_lbl.clip_text = true
+	_feedback_file_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	var pick_btn := Button.new()
+	pick_btn.text = "📁 Pick File"
+	pick_btn.pressed.connect(_feedback_pick_file)
+	file_row.add_child(_feedback_file_lbl)
+	file_row.add_child(pick_btn)
+	req_box.add_child(file_row)
+
+	var folder_row := HBoxContainer.new()
+	var folder_lbl := Label.new()
+	folder_lbl.text = "Vault folder:"
+	_feedback_folder_input = LineEdit.new()
+	_feedback_folder_input.placeholder_text = "e.g. assets/review"
+	_feedback_folder_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	folder_row.add_child(folder_lbl)
+	folder_row.add_child(_feedback_folder_input)
+	req_box.add_child(folder_row)
+
+	var reviewer_row := HBoxContainer.new()
+	var reviewer_lbl := Label.new()
+	reviewer_lbl.text = "Reviewer:"
+	_feedback_reviewer_input = LineEdit.new()
+	_feedback_reviewer_input.placeholder_text = "username"
+	_feedback_reviewer_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	reviewer_row.add_child(reviewer_lbl)
+	reviewer_row.add_child(_feedback_reviewer_input)
+	req_box.add_child(reviewer_row)
+
+	_feedback_message_input = TextEdit.new()
+	_feedback_message_input.placeholder_text = "What do you need feedback on?"
+	_feedback_message_input.custom_minimum_size = Vector2(0, 60)
+	_feedback_message_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	req_box.add_child(_feedback_message_input)
+
+	_feedback_submit_btn = Button.new()
+	_feedback_submit_btn.text = "📤 Send Request"
+	_feedback_submit_btn.pressed.connect(_feedback_submit)
+	req_box.add_child(_feedback_submit_btn)
+
+	_feedback_log = TextEdit.new()
+	_feedback_log.editable = false
+	_feedback_log.custom_minimum_size = Vector2(0, 60)
+	_feedback_log.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	req_box.add_child(_feedback_log)
+
+	# ── Dashboard section ──────────────────────────────────────────────────────
+	var dash_box := VBoxContainer.new()
+	dash_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dash_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.add_child(dash_box)
+
+	var dash_toolbar := HBoxContainer.new()
+	var dash_heading := Label.new()
+	dash_heading.text = "My Tasks"
+	dash_heading.add_theme_font_size_override("font_size", 13)
+	dash_heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var refresh_btn := Button.new()
+	refresh_btn.text = "↺ Refresh"
+	refresh_btn.pressed.connect(_feedback_refresh_tasks)
+	dash_toolbar.add_child(dash_heading)
+	dash_toolbar.add_child(refresh_btn)
+	dash_box.add_child(dash_toolbar)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_feedback_task_list = VBoxContainer.new()
+	_feedback_task_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_feedback_task_list)
+	dash_box.add_child(scroll)
+
+func _feedback_pick_file() -> void:
+	var dialog := EditorFileDialog.new()
+	dialog.file_mode = EditorFileDialog.FILE_MODE_OPEN_FILE
+	dialog.access = EditorFileDialog.ACCESS_FILESYSTEM
+	dialog.file_selected.connect(func(path: String):
+		_feedback_file_path = path
+		_feedback_file_lbl.text = path.get_file()
+		_feedback_file_lbl.add_theme_color_override("font_color", Color(0.9, 0.9, 0.9))
+		dialog.queue_free()
+	)
+	dialog.canceled.connect(func(): dialog.queue_free())
+	add_child(dialog)
+	dialog.popup_centered(Vector2i(900, 600))
+
+func _feedback_submit() -> void:
+	if _feedback_file_path.is_empty():
+		_feedback_log.text = "❌ Pick a file first."
+		return
+	var reviewer := _feedback_reviewer_input.text.strip_edges()
+	if reviewer.is_empty():
+		_feedback_log.text = "❌ Enter a reviewer username."
+		return
+	var requester: String = _current_user.get("username", "")
+	if requester.is_empty():
+		_feedback_log.text = "❌ Log in first."
+		return
+	if _feedback_thread and _feedback_thread.is_started():
+		return
+	_feedback_submit_btn.disabled = true
+	_feedback_log.text = ""
+	var file := _feedback_file_path
+	var folder := _feedback_folder_input.text.strip_edges()
+	var message := _feedback_message_input.text.strip_edges()
+	_feedback_thread = Thread.new()
+	_feedback_thread.start(func():
+		var ok := Ops.submit_feedback_request(file, folder, reviewer, requester, message,
+			func(msg): call_deferred("_append_log", _feedback_log, msg))
+		call_deferred("_feedback_submit_done", ok)
+	)
+
+func _feedback_submit_done(ok: bool) -> void:
+	if _feedback_thread:
+		_feedback_thread.wait_to_finish()
+	_feedback_thread = null
+	_feedback_submit_btn.disabled = false
+	if ok:
+		_feedback_file_path = ""
+		_feedback_file_lbl.text = "No file selected"
+		_feedback_file_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+		_feedback_reviewer_input.text = ""
+		_feedback_message_input.text = ""
+		_feedback_refresh_tasks()
+
+func _feedback_refresh_tasks() -> void:
+	var me: String = _current_user.get("username", "")
+	if me.is_empty():
+		_feedback_populate_tasks([], "Log in to see your tasks.")
+		return
+	if _feedback_thread and _feedback_thread.is_started():
+		return
+	_feedback_thread = Thread.new()
+	_feedback_thread.start(func():
+		var tasks := Ops.fetch_feedback_tasks(me,
+			func(_msg): pass)
+		call_deferred("_feedback_populate_tasks", tasks, "")
+	)
+
+func _feedback_populate_tasks(tasks: Array, error: String) -> void:
+	if _feedback_thread and not _feedback_thread.is_started():
+		_feedback_thread.wait_to_finish()
+		_feedback_thread = null
+	for c in _feedback_task_list.get_children():
+		c.queue_free()
+	if not error.is_empty():
+		var lbl := Label.new()
+		lbl.text = error
+		_feedback_task_list.add_child(lbl)
+		return
+	if tasks.is_empty():
+		var lbl := Label.new()
+		lbl.text = "No pending tasks."
+		_feedback_task_list.add_child(lbl)
+		return
+	var me: String = _current_user.get("username", "")
+	for task: Dictionary in tasks:
+		_feedback_task_list.add_child(_feedback_task_card(task, me))
+
+func _feedback_task_card(task: Dictionary, me: String) -> Control:
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 4)
+	card.add_child(vb)
+
+	var top_row := HBoxContainer.new()
+	var file_lbl := Label.new()
+	file_lbl.text = "📄 " + (task.get("file", "") as String).get_file()
+	file_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var status := task.get("status", "pending") as String
+	var status_lbl := Label.new()
+	status_lbl.text = "✅ Done" if status == "reviewed" else "⏳ Pending"
+	top_row.add_child(file_lbl)
+	top_row.add_child(status_lbl)
+	vb.add_child(top_row)
+
+	var meta_lbl := Label.new()
+	var reviewer: String = task.get("reviewer", "")
+	var requester: String = task.get("requester", "")
+	meta_lbl.text = ("From: " + requester) if reviewer == me else ("To: " + reviewer)
+	meta_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	vb.add_child(meta_lbl)
+
+	var msg: String = task.get("message", "")
+	if not msg.is_empty():
+		var msg_lbl := Label.new()
+		msg_lbl.text = msg
+		msg_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		vb.add_child(msg_lbl)
+
+	if reviewer == me and status == "pending":
+		var btn_row := HBoxContainer.new()
+		var review_btn := Button.new()
+		review_btn.text = "✍️ Give Feedback"
+		review_btn.pressed.connect(func(): _feedback_open_response_dialog(task))
+		btn_row.add_child(review_btn)
+		vb.add_child(btn_row)
+
+	return card
+
+func _feedback_open_response_dialog(task: Dictionary) -> void:
+	var dialog := AcceptDialog.new()
+	dialog.title = "Feedback for: " + (task.get("file", "") as String).get_file()
+	dialog.ok_button_text = "Submit"
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 8)
+	var info := Label.new()
+	info.text = "From: " + str(task.get("requester", "")) + "\n" + str(task.get("message", ""))
+	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(info)
+	var input := TextEdit.new()
+	input.placeholder_text = "Your feedback…"
+	input.custom_minimum_size = Vector2(0, 120)
+	vb.add_child(input)
+	var log_lbl := Label.new()
+	log_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(log_lbl)
+	dialog.add_child(vb)
+	dialog.confirmed.connect(func():
+		var text := input.text.strip_edges()
+		if text.is_empty():
+			log_lbl.text = "Write something first."
+			return
+		var me: String = _current_user.get("username", "")
+		var req_id: String = task.get("id", "")
+		if _feedback_thread and _feedback_thread.is_started():
+			return
+		_feedback_thread = Thread.new()
+		_feedback_thread.start(func():
+			Ops.submit_feedback_response(req_id, text, me,
+				func(msg): call_deferred("_set_label_text", log_lbl, msg))
+			call_deferred("_feedback_response_done", dialog)
+		)
+	)
+	dialog.canceled.connect(func(): dialog.queue_free())
+	add_child(dialog)
+	dialog.popup_centered(Vector2i(500, 400))
+
+func _set_label_text(lbl: Label, text: String) -> void:
+	if is_instance_valid(lbl):
+		lbl.text = text
+
+func _feedback_response_done(dialog: AcceptDialog) -> void:
+	if _feedback_thread:
+		_feedback_thread.wait_to_finish()
+	_feedback_thread = null
+	if is_instance_valid(dialog):
+		dialog.queue_free()
+	_feedback_refresh_tasks()
 
 func _build_planned_subtab(tabs: TabContainer) -> void:
 	var root := _vbox("Addons", tabs)
