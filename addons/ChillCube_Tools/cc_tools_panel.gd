@@ -187,6 +187,28 @@ var _docs_diff_dialog: AcceptDialog
 var _docs_diff_left: RichTextLabel
 var _docs_diff_right: RichTextLabel
 
+var _gd_docs: Array = []           # Array of Dictionaries, each is one design doc
+var _gd_selected: int = -1
+var _gd_active_tags: Array[String] = []
+var _gd_list: VBoxContainer
+var _gd_detail: VBoxContainer
+var _gd_status_lbl: Label
+var _gd_thread: Thread = null
+const GD_GENRES: Array = ["Action", "Adventure", "Horror", "Platformer", "Puzzle",
+	"Racing", "RPG", "Shooter", "Simulation", "Sports", "Strategy", "Other"]
+const GD_FIELDS: Array = [
+	{"key": "elevator_pitch",    "label": "Elevator Pitch",     "hint": "Describe the game in 1–2 sentences."},
+	{"key": "player_count",      "label": "Number of Players",  "hint": "e.g. Single-player, 2–4, MMO"},
+	{"key": "platform",          "label": "Target Platform",    "hint": "e.g. PC, Mobile, Console"},
+	{"key": "core_mechanic",     "label": "Core Mechanic",      "hint": "What is the main thing the player does?"},
+	{"key": "unique_selling_pt", "label": "Unique Selling Point","hint": "What makes this game stand out?"},
+	{"key": "art_style",         "label": "Art Style",          "hint": "e.g. Pixel, 3D realistic, Hand-drawn"},
+	{"key": "target_audience",   "label": "Target Audience",    "hint": "Who is this for?"},
+	{"key": "monetisation",      "label": "Monetisation",       "hint": "e.g. Free-to-play, Premium, DLC"},
+	{"key": "inspirations",      "label": "Inspirations",       "hint": "Games or media that inspired this."},
+	{"key": "notes",             "label": "Additional Notes",   "hint": "Anything else worth capturing."},
+]
+
 var _http: HTTPRequest
 var _registry_list: VBoxContainer
 var _registry_status: Label
@@ -755,7 +777,7 @@ func _ready() -> void:
 	_build_addons_supertab(tabs)
 	_build_planning_tab(tabs)
 	_build_team_supertab(tabs)
-	_build_vault_tab(tabs)
+	_build_resources_supertab(tabs)
 	_build_account_tab(tabs)
 
 	tabs.tab_changed.connect(func(idx: int):
@@ -807,6 +829,8 @@ func _exit_tree() -> void:
 		_login_thread.wait_to_finish()
 	if _election_thread and _election_thread.is_started():
 		_election_thread.wait_to_finish()
+	if _gd_thread and _gd_thread.is_started():
+		_gd_thread.wait_to_finish()
 
 # ─── Tab builders ─────────────────────────────────────────────────────────────
 
@@ -3932,7 +3956,6 @@ func _build_team_supertab(tabs: TabContainer) -> void:
 	_build_decision_log_tab(inner_tabs)
 	_build_schedule_tab(inner_tabs)
 	_build_forum_tab(inner_tabs)
-	_build_docs_tab(inner_tabs)
 	_build_elections_tab(inner_tabs)
 
 # ─── Votes tab ────────────────────────────────────────────────────────────────
@@ -11925,3 +11948,255 @@ func _bundle_export_to_path(path: String) -> void:
 	else:
 		if is_instance_valid(_bundle_status_lbl):
 			_bundle_status_lbl.text = "Export failed."
+
+# ─── Resources supertab (Assets + Docs + Game Design) ────────────────────────
+
+func _build_resources_supertab(tabs: TabContainer) -> void:
+	var root := _vbox("Resources", tabs)
+	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var inner_tabs := TabContainer.new()
+	inner_tabs.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	inner_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_child(inner_tabs)
+	_build_vault_tab(inner_tabs)
+	_build_docs_tab(inner_tabs)
+	_build_game_design_tab(inner_tabs)
+
+# ─── Game Design tab ──────────────────────────────────────────────────────────
+
+func _build_game_design_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Game Design", tabs)
+
+	# ── toolbar ───────────────────────────────────────────────────────────────
+	var toolbar := HBoxContainer.new()
+	var title_lbl := Label.new()
+	title_lbl.text = "🎮 Game Design Documents"
+	title_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 1.0))
+	title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_gd_status_lbl = Label.new()
+	_gd_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+	var new_btn := Button.new()
+	new_btn.text = "+ New"
+	new_btn.pressed.connect(_gd_new_doc)
+	toolbar.add_child(title_lbl)
+	toolbar.add_child(_gd_status_lbl)
+	toolbar.add_child(new_btn)
+	root.add_child(toolbar)
+
+	# ── genre tag filter bar ──────────────────────────────────────────────────
+	var tag_scroll := ScrollContainer.new()
+	tag_scroll.custom_minimum_size = Vector2(0, 36)
+	tag_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	var tag_row := HBoxContainer.new()
+	tag_row.add_theme_constant_override("separation", 4)
+
+	var all_btn := Button.new()
+	all_btn.text = "All"
+	all_btn.toggle_mode = true
+	all_btn.button_pressed = true
+	all_btn.pressed.connect(func():
+		_gd_active_tags.clear()
+		_gd_rebuild_list()
+	)
+	tag_row.add_child(all_btn)
+
+	for genre: String in GD_GENRES:
+		var tb := Button.new()
+		tb.text = genre
+		tb.toggle_mode = true
+		var cap := genre
+		tb.pressed.connect(func():
+			if tb.button_pressed:
+				if cap not in _gd_active_tags:
+					_gd_active_tags.append(cap)
+				all_btn.button_pressed = false
+			else:
+				_gd_active_tags.erase(cap)
+				if _gd_active_tags.is_empty():
+					all_btn.button_pressed = true
+			_gd_rebuild_list()
+		)
+		tag_row.add_child(tb)
+
+	tag_scroll.add_child(tag_row)
+	root.add_child(tag_scroll)
+	root.add_child(HSeparator.new())
+
+	# ── split: list left, detail right ───────────────────────────────────────
+	var split := HSplitContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	split.split_offset = 220
+	root.add_child(split)
+
+	var list_scroll := ScrollContainer.new()
+	list_scroll.custom_minimum_size = Vector2(180, 0)
+	list_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_gd_list = VBoxContainer.new()
+	_gd_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_gd_list.add_theme_constant_override("separation", 4)
+	list_scroll.add_child(_gd_list)
+	split.add_child(list_scroll)
+
+	var detail_scroll := ScrollContainer.new()
+	detail_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	detail_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_gd_detail = VBoxContainer.new()
+	_gd_detail.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_gd_detail.add_theme_constant_override("separation", 10)
+	detail_scroll.add_child(_gd_detail)
+	split.add_child(detail_scroll)
+
+	_gd_load_docs()
+
+func _gd_load_docs() -> void:
+	var path := "user://cc_game_design.json"
+	if FileAccess.file_exists(path):
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f:
+			var parsed := JSON.parse_string(f.get_as_text())
+			f.close()
+			if parsed is Array:
+				_gd_docs = parsed
+	_gd_rebuild_list()
+
+func _gd_save_docs() -> void:
+	var f := FileAccess.open("user://cc_game_design.json", FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(_gd_docs, "\t"))
+		f.close()
+
+func _gd_rebuild_list() -> void:
+	for c in _gd_list.get_children():
+		c.queue_free()
+	for i in range(_gd_docs.size()):
+		var doc: Dictionary = _gd_docs[i]
+		var genres: Array = doc.get("genres", [])
+		if not _gd_active_tags.is_empty():
+			var match := false
+			for t: String in _gd_active_tags:
+				if t in genres:
+					match = true
+					break
+			if not match:
+				continue
+		var btn := Button.new()
+		btn.text = doc.get("title", "Untitled")
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.flat = true
+		var cap_i := i
+		btn.pressed.connect(func():
+			_gd_selected = cap_i
+			_gd_show_detail(cap_i)
+		)
+		_gd_list.add_child(btn)
+	if _gd_list.get_child_count() == 0:
+		var lbl := Label.new()
+		lbl.text = "No documents."
+		lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_gd_list.add_child(lbl)
+
+func _gd_show_detail(idx: int) -> void:
+	for c in _gd_detail.get_children():
+		c.queue_free()
+	if idx < 0 or idx >= _gd_docs.size():
+		return
+	var doc: Dictionary = _gd_docs[idx]
+
+	# title row
+	var title_row := HBoxContainer.new()
+	var title_edit := LineEdit.new()
+	title_edit.text = doc.get("title", "")
+	title_edit.placeholder_text = "Document title"
+	title_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title_edit.add_theme_font_size_override("font_size", 15)
+	title_edit.text_changed.connect(func(v: String):
+		_gd_docs[idx]["title"] = v
+		_gd_save_docs()
+		_gd_rebuild_list()
+	)
+	var delete_btn := Button.new()
+	delete_btn.text = "🗑"
+	delete_btn.tooltip_text = "Delete this document"
+	delete_btn.pressed.connect(func():
+		_gd_docs.remove_at(idx)
+		_gd_selected = -1
+		_gd_save_docs()
+		_gd_rebuild_list()
+		for c in _gd_detail.get_children():
+			c.queue_free()
+	)
+	title_row.add_child(title_edit)
+	title_row.add_child(delete_btn)
+	_gd_detail.add_child(title_row)
+
+	# genre chips
+	var genre_hdr := Label.new()
+	genre_hdr.text = "Genres"
+	genre_hdr.add_theme_color_override("font_color", Color(0.6, 0.8, 1.0))
+	_gd_detail.add_child(genre_hdr)
+	var genre_row := HBoxContainer.new()
+	genre_row.add_theme_constant_override("separation", 4)
+	var doc_genres: Array = doc.get("genres", [])
+	for genre: String in GD_GENRES:
+		var cb := Button.new()
+		cb.text = genre
+		cb.toggle_mode = true
+		cb.button_pressed = genre in doc_genres
+		var cap_g := genre
+		cb.pressed.connect(func():
+			var cur: Array = _gd_docs[idx].get("genres", [])
+			if cb.button_pressed:
+				if cap_g not in cur:
+					cur.append(cap_g)
+			else:
+				cur.erase(cap_g)
+			_gd_docs[idx]["genres"] = cur
+			_gd_save_docs()
+		)
+		genre_row.add_child(cb)
+	_gd_detail.add_child(genre_row)
+	_gd_detail.add_child(HSeparator.new())
+
+	# Q&A fields
+	var fields: Dictionary = doc.get("fields", {})
+	for field_def: Dictionary in GD_FIELDS:
+		var key: String = field_def["key"]
+		var lbl := Label.new()
+		lbl.text = field_def["label"]
+		lbl.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
+		_gd_detail.add_child(lbl)
+
+		var hint_lbl := Label.new()
+		hint_lbl.text = field_def["hint"]
+		hint_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+		hint_lbl.add_theme_font_size_override("font_size", 11)
+		_gd_detail.add_child(hint_lbl)
+
+		var te := TextEdit.new()
+		te.text = fields.get(key, "")
+		te.placeholder_text = field_def["hint"]
+		te.custom_minimum_size = Vector2(0, 70)
+		te.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		te.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+		var cap_key := key
+		te.text_changed.connect(func():
+			if not _gd_docs[idx].has("fields"):
+				_gd_docs[idx]["fields"] = {}
+			(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = te.text
+			_gd_save_docs()
+		)
+		_gd_detail.add_child(te)
+
+func _gd_new_doc() -> void:
+	var doc := {
+		"title": "New Design Doc",
+		"genres": [],
+		"fields": {}
+	}
+	_gd_docs.append(doc)
+	_gd_save_docs()
+	_gd_rebuild_list()
+	_gd_selected = _gd_docs.size() - 1
+	_gd_show_detail(_gd_selected)
