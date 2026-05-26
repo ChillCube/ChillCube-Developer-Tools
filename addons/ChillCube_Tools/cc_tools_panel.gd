@@ -251,11 +251,6 @@ var _schedule_edit_date: LineEdit
 var _schedule_edit_time: LineEdit
 var _schedule_edit_desc: TextEdit
 
-var _ideas_items: Array = []
-var _ideas_list: VBoxContainer
-var _ideas_status_lbl: Label
-var _ideas_thread: Thread = null
-var _ideas_comments_open: Dictionary = {}  # orig_idx -> bool
 
 var _forum_items: Array = []
 var _forum_content: VBoxContainer
@@ -825,8 +820,6 @@ func _exit_tree() -> void:
 		_activity_thread.wait_to_finish()
 	if _vote_thread and _vote_thread.is_started():
 		_vote_thread.wait_to_finish()
-	if _ideas_thread and _ideas_thread.is_started():
-		_ideas_thread.wait_to_finish()
 	if _login_thread and _login_thread.is_started():
 		_login_thread.wait_to_finish()
 	if _election_thread and _election_thread.is_started():
@@ -2272,7 +2265,6 @@ func _build_planning_tab(tabs: TabContainer) -> void:
 	inner_tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	outer.add_child(inner_tabs)
 	_build_planned_subtab(inner_tabs)
-	_build_ideas_subtab(inner_tabs)
 	_build_bugs_subtab(inner_tabs)
 	_build_todo_subtab(inner_tabs)
 	_build_feedback_subtab(inner_tabs)
@@ -3046,312 +3038,6 @@ func _refresh_plan_editor() -> void:
 	)
 	_plan_editor.add_child(fn_add)
 
-func _build_ideas_subtab(tabs: TabContainer) -> void:
-	var root := _vbox("Game Ideas", tabs)
-
-	var toolbar := HBoxContainer.new()
-	var suggest_btn := Button.new()
-	suggest_btn.text = "💡 Suggest Idea"
-	suggest_btn.pressed.connect(_ideas_prompt_new)
-	_ideas_status_lbl = Label.new()
-	_ideas_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_ideas_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
-	toolbar.add_child(suggest_btn)
-	toolbar.add_child(_ideas_status_lbl)
-	root.add_child(toolbar)
-
-	var hint := Label.new()
-	hint.text = "Rate ideas from 1–5 ⭐. Top-rated ideas appear first."
-	hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
-	hint.add_theme_font_size_override("font_size", 11)
-	root.add_child(hint)
-
-	root.add_child(HSeparator.new())
-
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_ideas_list = VBoxContainer.new()
-	_ideas_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_ideas_list.add_theme_constant_override("separation", 6)
-	scroll.add_child(_ideas_list)
-	root.add_child(scroll)
-
-	_load_ideas()
-
-func _ideas_file() -> String:
-	return ProjectSettings.globalize_path("user://cc_ideas.json")
-
-func _load_ideas() -> void:
-	_ideas_items = []
-	var path := _ideas_file()
-	if not FileAccess.file_exists(path):
-		return
-	var f := FileAccess.open(path, FileAccess.READ)
-	if not f:
-		return
-	var parsed: Variant = JSON.parse_string(f.get_as_text())
-	f.close()
-	if parsed is Array:
-		_ideas_items = parsed
-	if is_instance_valid(_ideas_list):
-		_refresh_ideas_list()
-
-func _save_ideas() -> void:
-	var fw := FileAccess.open(_ideas_file(), FileAccess.WRITE)
-	if fw:
-		fw.store_string(JSON.stringify(_ideas_items, "\t") + "\n")
-		fw.close()
-
-func _ideas_avg_score(idea: Dictionary) -> float:
-	var ratings: Array = idea.get("ratings", [])
-	if ratings.is_empty():
-		return 0.0
-	var total := 0.0
-	for r: Dictionary in ratings:
-		total += float(r.get("score", 0))
-	return total / ratings.size()
-
-func _ideas_user_rating(idea: Dictionary) -> int:
-	var user: String = _current_user.get("username", "")
-	if user.is_empty():
-		return 0
-	for r: Dictionary in idea.get("ratings", []):
-		if r.get("user", "") == user:
-			return int(r.get("score", 0))
-	return 0
-
-func _refresh_ideas_list() -> void:
-	if not is_instance_valid(_ideas_list):
-		return
-	for c in _ideas_list.get_children():
-		c.queue_free()
-
-	var sorted := _ideas_items.duplicate()
-	sorted.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		return _ideas_avg_score(a) > _ideas_avg_score(b)
-	)
-
-	if sorted.is_empty():
-		var empty_lbl := Label.new()
-		empty_lbl.text = "No ideas yet. Be the first to suggest one!"
-		empty_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
-		_ideas_list.add_child(empty_lbl)
-		return
-
-	for idea: Dictionary in sorted:
-		var orig_idx := _ideas_items.find(idea)
-		var card := PanelContainer.new()
-		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var card_vbox := VBoxContainer.new()
-		card_vbox.add_theme_constant_override("separation", 4)
-		card.add_child(card_vbox)
-
-		var top_row := HBoxContainer.new()
-		var title_lbl := Label.new()
-		title_lbl.text = idea.get("title", "Untitled")
-		title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		title_lbl.add_theme_font_size_override("font_size", 13)
-		top_row.add_child(title_lbl)
-
-		var avg := _ideas_avg_score(idea)
-		var count := (idea.get("ratings", []) as Array).size()
-		var score_lbl := Label.new()
-		score_lbl.text = "%.1f ⭐ (%d)" % [avg, count]
-		score_lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.2))
-		top_row.add_child(score_lbl)
-
-		var del_btn := Button.new()
-		del_btn.text = "🗑"
-		del_btn.flat = true
-		del_btn.tooltip_text = "Delete idea"
-		var cap_idx := orig_idx
-		del_btn.pressed.connect(func():
-			if cap_idx >= 0 and cap_idx < _ideas_items.size():
-				_ideas_items.remove_at(cap_idx)
-				_save_ideas()
-				_refresh_ideas_list()
-				_activity_auto_push()
-		)
-		top_row.add_child(del_btn)
-		card_vbox.add_child(top_row)
-
-		var desc: String = idea.get("description", "")
-		if not desc.is_empty():
-			var desc_lbl := Label.new()
-			desc_lbl.text = desc
-			desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			desc_lbl.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
-			card_vbox.add_child(desc_lbl)
-
-		var meta_row := HBoxContainer.new()
-		var by_lbl := Label.new()
-		by_lbl.text = "by @" + idea.get("author", "?") + "  " + idea.get("timestamp", "").substr(0, 10)
-		by_lbl.add_theme_font_size_override("font_size", 11)
-		by_lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
-		by_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		meta_row.add_child(by_lbl)
-
-		var my_rating := _ideas_user_rating(idea)
-		var rate_lbl := Label.new()
-		rate_lbl.text = "Your rating:"
-		rate_lbl.add_theme_font_size_override("font_size", 11)
-		meta_row.add_child(rate_lbl)
-
-		for star: int in range(1, 6):
-			var star_btn := Button.new()
-			star_btn.text = "★" if star <= my_rating else "☆"
-			star_btn.flat = true
-			star_btn.custom_minimum_size = Vector2(22, 0)
-			if star <= my_rating:
-				star_btn.add_theme_color_override("font_color", Color(1.0, 0.85, 0.1))
-			var cap_star := star
-			var cap_idea_idx := orig_idx
-			star_btn.pressed.connect(func():
-				if cap_idea_idx < 0 or cap_idea_idx >= _ideas_items.size():
-					return
-				var user: String = _current_user.get("username", "")
-				if user.is_empty():
-					return
-				var ratings: Array = _ideas_items[cap_idea_idx].get("ratings", [])
-				var found := false
-				for i in range(ratings.size()):
-					if (ratings[i] as Dictionary).get("user", "") == user:
-						ratings[i] = {"user": user, "score": cap_star}
-						found = true
-						break
-				if not found:
-					ratings.append({"user": user, "score": cap_star})
-				_ideas_items[cap_idea_idx]["ratings"] = ratings
-				_save_ideas()
-				_refresh_ideas_list()
-				var idea_title: String = _ideas_items[cap_idea_idx].get("title", "")
-				_log_activity("idea_rated", '%s rated "%s" %d/5' % [user, idea_title, cap_star])
-			)
-			meta_row.add_child(star_btn)
-
-		# Comment count / toggle button
-		var idea_comments: Array = idea.get("comments", [])
-		var cmt_btn := Button.new()
-		cmt_btn.text = "💬 %d" % idea_comments.size() if not idea_comments.is_empty() else "💬"
-		cmt_btn.flat = true
-		cmt_btn.add_theme_font_size_override("font_size", 11)
-		cmt_btn.tooltip_text = "Show / hide comments"
-		if _ideas_comments_open.get(orig_idx, false):
-			cmt_btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
-		var cap_oidx := orig_idx
-		cmt_btn.pressed.connect(func():
-			_ideas_comments_open[cap_oidx] = not _ideas_comments_open.get(cap_oidx, false)
-			_refresh_ideas_list()
-		)
-		meta_row.add_child(cmt_btn)
-
-		card_vbox.add_child(meta_row)
-
-		# Collapsible comments section
-		if _ideas_comments_open.get(orig_idx, false):
-			card_vbox.add_child(HSeparator.new())
-			var cmts_box := VBoxContainer.new()
-			cmts_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			cmts_box.add_theme_constant_override("separation", 2)
-
-			for comment: Dictionary in idea_comments:
-				var c_row := HBoxContainer.new()
-				c_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-				var c_lbl := RichTextLabel.new()
-				c_lbl.bbcode_enabled = true
-				c_lbl.fit_content = true
-				c_lbl.scroll_active = false
-				c_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-				c_lbl.push_color(Color(0.7, 0.7, 0.7))
-				c_lbl.append_text("[b]@" + comment.get("user", "?") + "[/b]  " + comment.get("text", ""))
-				c_lbl.pop()
-				c_row.add_child(c_lbl)
-				var c_time := Label.new()
-				c_time.text = (comment.get("timestamp", "")).substr(11, 5)
-				c_time.add_theme_font_size_override("font_size", 10)
-				c_time.add_theme_color_override("font_color", Color(0.35, 0.35, 0.35))
-				c_row.add_child(c_time)
-				cmts_box.add_child(c_row)
-
-			var add_row := HBoxContainer.new()
-			add_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			var c_input := LineEdit.new()
-			c_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			c_input.placeholder_text = "Add a comment…"
-			c_input.add_theme_font_size_override("font_size", 11)
-			add_row.add_child(c_input)
-			var post_btn := Button.new()
-			post_btn.text = "Post"
-			post_btn.add_theme_font_size_override("font_size", 11)
-			var cap_post_idx := orig_idx
-			var me: String = _current_user.get("username", "?")
-			var post_fn := func():
-				var text := c_input.text.strip_edges()
-				if text.is_empty() or cap_post_idx < 0 or cap_post_idx >= _ideas_items.size():
-					return
-				var clist: Array = _ideas_items[cap_post_idx].get("comments", [])
-				clist.append({
-					"user": me,
-					"text": text,
-					"timestamp": Time.get_datetime_string_from_system()
-				})
-				_ideas_items[cap_post_idx]["comments"] = clist
-				_save_ideas()
-				_refresh_ideas_list()
-			post_btn.pressed.connect(post_fn)
-			c_input.text_submitted.connect(func(_t): post_fn.call())
-			add_row.add_child(post_btn)
-			cmts_box.add_child(add_row)
-			card_vbox.add_child(cmts_box)
-
-		_ideas_list.add_child(card)
-
-func _ideas_prompt_new() -> void:
-	var dialog := AcceptDialog.new()
-	dialog.title = "Suggest a Game Idea"
-	dialog.size = Vector2i(440, 220)
-	var vbox := VBoxContainer.new()
-	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	vbox.add_theme_constant_override("separation", 4)
-	dialog.add_child(vbox)
-
-	var title_lbl := Label.new()
-	title_lbl.text = "Title:"
-	vbox.add_child(title_lbl)
-	var title_edit := LineEdit.new()
-	title_edit.placeholder_text = "Short catchy title…"
-	title_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	vbox.add_child(title_edit)
-
-	var desc_lbl := Label.new()
-	desc_lbl.text = "Description (optional):"
-	vbox.add_child(desc_lbl)
-	var desc_edit := TextEdit.new()
-	desc_edit.custom_minimum_size = Vector2(0, 60)
-	desc_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	desc_edit.placeholder_text = "What's the core concept?"
-	vbox.add_child(desc_edit)
-
-	dialog.confirmed.connect(func():
-		var title := title_edit.text.strip_edges()
-		if title.is_empty():
-			return
-		var user: String = _current_user.get("username", "?")
-		_ideas_items.append({
-			"title": title,
-			"description": desc_edit.text.strip_edges(),
-			"author": user,
-			"timestamp": Time.get_datetime_string_from_system(),
-			"ratings": []
-		})
-		_save_ideas()
-		_refresh_ideas_list()
-		_log_activity("idea_suggested", '%s suggested game idea: "%s"' % [user, title])
-	)
-	add_child(dialog)
-	dialog.popup_centered()
-
 func _build_bugs_subtab(tabs: TabContainer) -> void:
 	var root := _vbox("Bugs", tabs)
 
@@ -3923,7 +3609,6 @@ func _cc_data_bundle() -> Dictionary:
 		"activity.json": JSON.stringify(_activity_items, "\t") + "\n",
 		"feedback.json": fb_str,
 		"votes.json": JSON.stringify(_vote_items, "\t") + "\n",
-		"ideas.json": JSON.stringify(_ideas_items, "\t") + "\n",
 		"asset_meta.json": JSON.stringify(_asset_meta, "\t") + "\n",
 		"schedule.json": JSON.stringify(_schedule_items, "\t") + "\n",
 		"forum.json": JSON.stringify(_forum_items, "\t") + "\n",
@@ -12068,9 +11753,30 @@ func _gd_save_docs() -> void:
 		f.store_string(JSON.stringify(_gd_docs, "\t"))
 		f.close()
 
+func _gd_avg_rating(doc: Dictionary) -> float:
+	var ratings: Array = doc.get("ratings", [])
+	if ratings.is_empty():
+		return 0.0
+	var total := 0.0
+	for r: Dictionary in ratings:
+		total += float(r.get("score", 0))
+	return total / ratings.size()
+
+func _gd_my_rating(doc: Dictionary) -> int:
+	var me: String = _current_user.get("username", "")
+	if me.is_empty():
+		return 0
+	for r: Dictionary in doc.get("ratings", []):
+		if (r as Dictionary).get("user", "") == me:
+			return int((r as Dictionary).get("score", 0))
+	return 0
+
 func _gd_rebuild_list() -> void:
 	for c in _gd_list.get_children():
 		c.queue_free()
+
+	# collect indices that pass the genre filter
+	var visible_indices: Array[int] = []
 	for i in range(_gd_docs.size()):
 		var doc: Dictionary = _gd_docs[i]
 		var genres: Array = doc.get("genres", [])
@@ -12082,6 +11788,18 @@ func _gd_rebuild_list() -> void:
 					break
 			if not found:
 				continue
+		visible_indices.append(i)
+
+	# sort by average rating descending
+	visible_indices.sort_custom(func(a: int, b: int) -> bool:
+		return _gd_avg_rating(_gd_docs[a]) > _gd_avg_rating(_gd_docs[b])
+	)
+
+	for i: int in visible_indices:
+		var doc: Dictionary = _gd_docs[i]
+		var avg := _gd_avg_rating(doc)
+		var row := HBoxContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		var btn := Button.new()
 		btn.text = doc.get("title", "Untitled")
 		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -12095,7 +11813,15 @@ func _gd_rebuild_list() -> void:
 			_gd_rebuild_list()
 			_gd_show_detail(cap_i)
 		)
-		_gd_list.add_child(btn)
+		row.add_child(btn)
+		if avg > 0.0:
+			var star_lbl := Label.new()
+			star_lbl.text = "%.1f★" % avg
+			star_lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.2))
+			star_lbl.add_theme_font_size_override("font_size", 11)
+			row.add_child(star_lbl)
+		_gd_list.add_child(row)
+
 	if _gd_list.get_child_count() == 0:
 		var lbl := Label.new()
 		lbl.text = "No documents."
@@ -12135,6 +11861,53 @@ func _gd_show_detail(idx: int) -> void:
 	title_row.add_child(title_edit)
 	title_row.add_child(delete_btn)
 	_gd_detail.add_child(title_row)
+
+	# star rating row
+	var rating_row := HBoxContainer.new()
+	rating_row.add_theme_constant_override("separation", 2)
+	var rate_lbl := Label.new()
+	rate_lbl.text = "Your rating:"
+	rate_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	rate_lbl.add_theme_font_size_override("font_size", 11)
+	rating_row.add_child(rate_lbl)
+	var my_score := _gd_my_rating(doc)
+	for star: int in range(1, 6):
+		var sb := Button.new()
+		sb.text = "★" if star <= my_score else "☆"
+		sb.flat = true
+		sb.custom_minimum_size = Vector2(24, 0)
+		if star <= my_score:
+			sb.add_theme_color_override("font_color", Color(1.0, 0.85, 0.1))
+		var cap_star := star
+		sb.pressed.connect(func():
+			var me: String = _current_user.get("username", "")
+			if me.is_empty():
+				return
+			var ratings: Array = _gd_docs[idx].get("ratings", [])
+			var found_r := false
+			for ri in range(ratings.size()):
+				if (ratings[ri] as Dictionary).get("user", "") == me:
+					ratings[ri] = {"user": me, "score": cap_star}
+					found_r = true
+					break
+			if not found_r:
+				ratings.append({"user": me, "score": cap_star})
+			_gd_docs[idx]["ratings"] = ratings
+			_gd_save_docs()
+			_gd_rebuild_list()
+			_gd_show_detail(idx)
+		)
+		rating_row.add_child(sb)
+	var avg_score := _gd_avg_rating(doc)
+	if avg_score > 0.0:
+		var avg_lbl := Label.new()
+		var count: int = (_gd_docs[idx].get("ratings", []) as Array).size()
+		avg_lbl.text = "  avg %.1f★ (%d)" % [avg_score, count]
+		avg_lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+		avg_lbl.add_theme_font_size_override("font_size", 11)
+		rating_row.add_child(avg_lbl)
+	_gd_detail.add_child(rating_row)
+	_gd_detail.add_child(HSeparator.new())
 
 	# genre chips
 	var genre_hdr := Label.new()
