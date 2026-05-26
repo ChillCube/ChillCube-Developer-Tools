@@ -973,7 +973,7 @@ static func update_plugin(plugin_dir: String, log: Callable) -> int:
 	var url := git_remote(plugin_dir)
 	if url.is_empty():
 		url = "https://github.com/ChillCube/ChillCube-Developer-Tools"
-	var before := _exec_capture("git", ["-C", plugin_dir, "rev-parse", "HEAD"]).output.strip_edges()
+	var before: String = (_exec_capture("git", ["-C", plugin_dir, "rev-parse", "HEAD"]).output as String).strip_edges()
 	var perm_err := [false]
 	var code := _git(["pull", "--rebase", url, "main"], plugin_dir, func(msg: String):
 		if "insufficient permission" in msg or "Permission denied" in msg:
@@ -987,7 +987,7 @@ static func update_plugin(plugin_dir: String, log: Callable) -> int:
 		log.call("⚠️  Pull failed — resolve conflicts manually.")
 		_git(["rebase", "--abort"], plugin_dir, Callable())
 		return 0
-	var after := _exec_capture("git", ["-C", plugin_dir, "rev-parse", "HEAD"]).output.strip_edges()
+	var after: String = (_exec_capture("git", ["-C", plugin_dir, "rev-parse", "HEAD"]).output as String).strip_edges()
 	if before == after:
 		log.call("✅ Already up to date.")
 		return 1
