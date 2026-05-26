@@ -853,10 +853,11 @@ func _refresh_dashboard() -> void:
 		var vote: Dictionary = _vote_items[vi]
 		if not _vote_is_expired(vote) and not (me in (vote.get("votes", {}) as Dictionary)):
 			pending_votes.append({"vote": vote, "idx": vi})
-	_dashboard_section("🗳 Votes needing your input", pending_votes.size(), func():
-		for entry: Dictionary in pending_votes:
-			_dashboard_list.add_child(_dashboard_vote_card(entry["vote"], entry["idx"]))
-	)
+	if pending_votes.size() > 0:
+		_dashboard_section("🗳 Votes needing your input", func():
+			for entry: Dictionary in pending_votes:
+				_dashboard_list.add_child(_dashboard_vote_card(entry["vote"], entry["idx"]))
+		)
 
 	# ── Assigned todos ────────────────────────────────────────────────────────
 	var my_todos: Array = []
@@ -864,13 +865,14 @@ func _refresh_dashboard() -> void:
 		var item: Dictionary = _todo_items[ti]
 		if not item.get("done", false) and item.get("assigned_to", "") == me:
 			my_todos.append({"item": item, "idx": ti})
-	_dashboard_section("📋 Assigned to you", my_todos.size(), func():
-		for entry: Dictionary in my_todos:
-			_dashboard_list.add_child(_dashboard_todo_card(entry["item"], entry["idx"]))
-	)
+	if my_todos.size() > 0:
+		_dashboard_section("📋 Assigned to you", func():
+			for entry: Dictionary in my_todos:
+				_dashboard_list.add_child(_dashboard_todo_card(entry["item"], entry["idx"]))
+		)
 
 	# ── Feedback (async from vault) ───────────────────────────────────────────
-	_dashboard_status_lbl.text = "⏳ Fetching feedback tasks..."
+	_dashboard_status_lbl.text = "⏳"
 	if _dashboard_thread and _dashboard_thread.is_started():
 		return
 	_dashboard_thread = Thread.new()
@@ -879,15 +881,13 @@ func _refresh_dashboard() -> void:
 		call_deferred("_dashboard_add_feedback", tasks)
 	)
 
-func _dashboard_section(title: String, count: int, build: Callable) -> void:
+func _dashboard_section(title: String, build: Callable) -> void:
 	var hdr := Label.new()
-	hdr.text = title + (" (%d)" % count if count > 0 else " — nothing here")
+	hdr.text = title
 	hdr.add_theme_font_size_override("font_size", 12)
-	hdr.add_theme_color_override("font_color",
-		Color(0.9, 0.9, 0.9) if count > 0 else Color(0.5, 0.5, 0.5))
+	hdr.add_theme_color_override("font_color", Color(0.9, 0.9, 0.9))
 	_dashboard_list.add_child(hdr)
-	if count > 0:
-		build.call()
+	build.call()
 	_dashboard_list.add_child(HSeparator.new())
 
 func _dashboard_vote_card(vote: Dictionary, vote_idx: int) -> Control:
@@ -953,10 +953,17 @@ func _dashboard_add_feedback(tasks: Array) -> void:
 		return
 	var me: String = _current_user.get("username", "")
 	var pending: Array = tasks.filter(func(t): return t.get("reviewer", "") == me and t.get("status", "") == "pending")
-	_dashboard_section("✍️ Feedback requested from you", pending.size(), func():
-		for task: Dictionary in pending:
-			_dashboard_list.add_child(_feedback_task_card(task, me))
-	)
+	if pending.size() > 0:
+		_dashboard_section("✍️ Feedback requested from you", func():
+			for task: Dictionary in pending:
+				_dashboard_list.add_child(_feedback_task_card(task, me))
+		)
+	if _dashboard_list.get_child_count() == 0:
+		var lbl := Label.new()
+		lbl.text = "All done ✓"
+		lbl.add_theme_color_override("font_color", Color(0.5, 0.9, 0.5))
+		lbl.add_theme_font_size_override("font_size", 14)
+		_dashboard_list.add_child(lbl)
 
 func _build_addons_supertab(tabs: TabContainer) -> void:
 	var outer := _vbox("Addons", tabs)
