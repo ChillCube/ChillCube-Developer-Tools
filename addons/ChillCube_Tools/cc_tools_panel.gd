@@ -740,7 +740,6 @@ func _ready() -> void:
 	_build_planning_tab(tabs)
 	_build_team_supertab(tabs)
 	_build_vault_tab(tabs)
-	_build_terminal_tab(tabs)
 	_build_account_tab(tabs)
 
 	_refresh_addons()
@@ -7832,9 +7831,22 @@ func _md_inline(text: String) -> String:
 
 	return text
 
-func _build_terminal_tab(tabs: TabContainer) -> void:
-	var root := _vbox("Terminal", tabs)
+func build_terminal_panel() -> Control:
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_top", 4)
+	margin.add_theme_constant_override("margin_left", 4)
+	margin.add_theme_constant_override("margin_right", 4)
+	margin.add_theme_constant_override("margin_bottom", 4)
+	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var vb := VBoxContainer.new()
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vb.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	margin.add_child(vb)
+	_setup_terminal(vb)
+	return margin
 
+func _setup_terminal(root: VBoxContainer) -> void:
 	var header := HBoxContainer.new()
 	_term_cwd_label = Label.new()
 	_term_cwd_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -7878,6 +7890,43 @@ func _build_terminal_tab(tabs: TabContainer) -> void:
 	_term_cwd = ProjectSettings.globalize_path("res://").rstrip("/")
 	_term_update_prompt()
 	_term_append("ChillCube Terminal — " + OS.get_name() + "\n")
+
+func build_chat_dock() -> Control:
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_top", 8)
+	margin.add_theme_constant_override("margin_left", 8)
+	margin.add_theme_constant_override("margin_right", 8)
+	margin.add_theme_constant_override("margin_bottom", 8)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 6)
+	var lbl := Label.new()
+	lbl.text = "Team Chat"
+	lbl.add_theme_font_size_override("font_size", 13)
+	vb.add_child(lbl)
+	var btn := Button.new()
+	btn.text = "💬 Open Revolt"
+	btn.pressed.connect(func():
+		var url := _load_revolt_url()
+		if url.is_empty():
+			OS.alert("Set your Revolt channel URL in Settings first.")
+		else:
+			OS.shell_open(url)
+	)
+	vb.add_child(btn)
+	margin.add_child(vb)
+	return margin
+
+func _load_revolt_url() -> String:
+	var cfg := ConfigFile.new()
+	if cfg.load("user://cc_tools.cfg") != OK:
+		return ""
+	return cfg.get_value("chat", "revolt_url", "")
+
+func _save_revolt_url(url: String) -> void:
+	var cfg := ConfigFile.new()
+	cfg.load("user://cc_tools.cfg")
+	cfg.set_value("chat", "revolt_url", url)
+	cfg.save("user://cc_tools.cfg")
 
 # ─── Terminal logic ───────────────────────────────────────────────────────────
 
@@ -9743,6 +9792,28 @@ func _build_account_tab(tabs: TabContainer) -> void:
 	_update_log.custom_minimum_size = Vector2(0, 80)
 	_update_log.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	root.add_child(_update_log)
+
+	root.add_child(HSeparator.new())
+
+	# ── Chat ──────────────────────────────────────────────────────────────────
+	var chat_heading := Label.new()
+	chat_heading.text = "Team Chat"
+	chat_heading.add_theme_font_size_override("font_size", 13)
+	root.add_child(chat_heading)
+
+	var url_row := HBoxContainer.new()
+	var url_lbl := Label.new()
+	url_lbl.text = "Revolt channel URL"
+	url_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var url_input := LineEdit.new()
+	url_input.placeholder_text = "https://app.revolt.chat/channel/..."
+	url_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	url_input.text = _load_revolt_url()
+	url_input.text_submitted.connect(func(t: String): _save_revolt_url(t.strip_edges()))
+	url_input.focus_exited.connect(func(): _save_revolt_url(url_input.text.strip_edges()))
+	url_row.add_child(url_lbl)
+	url_row.add_child(url_input)
+	root.add_child(url_row)
 
 	root.add_child(HSeparator.new())
 
