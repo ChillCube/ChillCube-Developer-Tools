@@ -81,8 +81,6 @@ var _todo_tag_bar: HBoxContainer
 var _asset_meta: Dictionary = {}
 
 var _update_log: TextEdit
-var _auto_update_check: CheckBox
-var _startup_thread: Thread = null
 
 var _term_output: TextEdit
 var _term_input: LineEdit
@@ -760,37 +758,7 @@ func _ready() -> void:
 	add_child(_login_overlay)
 	_session_restore()
 
-func _ready() -> void:
-	if _load_auto_update():
-		var plugin_dir := ProjectSettings.globalize_path(
-			(get_script() as Script).resource_path.get_base_dir()
-		)
-		_startup_thread = Thread.new()
-		_startup_thread.start(func():
-			Ops.update_plugin(plugin_dir, func(_m): pass)
-			call_deferred("_on_startup_update_done")
-		)
-
-func _on_startup_update_done() -> void:
-	if _startup_thread:
-		_startup_thread.wait_to_finish()
-	_startup_thread = null
-
-func _load_auto_update() -> bool:
-	var cfg := ConfigFile.new()
-	if cfg.load("user://cc_tools.cfg") != OK:
-		return false
-	return cfg.get_value("plugin", "auto_update", false)
-
-func _save_auto_update(enabled: bool) -> void:
-	var cfg := ConfigFile.new()
-	cfg.load("user://cc_tools.cfg")
-	cfg.set_value("plugin", "auto_update", enabled)
-	cfg.save("user://cc_tools.cfg")
-
 func _exit_tree() -> void:
-	if _startup_thread and _startup_thread.is_started():
-		_startup_thread.wait_to_finish()
 	if _thread and _thread.is_started():
 		_thread.wait_to_finish()
 	if _term_thread and _term_thread.is_started():
@@ -8288,16 +8256,30 @@ func _start_clone() -> void:
 	)
 
 func _start_update_plugin() -> void:
+	if _thread and _thread.is_started():
+		_append_log(_update_log, "⚠️  Another operation is already running.")
+		return
 	_update_log.text = ""
+	_update_plugin_btn.disabled = true
 	var plugin_dir := ProjectSettings.globalize_path(
 		(get_script() as Script).resource_path.get_base_dir()
 	)
-	_run_op(_update_plugin_btn, _update_log, func():
-		Ops.update_plugin(
+	_thread = Thread.new()
+	_thread.start(func():
+		var result := Ops.update_plugin(
 			plugin_dir,
 			func(msg): call_deferred("_append_log", _update_log, msg)
 		)
+		call_deferred("_finish_update_plugin", result)
 	)
+
+func _finish_update_plugin(result: int) -> void:
+	if _thread:
+		_thread.wait_to_finish()
+	_thread = null
+	_update_plugin_btn.disabled = false
+	if result == 2:
+		EditorInterface.restart_editor(true)
 
 func _start_push() -> void:
 	_installed_log.text = ""
@@ -9746,17 +9728,10 @@ func _build_account_tab(tabs: TabContainer) -> void:
 	upd_heading.add_theme_font_size_override("font_size", 13)
 	root.add_child(upd_heading)
 
-	var upd_row := HBoxContainer.new()
 	_update_plugin_btn = Button.new()
 	_update_plugin_btn.text = "⬆ Check for Updates"
 	_update_plugin_btn.pressed.connect(_start_update_plugin)
-	_auto_update_check = CheckBox.new()
-	_auto_update_check.text = "Auto-update on startup"
-	_auto_update_check.button_pressed = _load_auto_update()
-	_auto_update_check.toggled.connect(func(on: bool): _save_auto_update(on))
-	upd_row.add_child(_update_plugin_btn)
-	upd_row.add_child(_auto_update_check)
-	root.add_child(upd_row)
+	root.add_child(_update_plugin_btn)
 
 	_update_log = TextEdit.new()
 	_update_log.editable = false

@@ -967,19 +967,24 @@ static func remove_addon(root: String, addon_name: String, log: Callable) -> boo
 
 # ─── UPDATE PLUGIN ───────────────────────────────────────────────────────────
 
-static func update_plugin(plugin_dir: String, log: Callable) -> bool:
+## Returns: 0 = failed, 1 = already up to date, 2 = updated (restart needed)
+static func update_plugin(plugin_dir: String, log: Callable) -> int:
 	log.call("⬆️  Pulling latest ChillCube Tools...")
-	# Use the normalised HTTPS URL directly so SSH remotes don't break
 	var url := git_remote(plugin_dir)
 	if url.is_empty():
 		url = "https://github.com/ChillCube/ChillCube-Developer-Tools"
+	var before := _exec_capture("git", ["-C", plugin_dir, "rev-parse", "HEAD"]).output.strip_edges()
 	var code := _git(["pull", "--rebase", url, "main"], plugin_dir, log)
 	if code != OK:
 		log.call("⚠️  Pull failed — resolve conflicts manually.")
 		_git(["rebase", "--abort"], plugin_dir, Callable())
-		return false
-	log.call("✅ Plugin updated! Restart Godot to apply changes.")
-	return true
+		return 0
+	var after := _exec_capture("git", ["-C", plugin_dir, "rev-parse", "HEAD"]).output.strip_edges()
+	if before == after:
+		log.call("✅ Already up to date.")
+		return 1
+	log.call("✅ Plugin updated! Restarting editor...")
+	return 2
 
 # ─── PUSH ALL ADDONS ─────────────────────────────────────────────────────────
 
