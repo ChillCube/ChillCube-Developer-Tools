@@ -12073,12 +12073,12 @@ func _gd_rebuild_list() -> void:
 		var doc: Dictionary = _gd_docs[i]
 		var genres: Array = doc.get("genres", [])
 		if not _gd_active_tags.is_empty():
-			var match := false
+			var found := false
 			for t: String in _gd_active_tags:
 				if t in genres:
-					match = true
+					found = true
 					break
-			if not match:
+			if not found:
 				continue
 		var btn := Button.new()
 		btn.text = doc.get("title", "Untitled")
