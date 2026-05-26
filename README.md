@@ -19,19 +19,14 @@ A **🧊 CC Tools** panel added to the top of the Godot editor. No terminal requ
 
 Run from the **root of your Godot project**, then enable **ChillCube Tools** in **Project → Project Settings → Plugins**.
 
-**Linux / macOS**
+**Linux / macOS / Windows (Git Bash)**
 ```bash
-tmp=$(mktemp -d) && git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git "$tmp" && mkdir -p addons && cp -r "$tmp/addons/ChillCube_Tools" addons/ && rm -rf "$tmp"
+git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git .cc-tmp && mkdir -p addons && cp -r .cc-tmp/addons/ChillCube_Tools addons/ && rm -rf .cc-tmp
 ```
 
 **Windows (PowerShell)**
 ```powershell
-$tmp = New-TemporaryFile | % { Remove-Item $_; New-Item -ItemType Directory -Path "$_.d" }; git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git $tmp; New-Item -ItemType Directory -Force addons | Out-Null; Copy-Item -Recurse "$tmp\addons\ChillCube_Tools" addons\; Remove-Item -Recurse -Force $tmp
-```
-
-**Windows (Git Bash)**
-```bash
-tmp=$(mktemp -d) && git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git "$tmp" && mkdir -p addons && cp -r "$tmp/addons/ChillCube_Tools" addons/ && rm -rf "$tmp"
+git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git .cc-tmp; New-Item -ItemType Directory -Force addons | Out-Null; Copy-Item -Recurse .cc-tmp\addons\ChillCube_Tools addons\; Remove-Item -Recurse -Force .cc-tmp
 ```
 
 > [!NOTE]
