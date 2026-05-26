@@ -8348,6 +8348,7 @@ func _setup_terminal(root: VBoxContainer) -> void:
 
 func build_chat_dock() -> Control:
 	var margin := MarginContainer.new()
+	margin.name = "Team Chat"
 	margin.add_theme_constant_override("margin_top", 8)
 	margin.add_theme_constant_override("margin_left", 8)
 	margin.add_theme_constant_override("margin_right", 8)
