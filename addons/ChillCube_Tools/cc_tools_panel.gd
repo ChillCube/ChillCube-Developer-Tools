@@ -197,16 +197,18 @@ var _gd_thread: Thread = null
 const GD_GENRES: Array = ["Action", "Adventure", "Horror", "Platformer", "Puzzle",
 	"Racing", "RPG", "Shooter", "Simulation", "Sports", "Strategy", "Other"]
 const GD_FIELDS: Array = [
-	{"key": "elevator_pitch",    "label": "Elevator Pitch",     "hint": "Describe the game in 1–2 sentences."},
-	{"key": "player_count",      "label": "Number of Players",  "hint": "e.g. Single-player, 2–4, MMO"},
-	{"key": "platform",          "label": "Target Platform",    "hint": "e.g. PC, Mobile, Console"},
-	{"key": "core_mechanic",     "label": "Core Mechanic",      "hint": "What is the main thing the player does?"},
-	{"key": "unique_selling_pt", "label": "Unique Selling Point","hint": "What makes this game stand out?"},
-	{"key": "art_style",         "label": "Art Style",          "hint": "e.g. Pixel, 3D realistic, Hand-drawn"},
-	{"key": "target_audience",   "label": "Target Audience",    "hint": "Who is this for?"},
-	{"key": "monetisation",      "label": "Monetisation",       "hint": "e.g. Free-to-play, Premium, DLC"},
-	{"key": "inspirations",      "label": "Inspirations",       "hint": "Games or media that inspired this."},
-	{"key": "notes",             "label": "Additional Notes",   "hint": "Anything else worth capturing."},
+	{"key": "elevator_pitch",    "label": "Elevator Pitch",      "type": "text",    "hint": "Describe the game in 1–2 sentences.",     "height": 60},
+	{"key": "player_min",        "label": "Min Players",         "type": "number",  "hint": "1"},
+	{"key": "player_max",        "label": "Max Players",         "type": "number",  "hint": "4"},
+	{"key": "platform",          "label": "Platform",            "type": "chips",   "options": ["PC", "Mac", "Linux", "Mobile", "Console", "Web", "VR"]},
+	{"key": "perspective",       "label": "Perspective",         "type": "option",  "options": ["—", "2D Side-scroll", "2D Top-down", "2.5D", "3D First-person", "3D Third-person", "Isometric", "Other"]},
+	{"key": "core_mechanic",     "label": "Core Mechanic",       "type": "text",    "hint": "What is the main thing the player does?", "height": 80},
+	{"key": "unique_selling_pt", "label": "Unique Selling Point","type": "text",    "hint": "What makes this game stand out?",         "height": 60},
+	{"key": "art_style",         "label": "Art Style",           "type": "line",    "hint": "e.g. Pixel art, 3D realistic, Hand-drawn"},
+	{"key": "target_audience",   "label": "Target Audience",     "type": "line",    "hint": "e.g. Casual players, Kids 8+, Hardcore"},
+	{"key": "monetisation",      "label": "Monetisation",        "type": "option",  "options": ["—", "Free-to-play", "Premium", "Freemium", "Subscription", "Premium + DLC"]},
+	{"key": "inspirations",      "label": "Inspirations",        "type": "text",    "hint": "Games or media that inspired this.",      "height": 60},
+	{"key": "notes",             "label": "Additional Notes",    "type": "text",    "hint": "",                                        "height": 100},
 ]
 
 var _http: HTTPRequest
@@ -12166,25 +12168,102 @@ func _gd_show_detail(idx: int) -> void:
 	var fields: Dictionary = doc.get("fields", {})
 	for field_def: Dictionary in GD_FIELDS:
 		var key: String = field_def["key"]
+		var ftype: String = field_def.get("type", "text")
 		var lbl := Label.new()
 		lbl.text = field_def["label"]
 		lbl.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
 		_gd_detail.add_child(lbl)
 
-		var te := TextEdit.new()
-		te.text = fields.get(key, "")
-		te.placeholder_text = field_def["hint"]
-		te.custom_minimum_size = Vector2(0, 70)
-		te.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		te.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-		var cap_key := key
-		te.text_changed.connect(func():
-			if not _gd_docs[idx].has("fields"):
-				_gd_docs[idx]["fields"] = {}
-			(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = te.text
-			_gd_save_docs()
-		)
-		_gd_detail.add_child(te)
+		if ftype == "text":
+			var te := TextEdit.new()
+			te.text = fields.get(key, "")
+			te.placeholder_text = field_def.get("hint", "")
+			te.custom_minimum_size = Vector2(0, field_def.get("height", 80))
+			te.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			te.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+			var cap_key := key
+			te.text_changed.connect(func():
+				if not _gd_docs[idx].has("fields"):
+					_gd_docs[idx]["fields"] = {}
+				(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = te.text
+				_gd_save_docs()
+			)
+			_gd_detail.add_child(te)
+
+		elif ftype == "line":
+			var le := LineEdit.new()
+			le.text = fields.get(key, "")
+			le.placeholder_text = field_def.get("hint", "")
+			le.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var cap_key := key
+			le.text_changed.connect(func(v: String):
+				if not _gd_docs[idx].has("fields"):
+					_gd_docs[idx]["fields"] = {}
+				(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = v
+				_gd_save_docs()
+			)
+			_gd_detail.add_child(le)
+
+		elif ftype == "number":
+			var sb := SpinBox.new()
+			sb.min_value = 1
+			sb.max_value = 9999
+			sb.step = 1
+			sb.value = (fields.get(key, 1) as float)
+			sb.custom_minimum_size = Vector2(100, 0)
+			var cap_key := key
+			sb.value_changed.connect(func(v: float):
+				if not _gd_docs[idx].has("fields"):
+					_gd_docs[idx]["fields"] = {}
+				(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = int(v)
+				_gd_save_docs()
+			)
+			_gd_detail.add_child(sb)
+
+		elif ftype == "option":
+			var ob := OptionButton.new()
+			var saved: String = fields.get(key, "")
+			var sel_idx := 0
+			for oi in range((field_def["options"] as Array).size()):
+				var opt: String = (field_def["options"] as Array)[oi]
+				ob.add_item(opt)
+				if opt == saved:
+					sel_idx = oi
+			ob.selected = sel_idx
+			var cap_key := key
+			ob.item_selected.connect(func(oi: int):
+				if not _gd_docs[idx].has("fields"):
+					_gd_docs[idx]["fields"] = {}
+				(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = ob.get_item_text(oi)
+				_gd_save_docs()
+			)
+			_gd_detail.add_child(ob)
+
+		elif ftype == "chips":
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 4)
+			var saved_chips: Array = fields.get(key, [])
+			for opt: String in (field_def["options"] as Array):
+				var cb := Button.new()
+				cb.text = opt
+				cb.toggle_mode = true
+				cb.button_pressed = opt in saved_chips
+				var cap_key := key
+				var cap_opt := opt
+				cb.toggled.connect(func(pressed: bool):
+					if not _gd_docs[idx].has("fields"):
+						_gd_docs[idx]["fields"] = {}
+					var cur: Array = (_gd_docs[idx]["fields"] as Dictionary).get(cap_key, [])
+					if pressed:
+						if cap_opt not in cur:
+							cur.append(cap_opt)
+					else:
+						cur.erase(cap_opt)
+					(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = cur
+					_gd_save_docs()
+				)
+				row.add_child(cb)
+			_gd_detail.add_child(row)
 
 func _gd_new_doc() -> void:
 	var doc := {
