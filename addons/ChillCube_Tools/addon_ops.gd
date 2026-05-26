@@ -969,7 +969,11 @@ static func remove_addon(root: String, addon_name: String, log: Callable) -> boo
 
 static func update_plugin(plugin_dir: String, log: Callable) -> bool:
 	log.call("⬆️  Pulling latest ChillCube Tools...")
-	var code := _git(["pull", "--rebase", "origin", "main"], plugin_dir, log)
+	# Use the normalised HTTPS URL directly so SSH remotes don't break
+	var url := git_remote(plugin_dir)
+	if url.is_empty():
+		url = "https://github.com/ChillCube/ChillCube-Developer-Tools"
+	var code := _git(["pull", "--rebase", url, "main"], plugin_dir, log)
 	if code != OK:
 		log.call("⚠️  Pull failed — resolve conflicts manually.")
 		_git(["rebase", "--abort"], plugin_dir, Callable())
