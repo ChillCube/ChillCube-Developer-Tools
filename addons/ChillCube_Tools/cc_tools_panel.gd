@@ -194,6 +194,8 @@ var _gd_list: VBoxContainer
 var _gd_detail: VBoxContainer
 var _gd_status_lbl: Label
 var _gd_thread: Thread = null
+var _gd_editing: bool = false      # false = view mode, true = edit mode
+var _gd_field_mode: String = "guide"  # "guide" or "markdown"
 const GD_GENRES: Array = ["Action", "Adventure", "Horror", "Platformer", "Puzzle",
 	"Racing", "RPG", "Shooter", "Simulation", "Sports", "Strategy", "Other"]
 const GD_FIELDS: Array = [
@@ -11835,217 +11837,369 @@ func _gd_show_detail(idx: int) -> void:
 		return
 	var doc: Dictionary = _gd_docs[idx]
 
-	# title row
-	var title_row := HBoxContainer.new()
-	var title_edit := LineEdit.new()
-	title_edit.text = doc.get("title", "")
-	title_edit.placeholder_text = "Document title"
-	title_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	title_edit.add_theme_font_size_override("font_size", 15)
-	title_edit.text_changed.connect(func(v: String):
-		_gd_docs[idx]["title"] = v
-		_gd_save_docs()
-		_gd_rebuild_list()
-	)
-	var delete_btn := Button.new()
-	delete_btn.text = "🗑"
-	delete_btn.tooltip_text = "Delete this document"
-	delete_btn.pressed.connect(func():
-		_gd_docs.remove_at(idx)
-		_gd_selected = -1
-		_gd_save_docs()
-		_gd_rebuild_list()
-		for c in _gd_detail.get_children():
-			c.queue_free()
-	)
-	title_row.add_child(title_edit)
-	title_row.add_child(delete_btn)
-	_gd_detail.add_child(title_row)
+	# ── top bar: title + mode buttons ────────────────────────────────────────
+	var top_row := HBoxContainer.new()
+	top_row.add_theme_constant_override("separation", 6)
 
-	# star rating row
-	var rating_row := HBoxContainer.new()
-	rating_row.add_theme_constant_override("separation", 2)
-	var rate_lbl := Label.new()
-	rate_lbl.text = "Your rating:"
-	rate_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-	rate_lbl.add_theme_font_size_override("font_size", 11)
-	rating_row.add_child(rate_lbl)
-	var my_score := _gd_my_rating(doc)
-	for star: int in range(1, 6):
-		var sb := Button.new()
-		sb.text = "★" if star <= my_score else "☆"
-		sb.flat = true
-		sb.custom_minimum_size = Vector2(24, 0)
-		if star <= my_score:
-			sb.add_theme_color_override("font_color", Color(1.0, 0.85, 0.1))
-		var cap_star := star
-		sb.pressed.connect(func():
-			var me: String = _current_user.get("username", "")
-			if me.is_empty():
-				return
-			var ratings: Array = _gd_docs[idx].get("ratings", [])
-			var found_r := false
-			for ri in range(ratings.size()):
-				if (ratings[ri] as Dictionary).get("user", "") == me:
-					ratings[ri] = {"user": me, "score": cap_star}
-					found_r = true
-					break
-			if not found_r:
-				ratings.append({"user": me, "score": cap_star})
-			_gd_docs[idx]["ratings"] = ratings
-			_gd_save_docs()
-			_gd_rebuild_list()
+	var title_lbl := Label.new()
+	title_lbl.text = doc.get("title", "Untitled")
+	title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title_lbl.add_theme_font_size_override("font_size", 15)
+	top_row.add_child(title_lbl)
+
+	var me: String = _current_user.get("username", "")
+	var is_author: bool = me == doc.get("author", "") or doc.get("author", "") == ""
+
+	if is_author:
+		var edit_btn := Button.new()
+		edit_btn.text = "✏ Edit" if not _gd_editing else "👁 View"
+		edit_btn.pressed.connect(func():
+			_gd_editing = not _gd_editing
 			_gd_show_detail(idx)
 		)
-		rating_row.add_child(sb)
-	var avg_score := _gd_avg_rating(doc)
-	if avg_score > 0.0:
-		var avg_lbl := Label.new()
-		var count: int = (_gd_docs[idx].get("ratings", []) as Array).size()
-		avg_lbl.text = "  avg %.1f★ (%d)" % [avg_score, count]
-		avg_lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
-		avg_lbl.add_theme_font_size_override("font_size", 11)
-		rating_row.add_child(avg_lbl)
-	_gd_detail.add_child(rating_row)
+		top_row.add_child(edit_btn)
+
+		if not _gd_editing:
+			var del_btn := Button.new()
+			del_btn.text = "🗑"
+			del_btn.flat = true
+			del_btn.tooltip_text = "Delete"
+			del_btn.pressed.connect(func():
+				_gd_docs.remove_at(idx)
+				_gd_selected = -1
+				_gd_editing = false
+				_gd_save_docs()
+				_gd_rebuild_list()
+				for c in _gd_detail.get_children():
+					c.queue_free()
+			)
+			top_row.add_child(del_btn)
+	else:
+		# force view mode for non-authors
+		_gd_editing = false
+
+	_gd_detail.add_child(top_row)
 	_gd_detail.add_child(HSeparator.new())
 
-	# genre chips
-	var genre_hdr := Label.new()
-	genre_hdr.text = "Genres"
-	genre_hdr.add_theme_color_override("font_color", Color(0.6, 0.8, 1.0))
-	_gd_detail.add_child(genre_hdr)
-	var genre_row := HBoxContainer.new()
-	genre_row.add_theme_constant_override("separation", 4)
-	var doc_genres: Array = doc.get("genres", [])
-	for genre: String in GD_GENRES:
-		var cb := Button.new()
-		cb.text = genre
-		cb.toggle_mode = true
-		cb.button_pressed = genre in doc_genres
-		var cap_g := genre
-		cb.pressed.connect(func():
-			var cur: Array = _gd_docs[idx].get("genres", [])
-			if cb.button_pressed:
-				if cap_g not in cur:
-					cur.append(cap_g)
-			else:
-				cur.erase(cap_g)
-			_gd_docs[idx]["genres"] = cur
+	# ── VIEW mode ─────────────────────────────────────────────────────────────
+	if not _gd_editing:
+		# genres
+		var genres: Array = doc.get("genres", [])
+		if not genres.is_empty():
+			var gr := HBoxContainer.new()
+			gr.add_theme_constant_override("separation", 4)
+			for g: String in genres:
+				var gl := Label.new()
+				gl.text = g
+				gl.add_theme_color_override("font_color", Color(0.5, 0.8, 1.0))
+				gr.add_child(gl)
+			_gd_detail.add_child(gr)
+
+		# render content
+		var edit_mode_pref: String = doc.get("edit_mode", "guide")
+		if edit_mode_pref == "markdown":
+			var md: String = doc.get("markdown", "")
+			var rtl := RichTextLabel.new()
+			rtl.bbcode_enabled = true
+			rtl.fit_content = false
+			rtl.scroll_active = true
+			rtl.size_flags_vertical = Control.SIZE_EXPAND_FILL
+			rtl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			rtl.text = md
+			_gd_detail.add_child(rtl)
+		else:
+			var fields: Dictionary = doc.get("fields", {})
+			var view_vb := VBoxContainer.new()
+			view_vb.add_theme_constant_override("separation", 8)
+			view_vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			for field_def: Dictionary in GD_FIELDS:
+				var key: String = field_def["key"]
+				var ftype: String = field_def.get("type", "text")
+				var val: Variant = fields.get(key, null)
+				var display := ""
+				if ftype == "chips":
+					var chips: Array = val if val is Array else []
+					if chips.is_empty():
+						continue
+					display = ", ".join(chips)
+				elif ftype == "number":
+					if val == null:
+						continue
+					display = str(int(val as float))
+				else:
+					display = str(val) if val != null else ""
+					if display.is_empty() or display == "—":
+						continue
+				var field_box := VBoxContainer.new()
+				field_box.add_theme_constant_override("separation", 2)
+				var fl := Label.new()
+				fl.text = field_def["label"]
+				fl.add_theme_color_override("font_color", Color(0.6, 0.75, 1.0))
+				fl.add_theme_font_size_override("font_size", 11)
+				field_box.add_child(fl)
+				var vl := Label.new()
+				vl.text = display
+				vl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				field_box.add_child(vl)
+				view_vb.add_child(field_box)
+			_gd_detail.add_child(view_vb)
+
+		_gd_detail.add_child(HSeparator.new())
+
+		# star rating
+		var rating_row := HBoxContainer.new()
+		rating_row.add_theme_constant_override("separation", 2)
+		var rate_lbl := Label.new()
+		rate_lbl.text = "Your rating:"
+		rate_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+		rate_lbl.add_theme_font_size_override("font_size", 11)
+		rating_row.add_child(rate_lbl)
+		var my_score := _gd_my_rating(doc)
+		for star: int in range(1, 6):
+			var sb := Button.new()
+			sb.text = "★" if star <= my_score else "☆"
+			sb.flat = true
+			sb.custom_minimum_size = Vector2(24, 0)
+			if star <= my_score:
+				sb.add_theme_color_override("font_color", Color(1.0, 0.85, 0.1))
+			var cap_star := star
+			sb.pressed.connect(func():
+				var me: String = _current_user.get("username", "")
+				if me.is_empty():
+					return
+				var ratings: Array = _gd_docs[idx].get("ratings", [])
+				var found_r := false
+				for ri in range(ratings.size()):
+					if (ratings[ri] as Dictionary).get("user", "") == me:
+						ratings[ri] = {"user": me, "score": cap_star}
+						found_r = true
+						break
+				if not found_r:
+					ratings.append({"user": me, "score": cap_star})
+				_gd_docs[idx]["ratings"] = ratings
+				_gd_save_docs()
+				_gd_rebuild_list()
+				_gd_show_detail(idx)
+			)
+			rating_row.add_child(sb)
+		var avg_score := _gd_avg_rating(doc)
+		if avg_score > 0.0:
+			var avg_lbl := Label.new()
+			var count: int = (_gd_docs[idx].get("ratings", []) as Array).size()
+			avg_lbl.text = "  avg %.1f★ (%d)" % [avg_score, count]
+			avg_lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+			avg_lbl.add_theme_font_size_override("font_size", 11)
+			rating_row.add_child(avg_lbl)
+		_gd_detail.add_child(rating_row)
+		return
+
+	# ── EDIT mode ─────────────────────────────────────────────────────────────
+
+	# guide / markdown toggle
+	var mode_row := HBoxContainer.new()
+	mode_row.add_theme_constant_override("separation", 4)
+	var guide_btn := Button.new()
+	guide_btn.text = "Guide"
+	guide_btn.toggle_mode = true
+	guide_btn.button_pressed = _gd_field_mode == "guide"
+	var md_btn := Button.new()
+	md_btn.text = "Markdown"
+	md_btn.toggle_mode = true
+	md_btn.button_pressed = _gd_field_mode == "markdown"
+	guide_btn.pressed.connect(func():
+		_gd_field_mode = "guide"
+		_gd_docs[idx]["edit_mode"] = "guide"
+		_gd_save_docs()
+		md_btn.button_pressed = false
+		guide_btn.button_pressed = true
+		_gd_show_detail(idx)
+	)
+	md_btn.pressed.connect(func():
+		_gd_field_mode = "markdown"
+		_gd_docs[idx]["edit_mode"] = "markdown"
+		_gd_save_docs()
+		guide_btn.button_pressed = false
+		md_btn.button_pressed = true
+		_gd_show_detail(idx)
+	)
+	mode_row.add_child(guide_btn)
+	mode_row.add_child(md_btn)
+	_gd_detail.add_child(mode_row)
+	_gd_detail.add_child(HSeparator.new())
+
+	# sync field mode with stored pref on first open
+	if doc.has("edit_mode"):
+		_gd_field_mode = doc.get("edit_mode", "guide")
+
+	if _gd_field_mode == "markdown":
+		# ── Markdown editor ───────────────────────────────────────────────────
+		var te := TextEdit.new()
+		te.text = doc.get("markdown", "")
+		te.placeholder_text = "Write your design document in Markdown…"
+		te.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		te.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		te.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+		te.text_changed.connect(func():
+			_gd_docs[idx]["markdown"] = te.text
 			_gd_save_docs()
 		)
-		genre_row.add_child(cb)
-	_gd_detail.add_child(genre_row)
-	_gd_detail.add_child(HSeparator.new())
+		_gd_detail.add_child(te)
 
-	# Q&A fields
-	var fields: Dictionary = doc.get("fields", {})
-	for field_def: Dictionary in GD_FIELDS:
-		var key: String = field_def["key"]
-		var ftype: String = field_def.get("type", "text")
-		var lbl := Label.new()
-		lbl.text = field_def["label"]
-		lbl.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
-		_gd_detail.add_child(lbl)
+	else:
+		# ── Guide editor: title field + genre chips + Q&A ─────────────────────
+		var title_edit := LineEdit.new()
+		title_edit.text = doc.get("title", "")
+		title_edit.placeholder_text = "Document title"
+		title_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		title_edit.add_theme_font_size_override("font_size", 14)
+		title_edit.text_changed.connect(func(v: String):
+			_gd_docs[idx]["title"] = v
+			_gd_save_docs()
+			_gd_rebuild_list()
+			# update the view-mode title label in place
+			if is_instance_valid(title_lbl):
+				title_lbl.text = v
+		)
+		_gd_detail.add_child(title_edit)
 
-		if ftype == "text":
-			var te := TextEdit.new()
-			te.text = fields.get(key, "")
-			te.placeholder_text = field_def.get("hint", "")
-			te.custom_minimum_size = Vector2(0, field_def.get("height", 80))
-			te.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			te.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-			var cap_key := key
-			te.text_changed.connect(func():
-				if not _gd_docs[idx].has("fields"):
-					_gd_docs[idx]["fields"] = {}
-				(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = te.text
+		var genre_hdr := Label.new()
+		genre_hdr.text = "Genres"
+		genre_hdr.add_theme_color_override("font_color", Color(0.6, 0.8, 1.0))
+		_gd_detail.add_child(genre_hdr)
+		var genre_flow := HBoxContainer.new()
+		genre_flow.add_theme_constant_override("separation", 4)
+		var doc_genres: Array = doc.get("genres", [])
+		for genre: String in GD_GENRES:
+			var cb := Button.new()
+			cb.text = genre
+			cb.toggle_mode = true
+			cb.button_pressed = genre in doc_genres
+			var cap_g := genre
+			cb.pressed.connect(func():
+				var cur: Array = _gd_docs[idx].get("genres", [])
+				if cb.button_pressed:
+					if cap_g not in cur:
+						cur.append(cap_g)
+				else:
+					cur.erase(cap_g)
+				_gd_docs[idx]["genres"] = cur
 				_gd_save_docs()
 			)
-			_gd_detail.add_child(te)
+			genre_flow.add_child(cb)
+		_gd_detail.add_child(genre_flow)
+		_gd_detail.add_child(HSeparator.new())
 
-		elif ftype == "line":
-			var le := LineEdit.new()
-			le.text = fields.get(key, "")
-			le.placeholder_text = field_def.get("hint", "")
-			le.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			var cap_key := key
-			le.text_changed.connect(func(v: String):
-				if not _gd_docs[idx].has("fields"):
-					_gd_docs[idx]["fields"] = {}
-				(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = v
-				_gd_save_docs()
-			)
-			_gd_detail.add_child(le)
+		var fields: Dictionary = doc.get("fields", {})
+		for field_def: Dictionary in GD_FIELDS:
+			var key: String = field_def["key"]
+			var ftype: String = field_def.get("type", "text")
+			var lbl := Label.new()
+			lbl.text = field_def["label"]
+			lbl.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
+			_gd_detail.add_child(lbl)
 
-		elif ftype == "number":
-			var sb := SpinBox.new()
-			sb.min_value = 1
-			sb.max_value = 9999
-			sb.step = 1
-			sb.value = (fields.get(key, 1) as float)
-			sb.custom_minimum_size = Vector2(100, 0)
-			var cap_key := key
-			sb.value_changed.connect(func(v: float):
-				if not _gd_docs[idx].has("fields"):
-					_gd_docs[idx]["fields"] = {}
-				(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = int(v)
-				_gd_save_docs()
-			)
-			_gd_detail.add_child(sb)
-
-		elif ftype == "option":
-			var ob := OptionButton.new()
-			var saved: String = fields.get(key, "")
-			var sel_idx := 0
-			for oi in range((field_def["options"] as Array).size()):
-				var opt: String = (field_def["options"] as Array)[oi]
-				ob.add_item(opt)
-				if opt == saved:
-					sel_idx = oi
-			ob.selected = sel_idx
-			var cap_key := key
-			ob.item_selected.connect(func(oi: int):
-				if not _gd_docs[idx].has("fields"):
-					_gd_docs[idx]["fields"] = {}
-				(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = ob.get_item_text(oi)
-				_gd_save_docs()
-			)
-			_gd_detail.add_child(ob)
-
-		elif ftype == "chips":
-			var row := HBoxContainer.new()
-			row.add_theme_constant_override("separation", 4)
-			var saved_chips: Array = fields.get(key, [])
-			for opt: String in (field_def["options"] as Array):
-				var cb := Button.new()
-				cb.text = opt
-				cb.toggle_mode = true
-				cb.button_pressed = opt in saved_chips
+			if ftype == "text":
+				var te := TextEdit.new()
+				te.text = fields.get(key, "")
+				te.placeholder_text = field_def.get("hint", "")
+				te.custom_minimum_size = Vector2(0, field_def.get("height", 80))
+				te.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				te.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
 				var cap_key := key
-				var cap_opt := opt
-				cb.toggled.connect(func(pressed: bool):
+				te.text_changed.connect(func():
 					if not _gd_docs[idx].has("fields"):
 						_gd_docs[idx]["fields"] = {}
-					var cur: Array = (_gd_docs[idx]["fields"] as Dictionary).get(cap_key, [])
-					if pressed:
-						if cap_opt not in cur:
-							cur.append(cap_opt)
-					else:
-						cur.erase(cap_opt)
-					(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = cur
+					(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = te.text
 					_gd_save_docs()
 				)
-				row.add_child(cb)
-			_gd_detail.add_child(row)
+				_gd_detail.add_child(te)
+
+			elif ftype == "line":
+				var le := LineEdit.new()
+				le.text = fields.get(key, "")
+				le.placeholder_text = field_def.get("hint", "")
+				le.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				var cap_key := key
+				le.text_changed.connect(func(v: String):
+					if not _gd_docs[idx].has("fields"):
+						_gd_docs[idx]["fields"] = {}
+					(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = v
+					_gd_save_docs()
+				)
+				_gd_detail.add_child(le)
+
+			elif ftype == "number":
+				var sb := SpinBox.new()
+				sb.min_value = 1
+				sb.max_value = 9999
+				sb.step = 1
+				sb.value = (fields.get(key, 1) as float)
+				sb.custom_minimum_size = Vector2(100, 0)
+				var cap_key := key
+				sb.value_changed.connect(func(v: float):
+					if not _gd_docs[idx].has("fields"):
+						_gd_docs[idx]["fields"] = {}
+					(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = int(v)
+					_gd_save_docs()
+				)
+				_gd_detail.add_child(sb)
+
+			elif ftype == "option":
+				var ob := OptionButton.new()
+				var saved: String = fields.get(key, "")
+				var sel_idx := 0
+				for oi in range((field_def["options"] as Array).size()):
+					var opt: String = (field_def["options"] as Array)[oi]
+					ob.add_item(opt)
+					if opt == saved:
+						sel_idx = oi
+				ob.selected = sel_idx
+				var cap_key := key
+				ob.item_selected.connect(func(oi: int):
+					if not _gd_docs[idx].has("fields"):
+						_gd_docs[idx]["fields"] = {}
+					(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = ob.get_item_text(oi)
+					_gd_save_docs()
+				)
+				_gd_detail.add_child(ob)
+
+			elif ftype == "chips":
+				var chips_row := HBoxContainer.new()
+				chips_row.add_theme_constant_override("separation", 4)
+				var saved_chips: Array = fields.get(key, [])
+				for opt: String in (field_def["options"] as Array):
+					var cb := Button.new()
+					cb.text = opt
+					cb.toggle_mode = true
+					cb.button_pressed = opt in saved_chips
+					var cap_key := key
+					var cap_opt := opt
+					cb.toggled.connect(func(pressed: bool):
+						if not _gd_docs[idx].has("fields"):
+							_gd_docs[idx]["fields"] = {}
+						var cur: Array = (_gd_docs[idx]["fields"] as Dictionary).get(cap_key, [])
+						if pressed:
+							if cap_opt not in cur:
+								cur.append(cap_opt)
+						else:
+							cur.erase(cap_opt)
+						(_gd_docs[idx]["fields"] as Dictionary)[cap_key] = cur
+						_gd_save_docs()
+					)
+					chips_row.add_child(cb)
+				_gd_detail.add_child(chips_row)
 
 func _gd_new_doc() -> void:
 	var doc := {
 		"title": "New Design Doc",
+		"author": _current_user.get("username", ""),
 		"genres": [],
-		"fields": {}
+		"fields": {},
+		"edit_mode": "guide"
 	}
 	_gd_docs.append(doc)
 	_gd_save_docs()
 	_gd_rebuild_list()
 	_gd_selected = _gd_docs.size() - 1
+	_gd_editing = true
 	_gd_show_detail(_gd_selected)
