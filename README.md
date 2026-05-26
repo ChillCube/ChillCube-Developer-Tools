@@ -21,17 +21,17 @@ Run from the **root of your Godot project**, then enable **ChillCube Tools** in 
 
 **Linux / macOS**
 ```bash
-git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git /tmp/cc-tools && mkdir -p addons && cp -r /tmp/cc-tools/addons/ChillCube_Tools addons/ && rm -rf /tmp/cc-tools
+tmp=$(mktemp -d) && git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git "$tmp" && mkdir -p addons && cp -r "$tmp/addons/ChillCube_Tools" addons/ && rm -rf "$tmp"
 ```
 
 **Windows (PowerShell)**
 ```powershell
-git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git "$env:TEMP\cc-tools"; New-Item -ItemType Directory -Force addons | Out-Null; Copy-Item -Recurse "$env:TEMP\cc-tools\addons\ChillCube_Tools" addons\; Remove-Item -Recurse -Force "$env:TEMP\cc-tools"
+$tmp = New-TemporaryFile | % { Remove-Item $_; New-Item -ItemType Directory -Path "$_.d" }; git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git $tmp; New-Item -ItemType Directory -Force addons | Out-Null; Copy-Item -Recurse "$tmp\addons\ChillCube_Tools" addons\; Remove-Item -Recurse -Force $tmp
 ```
 
 **Windows (Git Bash)**
 ```bash
-git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git /tmp/cc-tools && mkdir -p addons && cp -r /tmp/cc-tools/addons/ChillCube_Tools addons/ && rm -rf /tmp/cc-tools
+tmp=$(mktemp -d) && git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git "$tmp" && mkdir -p addons && cp -r "$tmp/addons/ChillCube_Tools" addons/ && rm -rf "$tmp"
 ```
 
 > [!NOTE]
