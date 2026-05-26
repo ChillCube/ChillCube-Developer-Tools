@@ -12054,7 +12054,7 @@ func _gd_load_docs() -> void:
 	if FileAccess.file_exists(path):
 		var f := FileAccess.open(path, FileAccess.READ)
 		if f:
-			var parsed := JSON.parse_string(f.get_as_text())
+			var parsed: Variant = JSON.parse_string(f.get_as_text())
 			f.close()
 			if parsed is Array:
 				_gd_docs = parsed
