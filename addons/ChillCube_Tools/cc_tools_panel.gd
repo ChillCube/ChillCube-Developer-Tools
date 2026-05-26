@@ -12084,10 +12084,13 @@ func _gd_rebuild_list() -> void:
 		btn.text = doc.get("title", "Untitled")
 		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		btn.flat = true
+		btn.flat = _gd_selected != i
+		if _gd_selected == i:
+			btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
 		var cap_i := i
 		btn.pressed.connect(func():
 			_gd_selected = cap_i
+			_gd_rebuild_list()
 			_gd_show_detail(cap_i)
 		)
 		_gd_list.add_child(btn)
@@ -12167,12 +12170,6 @@ func _gd_show_detail(idx: int) -> void:
 		lbl.text = field_def["label"]
 		lbl.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
 		_gd_detail.add_child(lbl)
-
-		var hint_lbl := Label.new()
-		hint_lbl.text = field_def["hint"]
-		hint_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
-		hint_lbl.add_theme_font_size_override("font_size", 11)
-		_gd_detail.add_child(hint_lbl)
 
 		var te := TextEdit.new()
 		te.text = fields.get(key, "")
