@@ -55,6 +55,8 @@ static func _exec_capture(cmd: String, args: Array) -> Dictionary:
 	return {"code": code, "output": output[0] if not output.is_empty() else ""}
 
 static func _fix_git_perms(repo: String) -> void:
+	if OS.get_name() == "Windows":
+		return
 	var obj_dir := repo + "/.git/objects"
 	if DirAccess.dir_exists_absolute(obj_dir):
 		OS.execute("chmod", ["-R", "u+rw", obj_dir], [], true)
@@ -68,29 +70,53 @@ static func _git(args: Array, cwd: String, log: Callable) -> int:
 static func _gh(args: Array, log: Callable) -> int:
 	# gh is often installed outside Godot's PATH.
 	# Try progressively broader shell contexts until one works.
-	var parts: Array[String] = []
-	for a in args:
-		var s := str(a)
-		parts.append("'" + s.replace("'", "'\"'\"'") + "'")
-	var inner := "gh " + " ".join(PackedStringArray(parts))
-	# Source all common rc files so PATH is fully populated
-	var preamble := ". ~/.bashrc 2>/dev/null; . ~/.bash_profile 2>/dev/null; . ~/.profile 2>/dev/null; "
-	var attempts: Array = [
-		["bash", ["-lc", inner]],
-		["bash", ["-c", preamble + inner]],
-		["bash", ["-c", "export PATH=\"$PATH:/usr/local/bin:/usr/bin:/snap/bin:/home/linuxbrew/.linuxbrew/bin\"; " + inner]],
-	]
-	for attempt: Array in attempts:
-		var output := []
-		var code := OS.execute(str(attempt[0]), PackedStringArray(attempt[1] as Array[String]), output, true)
-		var out_str: String = output[0] if not output.is_empty() else ""
-		var not_found := out_str.contains("command not found") or out_str.contains("No such file")
-		if log.is_valid() and not out_str.is_empty() and not not_found:
-			for line: String in out_str.split("\n"):
-				if not line.strip_edges().is_empty():
-					log.call(line)
-		if not not_found:
-			return code
+	if OS.get_name() == "Windows":
+		var win_parts: Array[String] = []
+		for a in args:
+			win_parts.append("\"" + str(a).replace("\"", "\\\"") + "\"")
+		var win_inner := "gh " + " ".join(PackedStringArray(win_parts))
+		var win_attempts: Array = [
+			["powershell", ["-NoProfile", "-Command", win_inner]],
+			["cmd", ["/c", win_inner]],
+			["powershell", ["-NoProfile", "-Command",
+				"$env:PATH += ';' + $env:ProgramFiles + '\\GitHub CLI;' + $env:LOCALAPPDATA + '\\Programs\\GitHub CLI'; " + win_inner]],
+		]
+		for attempt: Array in win_attempts:
+			var output := []
+			var code := OS.execute(str(attempt[0]), PackedStringArray(attempt[1] as Array[String]), output, true)
+			var out_str: String = output[0] if not output.is_empty() else ""
+			var not_found := out_str.contains("not recognized") or out_str.contains("not found") or out_str.contains("No such file")
+			if log.is_valid() and not out_str.is_empty() and not not_found:
+				for line: String in out_str.split("\n"):
+					if not line.strip_edges().is_empty():
+						log.call(line)
+			if not not_found:
+				return code
+	else:
+		var parts: Array[String] = []
+		for a in args:
+			var s := str(a)
+			parts.append("'" + s.replace("'", "'\"'\"'") + "'")
+		var inner := "gh " + " ".join(PackedStringArray(parts))
+		# Source all common rc files so PATH is fully populated
+		var preamble := ". ~/.bashrc 2>/dev/null; . ~/.bash_profile 2>/dev/null; . ~/.profile 2>/dev/null; "
+		var attempts: Array = [
+			["bash", ["-lc", inner]],
+			["bash", ["-c", preamble + inner]],
+			# /opt/homebrew/bin covers macOS ARM (Apple Silicon); /usr/local/bin covers macOS Intel
+			["bash", ["-c", "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/snap/bin:/home/linuxbrew/.linuxbrew/bin\"; " + inner]],
+		]
+		for attempt: Array in attempts:
+			var output := []
+			var code := OS.execute(str(attempt[0]), PackedStringArray(attempt[1] as Array[String]), output, true)
+			var out_str: String = output[0] if not output.is_empty() else ""
+			var not_found := out_str.contains("command not found") or out_str.contains("No such file")
+			if log.is_valid() and not out_str.is_empty() and not not_found:
+				for line: String in out_str.split("\n"):
+					if not line.strip_edges().is_empty():
+						log.call(line)
+			if not not_found:
+				return code
 	if log.is_valid():
 		log.call("❌ gh CLI not found.")
 		log.call("   Install: https://cli.github.com")
@@ -116,7 +142,13 @@ static func _write(path: String, content: String) -> bool:
 	return true
 
 static func _rm_rf(path: String) -> void:
-	_exec("rm", ["-rf", path], Callable())
+	if OS.get_name() == "Windows":
+		if DirAccess.dir_exists_absolute(path):
+			OS.execute("cmd", ["/c", "rmdir /s /q \"%s\"" % path.replace("/", "\\")], [], true)
+		elif FileAccess.file_exists(path):
+			OS.execute("cmd", ["/c", "del /f /q \"%s\"" % path.replace("/", "\\")], [], true)
+	else:
+		_exec("rm", ["-rf", path], Callable())
 
 static func _folder_size_kb(path: String) -> int:
 	var total := 0
@@ -140,7 +172,22 @@ static func _folder_size_kb(path: String) -> int:
 	return total / 1024
 
 static func _mv(from: String, to: String) -> void:
-	_exec("mv", [from, to], Callable())
+	if OS.get_name() == "Windows":
+		OS.execute("cmd", ["/c", "move /y \"%s\" \"%s\"" % [from.replace("/", "\\"), to.replace("/", "\\")]], [], true)
+	else:
+		_exec("mv", [from, to], Callable())
+
+static func _copy_file(src: String, dst: String) -> void:
+	var fin := FileAccess.open(src, FileAccess.READ)
+	if not fin:
+		return
+	var fout := FileAccess.open(dst, FileAccess.WRITE)
+	if not fout:
+		fin.close()
+		return
+	fout.store_buffer(fin.get_buffer(fin.get_length()))
+	fin.close()
+	fout.close()
 
 static func _find(base: String, pattern: String) -> Array[String]:
 	var result: Array[String] = []
@@ -1636,7 +1683,7 @@ static func _update_tree(root: String, log: Callable) -> void:
 
 	# Nodes — label shows name, layer badge, and ★ count if relied on
 	for l in range(max_layer + 1):
-		var ids: Array[String] = by_layer.get(l, [])
+		var ids: Array = by_layer.get(l, []) as Array
 		for id: String in ids:
 			var n: Dictionary = nodes.get(id, {})
 			var lbl: String = n.get("label", id)
@@ -1766,12 +1813,20 @@ static func vault_download_file(cache_dir: String, remote_rel: String, local_des
 	var dest_file := dest_dir + "/" + remote_rel.get_file()
 	log.call("⬇️  Extracting " + remote_rel.get_file() + "...")
 	# Pipe git-show into the destination file so binary files are handled correctly
-	var safe_cache := cache_dir.replace("'", "'\"'\"'")
-	var safe_ref  := remote_rel.lstrip("/").replace("'", "'\"'\"'")
-	var safe_dest := dest_file.replace("'", "'\"'\"'")
-	var cmd := "git -C '%s' show 'origin/main:%s' > '%s'" % [safe_cache, safe_ref, safe_dest]
 	var out := []
-	var code := OS.execute("bash", PackedStringArray(["-c", cmd]), out, true)
+	var code: int
+	if OS.get_name() == "Windows":
+		var w_cache := cache_dir.replace("/", "\\")
+		var w_ref   := remote_rel.lstrip("/")
+		var w_dest  := dest_file.replace("/", "\\")
+		var cmd_w := "git -C \"%s\" show \"origin/main:%s\" > \"%s\"" % [w_cache, w_ref, w_dest]
+		code = OS.execute("cmd", PackedStringArray(["/c", cmd_w]), out, true)
+	else:
+		var safe_cache := cache_dir.replace("'", "'\"'\"'")
+		var safe_ref  := remote_rel.lstrip("/").replace("'", "'\"'\"'")
+		var safe_dest := dest_file.replace("'", "'\"'\"'")
+		var cmd := "git -C '%s' show 'origin/main:%s' > '%s'" % [safe_cache, safe_ref, safe_dest]
+		code = OS.execute("bash", PackedStringArray(["-c", cmd]), out, true)
 	if code != OK:
 		log.call("❌ Failed to extract file.")
 		if not out.is_empty(): log.call(out[0])
@@ -1792,7 +1847,7 @@ static func vault_upload_file(local_file: String, remote_dir: String, log: Calla
 	var dest_folder := tmp + ("/" + rdir if not rdir.is_empty() else "")
 	DirAccess.make_dir_recursive_absolute(dest_folder)
 	var filename := local_file.get_file()
-	_exec("cp", ["-f", local_file, dest_folder + "/" + filename], log)
+	_copy_file(local_file, dest_folder + "/" + filename)
 	log.call("📦 Committing " + filename + "...")
 	_git(["add", "."], tmp, log)
 	if _git(["commit", "-m", "vault: upload " + filename], tmp, log) != OK:
@@ -1842,7 +1897,7 @@ static func vault_upload_batch(local_files: Array[String], remote_dir: String, l
 					count += 1
 			zip.close()
 		else:
-			_exec("cp", ["-f", local, dest_folder + "/" + local.get_file()], log)
+			_copy_file(local, dest_folder + "/" + local.get_file())
 			count += 1
 	if count == 0:
 		log.call("⚠️ No files were added.")

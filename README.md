@@ -1,33 +1,102 @@
-# ChillCube-Developer-Tools
-This repository provides tools that will be needed to work with ChillCube's projects and libraries. 
-People who would like to contribute or use our libraries may also need to install these, even if they are not ChillCube Developers.
-Depending on your needs, it may be recommended to fork this library, as this library is first and foremost made for ChillCube's own development pipeline.
+# ChillCube Developer Tools
+
+Two independent tools in one repo. Install one, both, or neither — they work standalone.
+
+| Tool | What it is | When to use it |
+|------|-----------|----------------|
+| **Godot Plugin** | Editor panel inside Godot | Managing addons, planning, bugs, vault, terminal — all from the editor |
+| **CLI Tools** | Shell scripts in your terminal | Automation, CI, or if you prefer the terminal |
+
+---
+
+# Godot Plugin
+
+A **🧊 CC Tools** panel added to the top of the Godot editor. No terminal required.
+
+**Tabs:** Addons · Graph · Workspace · Bundles · Dependencies · Planning · Bugs · To-Do · Game Ideas · Vault · Terminal · Browse · Docs · Assets · Team · Account · and more.
 
 ## Installation
 
-### Godot Editor Plugin (Recommended for most team members)
-No terminal required! Install the plugin once per project using the CLI tool:
-```bash
-clone-gd-addon https://github.com/ChillCube/ChillCube-Developer-Tools.git
-```
-Then enable **ChillCube Tools** in *Project → Project Settings → Plugins*.  
-A **🧊 CC Tools** panel will appear at the bottom of the editor with tabs for all operations.
+1. Download this repo as a ZIP: **Code → Download ZIP**
+2. Extract it, then copy the `addons/ChillCube_Tools` folder into your Godot project's `addons/` folder
+3. In Godot: **Project → Project Settings → Plugins → enable ChillCube Tools**
 
-### Linux/MacOS (CLI Tools)
-Simply copy paste this into terminal to install the tools:
-```Bash
+## Updating the plugin
+
+Use the **⬆ Update Plugin** button in the Installed Addons tab — it pulls the latest version from GitHub in one click.
+
+---
+
+# CLI Tools
+
+Shell scripts for managing Godot addons from the terminal: `clone-gd-addon`, `remove-gd-addon`, `create-gd-addon`, `push-all-addons`, `super-git-push`.
+
+> [!IMPORTANT]
+> All Godot CLI tools must be run from the **root of your Godot project**.
+
+## Installation
+
+### Windows
+
+**Requires:** [Git for Windows](https://git-scm.com/download/win) (includes Git Bash)
+
+Open **Git Bash** and run:
+```bash
+git clone https://github.com/ChillCube/ChillCube-Developer-Tools.git && cd ChillCube-Developer-Tools && bash ./install.sh && cd .. && rm -rf ChillCube-Developer-Tools && exec $SHELL
+```
+
+> [!NOTE]
+> The tools run inside Git Bash. Open it from the Start Menu or right-click any folder → **Git Bash Here**.
+> Alternatively, install [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) and follow the Ubuntu instructions inside it.
+
+### macOS
+
+**Requires:** [Homebrew](https://brew.sh/)
+
+```bash
+git clone https://github.com/ChillCube/ChillCube-Developer-Tools.git && cd ChillCube-Developer-Tools && chmod +x install.sh && bash ./install.sh && cd .. && rm -rf ChillCube-Developer-Tools && exec $SHELL
+```
+
+> [!NOTE]
+> On Apple Silicon (M1/M2/M3), Homebrew installs to `/opt/homebrew`. Make sure it's in your PATH before running the above.
+
+### Linux — Ubuntu / Debian
+
+```bash
+sudo apt update && sudo apt install -y git python3 python3-venv curl
+git clone https://github.com/ChillCube/ChillCube-Developer-Tools.git && cd ChillCube-Developer-Tools && chmod +x install.sh && bash ./install.sh && cd .. && rm -rf ChillCube-Developer-Tools && exec $SHELL
+```
+
+### Linux — Fedora / RHEL / CentOS
+
+```bash
+sudo dnf install -y git python3 curl
+git clone https://github.com/ChillCube/ChillCube-Developer-Tools.git && cd ChillCube-Developer-Tools && chmod +x install.sh && bash ./install.sh && cd .. && rm -rf ChillCube-Developer-Tools && exec $SHELL
+```
+
+### Linux — Arch / Manjaro
+
+```bash
+sudo pacman -S --needed git python curl
+git clone https://github.com/ChillCube/ChillCube-Developer-Tools.git && cd ChillCube-Developer-Tools && chmod +x install.sh && bash ./install.sh && cd .. && rm -rf ChillCube-Developer-Tools && exec $SHELL
+```
+
+### Linux — openSUSE
+
+```bash
+sudo zypper install -y git python3 curl
 git clone https://github.com/ChillCube/ChillCube-Developer-Tools.git && cd ChillCube-Developer-Tools && chmod +x install.sh && bash ./install.sh && cd .. && rm -rf ChillCube-Developer-Tools && exec $SHELL
 ```
 
 ### NixOS
+
 #### Temporary
-Copy paste the into terminal to temporarily install the tools:
-```Bash
+```bash
 export NIXPKGS_ALLOW_UNFREE=1 && nix --extra-experimental-features 'nix-command flakes' shell github:ChillCube/ChillCube-Developer-Tools --refresh --impure --no-write-lock-file
 ```
+
 #### Declarative
-You can add this repository to NixOS using flakes:
-```Nix
+```nix
 inputs = {
   nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
   chillcube.url = "github:ChillCube/ChillCube-Developer-Tools";
@@ -44,52 +113,57 @@ outputs = { self, nixpkgs, chillcube, ... }: {
 ```
 
 ## Usage
+
 ### Git
 
-```Bash
+```bash
 super-git-push
 ```
-Super git push handles a lot of the git commands you normally have to type manually. It will prompt you to decide on a branch as well as give a name to the commit. 
-> [!IMPORTANT]
-> If you're working on a godot addon, use ```push-all-addons``` instead.
-### Godot
-> [!IMPORTANT]
-> All of the godot CLI tools are run from the root of your godot project!
+Handles branch selection and commit naming interactively.
 
-#### Cloning a godot addon made by ChillCube
-```Bash
+> [!IMPORTANT]
+> If you're working on a Godot addon, use `push-all-addons` instead.
+
+### Godot — clone an addon
+
+```bash
 clone-gd-addon https://github.com/ChillCube/[ADDON NAME].git
 ```
-This clones addons created by ChillCube and ensures the necessary dependencies are cloned as well. The plugin auto-enables addons in project.godot; the CLI tool does the same.
-> [!IMPORTANT]
-> If using the CLI tool, you may need to reload the project for the plugin to become active.
+Clones the addon and installs its dependencies. Also auto-enables it in `project.godot`.
 
-#### Removing a godot addon made by ChillCube
-```Bash
+> [!IMPORTANT]
+> You may need to reload the project for the plugin to become active.
+
+### Godot — remove an addon
+
+```bash
 remove-gd-addon [ADDON NAME]
 ```
-This removes addons and its dependencies from your godot project. 
+Removes the addon and its orphaned dependencies.
 
-#### Create a new godot addon for ChillCube
-```Bash
+### Godot — create a new addon
+
+```bash
 create-gd-addon
 ```
+Creates a new addon, pushes it to ChillCube's GitHub, and generates a LICENSE and README.
+
 > [!NOTE]
 > Spaces in addon names are converted to underscores automatically (e.g. "My Addon" → `My_Addon`).
 
-Use this to create a new addon within your project. It will push it into ChillCube's repositories automatically and initiate everything, including the LICENSE and a default README.
 > [!IMPORTANT]
-> Make sure to enable the addon in the project settings!
+> Enable the addon in Project Settings after creation.
 
-#### Push changes you've made to any of the addons
-```Bash
+### Godot — push addon changes
+
+```bash
 push-all-addons
 ```
-Push-all-addons automates several parts of documentation, dependencies and git management. 
-- finds and adds dependencies to the addons repository
-- downloads any missing dependencies
-- creates documentation based on ## comments in your script (they have to be on the same line as the function, signal or variable it is describing)
-- pushes to github
+Automates documentation, dependency management, and git for all addons in the project:
+- Finds and records dependencies in `DEPENDENCIES.txt`
+- Downloads any missing dependencies
+- Generates docs from `##` inline comments
+- Pushes to GitHub
 
 > [!WARNING]
-> Make sure to check the DEPENDENCIES.txt file. While this script does attempt to automatically find all dependencies, it may sometimes fail to do so. Requiring you to add them manually!
+> Check `DEPENDENCIES.txt` after running — automatic dependency detection can miss some. Add them manually if needed.

@@ -46,6 +46,16 @@ var _plan_list: VBoxContainer
 var _plan_editor: VBoxContainer
 var _plan_selected: int = -1
 var _planned_addons: Array = []
+
+var _bundles: Array = []
+var _bundle_selected: int = -1
+var _bundle_list: VBoxContainer
+var _bundle_name_edit: LineEdit
+var _bundle_addon_list: VBoxContainer
+var _bundle_search_input: LineEdit
+var _bundle_search_results: VBoxContainer
+var _bundle_status_lbl: Label
+var _bundle_export_dialog: EditorFileDialog
 var _plan_name_edit: LineEdit
 var _plan_class_edit: LineEdit
 var _plan_extends_edit: LineEdit
@@ -783,6 +793,7 @@ func _build_addons_supertab(tabs: TabContainer) -> void:
 	_build_browse_tab(inner_tabs)
 	_build_addons_tab(inner_tabs)
 	_build_add_addon_tab(inner_tabs)
+	_build_bundles_tab(inner_tabs)
 	_build_deps_tab(inner_tabs)
 	_build_graph_tab(inner_tabs)
 	_build_workspace_tab(inner_tabs)
@@ -8273,7 +8284,14 @@ func _show_perm_error_dialog(addons_dir: String) -> void:
 	if _perm_fix_dialog and is_instance_valid(_perm_fix_dialog):
 		_perm_fix_dialog.queue_free()
 
-	var cmd := "sudo chown -R $(whoami) \"%s\"" % addons_dir
+	var cmd: String
+	var info_text: String
+	if OS.get_name() == "Windows":
+		cmd = "icacls \"%s\" /grant %USERNAME%:F /t" % addons_dir.replace("/", "\\")
+		info_text = "Git couldn't write to .git/objects — likely a permissions issue.\n\nRun this command in an elevated Command Prompt, then close this dialog to retry:"
+	else:
+		cmd = "sudo chown -R $(whoami) \"%s\"" % addons_dir
+		info_text = "Git couldn't write to .git/objects — likely caused by a previous sudo git run.\n\nRun this command in a terminal, then close this dialog to retry:"
 
 	_perm_fix_dialog = AcceptDialog.new()
 	_perm_fix_dialog.title = "Git Permission Error"
@@ -8284,7 +8302,7 @@ func _show_perm_error_dialog(addons_dir: String) -> void:
 	vbox.add_theme_constant_override("separation", 8)
 
 	var info := Label.new()
-	info.text = "Git couldn't write to .git/objects — likely caused by a previous sudo git run.\n\nRun this command in a terminal, then close this dialog to retry:"
+	info.text = info_text
 	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vbox.add_child(info)
 
@@ -8303,11 +8321,19 @@ func _show_perm_error_dialog(addons_dir: String) -> void:
 	var term_btn := Button.new()
 	term_btn.text = "🖥 Open Terminal"
 	term_btn.pressed.connect(func():
-		for term: String in ["gnome-terminal", "konsole", "xfce4-terminal", "xterm"]:
-			var out := []
-			if OS.execute("which", [term], out, true) == OK and not (out[0] as String).strip_edges().is_empty():
-				OS.create_process(term, [])
-				return
+		match OS.get_name():
+			"Windows":
+				for term: String in ["wt", "cmd"]:
+					if OS.create_process(term, []) > 0:
+						return
+			"macOS":
+				OS.execute("open", ["-a", "Terminal"], [], true)
+			_:
+				for term: String in ["gnome-terminal", "konsole", "xfce4-terminal", "xterm"]:
+					var out := []
+					if OS.execute("which", [term], out, true) == OK and not (out[0] as String).strip_edges().is_empty():
+						OS.create_process(term, [])
+						return
 	)
 	vbox.add_child(term_btn)
 
@@ -10970,3 +10996,361 @@ func _election_show_settings() -> void:
 		inner.add_child(HSeparator.new())
 
 	_election_settings_dialog.popup_centered()
+
+# ─── Bundles tab ──────────────────────────────────────────────────────────────
+
+func _build_bundles_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Bundles", tabs)
+
+	var toolbar := HBoxContainer.new()
+	var new_btn := Button.new()
+	new_btn.text = "➕ New Bundle"
+	new_btn.pressed.connect(_bundle_new)
+	_bundle_status_lbl = Label.new()
+	_bundle_status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_bundle_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+	toolbar.add_child(new_btn)
+	toolbar.add_child(_bundle_status_lbl)
+	root.add_child(toolbar)
+
+	var split := HBoxContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	# Left: bundle list
+	var left_scroll := ScrollContainer.new()
+	left_scroll.custom_minimum_size = Vector2(160, 0)
+	left_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_bundle_list = VBoxContainer.new()
+	_bundle_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_scroll.add_child(_bundle_list)
+	split.add_child(left_scroll)
+
+	split.add_child(VSeparator.new())
+
+	# Right: editor
+	var right := VBoxContainer.new()
+	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
+	var name_row := HBoxContainer.new()
+	_bundle_name_edit = LineEdit.new()
+	_bundle_name_edit.placeholder_text = "Select a bundle to edit…"
+	_bundle_name_edit.editable = false
+	_bundle_name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_bundle_name_edit.text_submitted.connect(func(_t: String): _bundle_save_name())
+	var save_name_btn := Button.new()
+	save_name_btn.text = "💾 Rename"
+	save_name_btn.pressed.connect(_bundle_save_name)
+	name_row.add_child(_bundle_name_edit)
+	name_row.add_child(save_name_btn)
+	right.add_child(name_row)
+
+	right.add_child(HSeparator.new())
+
+	var members_lbl := Label.new()
+	members_lbl.text = "Addons in this bundle:"
+	members_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+	right.add_child(members_lbl)
+
+	var member_scroll := ScrollContainer.new()
+	member_scroll.custom_minimum_size = Vector2(0, 90)
+	member_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_bundle_addon_list = VBoxContainer.new()
+	_bundle_addon_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	member_scroll.add_child(_bundle_addon_list)
+	right.add_child(member_scroll)
+
+	right.add_child(HSeparator.new())
+
+	var add_lbl := Label.new()
+	add_lbl.text = "Add from registry:"
+	add_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+	right.add_child(add_lbl)
+
+	var search_row := HBoxContainer.new()
+	var search_icon := Label.new()
+	search_icon.text = "🔍"
+	_bundle_search_input = LineEdit.new()
+	_bundle_search_input.placeholder_text = "Search addons…"
+	_bundle_search_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_bundle_search_input.text_changed.connect(func(_t: String): _bundle_refresh_search())
+	search_row.add_child(search_icon)
+	search_row.add_child(_bundle_search_input)
+	right.add_child(search_row)
+
+	var results_scroll := ScrollContainer.new()
+	results_scroll.custom_minimum_size = Vector2(0, 100)
+	results_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_bundle_search_results = VBoxContainer.new()
+	_bundle_search_results.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	results_scroll.add_child(_bundle_search_results)
+	right.add_child(results_scroll)
+
+	right.add_child(HSeparator.new())
+
+	var export_btn := Button.new()
+	export_btn.text = "⬇ Export Bundle JSON"
+	export_btn.pressed.connect(_bundle_export)
+	right.add_child(export_btn)
+
+	split.add_child(right)
+	root.add_child(split)
+
+	_bundle_export_dialog = EditorFileDialog.new()
+	_bundle_export_dialog.file_mode = EditorFileDialog.FILE_MODE_SAVE_FILE
+	_bundle_export_dialog.add_filter("*.json", "Bundle JSON")
+	_bundle_export_dialog.file_selected.connect(_bundle_export_to_path)
+	add_child(_bundle_export_dialog)
+
+	_load_bundles()
+	_refresh_bundle_list()
+
+func _bundle_file() -> String:
+	return ProjectSettings.globalize_path("user://cc_bundles.json")
+
+func _load_bundles() -> void:
+	_bundles = []
+	var path := _bundle_file()
+	if not FileAccess.file_exists(path):
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f:
+		var parsed: Variant = JSON.parse_string(f.get_as_text())
+		f.close()
+		if parsed is Array:
+			_bundles = parsed
+
+func _save_bundles() -> void:
+	var fw := FileAccess.open(_bundle_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(_bundles, "\t"))
+		fw.close()
+
+func _bundle_new() -> void:
+	_bundles.append({"name": "New Bundle", "addons": []})
+	_bundle_selected = _bundles.size() - 1
+	_save_bundles()
+	_refresh_bundle_list()
+
+func _refresh_bundle_list() -> void:
+	if not is_instance_valid(_bundle_list):
+		return
+	for child in _bundle_list.get_children():
+		child.queue_free()
+
+	if _bundles.is_empty():
+		var lbl := Label.new()
+		lbl.text = "No bundles yet.\nClick ➕ to create one."
+		lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_bundle_list.add_child(lbl)
+		_bundle_selected = -1
+		_refresh_bundle_editor()
+		return
+
+	_bundle_selected = clampi(_bundle_selected, 0, _bundles.size() - 1)
+
+	for i in range(_bundles.size()):
+		var b: Dictionary = _bundles[i]
+		var row := HBoxContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var name_btn := Button.new()
+		name_btn.text = "📦 " + b.get("name", "Unnamed")
+		name_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		name_btn.flat = true
+		if i == _bundle_selected:
+			name_btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+		var cap_i := i
+		name_btn.pressed.connect(func():
+			_bundle_selected = cap_i
+			_refresh_bundle_list()
+		)
+		row.add_child(name_btn)
+
+		var del_btn := Button.new()
+		del_btn.text = "🗑"
+		del_btn.tooltip_text = "Delete bundle"
+		del_btn.pressed.connect(func():
+			_bundles.remove_at(cap_i)
+			_save_bundles()
+			_bundle_selected = clampi(_bundle_selected, 0, max(0, _bundles.size() - 1))
+			if _bundles.is_empty():
+				_bundle_selected = -1
+			_refresh_bundle_list()
+		)
+		row.add_child(del_btn)
+
+		_bundle_list.add_child(row)
+		_bundle_list.add_child(HSeparator.new())
+
+	_refresh_bundle_editor()
+
+func _refresh_bundle_editor() -> void:
+	if not is_instance_valid(_bundle_name_edit):
+		return
+	if _bundle_selected < 0 or _bundle_selected >= _bundles.size():
+		_bundle_name_edit.text = ""
+		_bundle_name_edit.editable = false
+		_bundle_name_edit.placeholder_text = "Select a bundle to edit…"
+		_refresh_bundle_addons()
+		_bundle_refresh_search()
+		return
+	var b: Dictionary = _bundles[_bundle_selected]
+	_bundle_name_edit.text = b.get("name", "")
+	_bundle_name_edit.editable = true
+	_bundle_name_edit.placeholder_text = "Bundle name…"
+	_refresh_bundle_addons()
+	_bundle_refresh_search()
+
+func _refresh_bundle_addons() -> void:
+	if not is_instance_valid(_bundle_addon_list):
+		return
+	for child in _bundle_addon_list.get_children():
+		child.queue_free()
+
+	if _bundle_selected < 0 or _bundle_selected >= _bundles.size():
+		var hint := Label.new()
+		hint.text = "No bundle selected."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_bundle_addon_list.add_child(hint)
+		return
+
+	var addons: Array = _bundles[_bundle_selected].get("addons", [])
+	if addons.is_empty():
+		var hint := Label.new()
+		hint.text = "No addons yet — search below to add some."
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_bundle_addon_list.add_child(hint)
+		return
+
+	for url: String in addons:
+		var row := HBoxContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var name_lbl := Label.new()
+		name_lbl.text = _bundle_name_for_url(url)
+		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_lbl.clip_text = true
+		var rem_btn := Button.new()
+		rem_btn.text = "✕"
+		rem_btn.tooltip_text = "Remove from bundle"
+		var cap_url := url
+		rem_btn.pressed.connect(func():
+			(_bundles[_bundle_selected]["addons"] as Array).erase(cap_url)
+			_save_bundles()
+			_refresh_bundle_addons()
+			_bundle_refresh_search()
+		)
+		row.add_child(name_lbl)
+		row.add_child(rem_btn)
+		_bundle_addon_list.add_child(row)
+
+func _bundle_name_for_url(url: String) -> String:
+	for entry: Dictionary in _registry_entries:
+		if entry.get("url", "") == url:
+			return entry.get("name", url)
+	return url
+
+func _bundle_refresh_search() -> void:
+	if not is_instance_valid(_bundle_search_results):
+		return
+	for child in _bundle_search_results.get_children():
+		child.queue_free()
+
+	if _bundle_selected < 0 or _bundle_selected >= _bundles.size():
+		return
+
+	var query: String = ""
+	if is_instance_valid(_bundle_search_input):
+		query = _bundle_search_input.text.strip_edges().to_lower()
+
+	if query.is_empty():
+		return
+
+	var addons: Array = _bundles[_bundle_selected].get("addons", [])
+	var shown := 0
+	for entry: Dictionary in _registry_entries:
+		var url: String = entry.get("url", "")
+		if url in addons:
+			continue
+		var name_lower: String = (entry.get("name", "") as String).to_lower()
+		var desc_lower: String = (entry.get("desc", "") as String).to_lower()
+		if not (query in name_lower or query in desc_lower):
+			continue
+
+		var row := HBoxContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var name_lbl := Label.new()
+		name_lbl.text = entry.get("name", "")
+		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_lbl.clip_text = true
+		var add_btn := Button.new()
+		add_btn.text = "➕ Add"
+		var cap_url := url
+		add_btn.pressed.connect(func():
+			if not (_bundles[_bundle_selected]["addons"] as Array).has(cap_url):
+				(_bundles[_bundle_selected]["addons"] as Array).append(cap_url)
+				_save_bundles()
+				_refresh_bundle_addons()
+				_bundle_refresh_search()
+		)
+		row.add_child(name_lbl)
+		row.add_child(add_btn)
+		_bundle_search_results.add_child(row)
+		shown += 1
+		if shown >= 20:
+			var more_lbl := Label.new()
+			more_lbl.text = "…refine search to see more"
+			more_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+			_bundle_search_results.add_child(more_lbl)
+			break
+
+func _bundle_save_name() -> void:
+	if _bundle_selected < 0 or _bundle_selected >= _bundles.size():
+		return
+	if not is_instance_valid(_bundle_name_edit):
+		return
+	var new_name := _bundle_name_edit.text.strip_edges()
+	if new_name.is_empty():
+		return
+	_bundles[_bundle_selected]["name"] = new_name
+	_save_bundles()
+	_refresh_bundle_list()
+	if is_instance_valid(_bundle_status_lbl):
+		_bundle_status_lbl.text = "Saved."
+
+func _bundle_export() -> void:
+	if _bundle_selected < 0 or _bundle_selected >= _bundles.size():
+		if is_instance_valid(_bundle_status_lbl):
+			_bundle_status_lbl.text = "No bundle selected."
+		return
+	var b: Dictionary = _bundles[_bundle_selected]
+	var safe_name: String = (b.get("name", "bundle") as String).replace(" ", "_").to_lower()
+	_bundle_export_dialog.current_file = safe_name + ".json"
+	_bundle_export_dialog.popup_centered_ratio(0.7)
+
+func _bundle_export_to_path(path: String) -> void:
+	if _bundle_selected < 0 or _bundle_selected >= _bundles.size():
+		return
+	var b: Dictionary = _bundles[_bundle_selected]
+	var export_data := {
+		"name": b.get("name", ""),
+		"addons": []
+	}
+	for url: String in b.get("addons", []):
+		(export_data["addons"] as Array).append({
+			"name": _bundle_name_for_url(url),
+			"url": url
+		})
+	var fw := FileAccess.open(path, FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(export_data, "\t"))
+		fw.close()
+		if is_instance_valid(_bundle_status_lbl):
+			_bundle_status_lbl.text = "Exported: " + path
+	else:
+		if is_instance_valid(_bundle_status_lbl):
+			_bundle_status_lbl.text = "Export failed."
