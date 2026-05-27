@@ -260,6 +260,7 @@ var _schedule_edit_desc: TextEdit
 var _forum_items: Array = []
 var _forum_content: VBoxContainer
 var _forum_thread_idx: int = -1  # -1 = list view
+var _forum_last_seen: String = ""  # ISO timestamp of last time Forum tab was opened
 
 var _contract_items: Dictionary = {}  # addon_name -> {symbols: [...], registered_at: "..."}
 var _deps_items: Dictionary = {}       # depender -> {requires: {provider: [sym_names]}}
@@ -822,6 +823,7 @@ func _ready() -> void:
 	_load_doc_permissions()
 	_load_doc_suggestions()
 	_load_elections()
+	_load_forum_last_seen()
 
 	_login_overlay = _build_login_overlay()
 	_login_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -934,6 +936,82 @@ func _refresh_dashboard() -> void:
 		_dashboard_section("📄 Doc votes needing your input", func():
 			for entry: Dictionary in pending_doc_votes:
 				_dashboard_list.add_child(_dashboard_doc_vote_card(entry["sugg"] as Dictionary, entry["idx"] as int))
+		)
+
+	# ── Forum new activity ───────────────────────────────────────────────────
+	var forum_new_threads := 0
+	var forum_new_replies := 0
+	var forum_latest_ts := ""
+	var forum_latest_author := ""
+	var forum_latest_preview := ""
+	for thread: Dictionary in _forum_items:
+		var created: String = thread.get("created_at", "")
+		if not created.is_empty() and (_forum_last_seen.is_empty() or created > _forum_last_seen):
+			if thread.get("author", "") != me:
+				forum_new_threads += 1
+				if created > forum_latest_ts:
+					forum_latest_ts = created
+					forum_latest_preview = thread.get("title", "")
+					forum_latest_author = thread.get("author", "?")
+		for reply: Dictionary in (thread.get("replies", []) as Array):
+			var rts: String = reply.get("timestamp", "")
+			if not rts.is_empty() and (_forum_last_seen.is_empty() or rts > _forum_last_seen):
+				if reply.get("author", "") != me:
+					forum_new_replies += 1
+					if rts > forum_latest_ts:
+						forum_latest_ts = rts
+						forum_latest_preview = 'reply in "%s"' % thread.get("title", "")
+						forum_latest_author = reply.get("author", "?")
+	if forum_new_threads > 0 or forum_new_replies > 0:
+		_dashboard_section("💬 New forum activity", func():
+			var card := PanelContainer.new()
+			card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var vb := VBoxContainer.new()
+			vb.add_theme_constant_override("separation", 4)
+			card.add_child(vb)
+			var parts: Array[String] = []
+			if forum_new_threads > 0:
+				parts.append("%d new thread%s" % [forum_new_threads, "s" if forum_new_threads != 1 else ""])
+			if forum_new_replies > 0:
+				parts.append("%d new repl%s" % [forum_new_replies, "ies" if forum_new_replies != 1 else "y"])
+			var summary_lbl := Label.new()
+			summary_lbl.text = ", ".join(parts) + " since you last checked"
+			summary_lbl.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
+			vb.add_child(summary_lbl)
+			if not forum_latest_author.is_empty():
+				var detail_lbl := Label.new()
+				detail_lbl.text = "Latest from @%s — %s" % [forum_latest_author, forum_latest_preview]
+				detail_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+				detail_lbl.add_theme_font_size_override("font_size", 11)
+				detail_lbl.clip_text = true
+				vb.add_child(detail_lbl)
+			var goto_btn := Button.new()
+			goto_btn.text = "Go to Forum →"
+			goto_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			goto_btn.flat = true
+			goto_btn.add_theme_color_override("font_color", Color(0.4, 0.75, 1.0))
+			goto_btn.pressed.connect(func():
+				# Switch outer tab to Team, then inner tab to Forum.
+				if is_instance_valid(_team_inner_tabs):
+					var forum_idx := -1
+					for ti in range(_team_inner_tabs.get_tab_count()):
+						if _team_inner_tabs.get_tab_title(ti) == "Forum":
+							forum_idx = ti
+							break
+					if forum_idx >= 0:
+						# Find and select Team in the outer tabs.
+						var outer_tabs := get_child(0) as TabContainer
+						if is_instance_valid(outer_tabs):
+							for oi in range(outer_tabs.get_tab_count()):
+								if outer_tabs.get_tab_title(oi) == "Team":
+									outer_tabs.current_tab = oi
+									break
+						_team_inner_tabs.current_tab = forum_idx
+				_save_forum_last_seen()
+				_refresh_dashboard()
+			)
+			vb.add_child(goto_btn)
+			_dashboard_list.add_child(card)
 		)
 
 	# ── Assigned todos ────────────────────────────────────────────────────────
@@ -3867,6 +3945,9 @@ func _on_team_inner_tab_changed(idx: int) -> void:
 			if _schedule_needs_refresh:
 				_schedule_needs_refresh = false
 				_refresh_schedule_list()
+		"Forum":
+			# Mark forum as seen so the dashboard badge clears.
+			_save_forum_last_seen()
 
 func _on_planning_inner_tab_changed(idx: int) -> void:
 	if not is_instance_valid(_planning_inner_tabs):
@@ -5382,6 +5463,24 @@ func _save_forum() -> void:
 		fw.store_string(JSON.stringify(_forum_items, "\t") + "\n")
 		fw.close()
 	_activity_auto_push()
+
+func _forum_last_seen_file() -> String:
+	return ProjectSettings.globalize_path("user://cc_forum_seen.txt")
+
+func _load_forum_last_seen() -> void:
+	var path := _forum_last_seen_file()
+	if FileAccess.file_exists(path):
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f:
+			_forum_last_seen = f.get_line().strip_edges()
+			f.close()
+
+func _save_forum_last_seen() -> void:
+	_forum_last_seen = Time.get_datetime_string_from_system()
+	var fw := FileAccess.open(_forum_last_seen_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(_forum_last_seen)
+		fw.close()
 
 func _forum_clear() -> void:
 	for c in _forum_content.get_children():
