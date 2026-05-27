@@ -11829,6 +11829,7 @@ func _gd_rebuild_list() -> void:
 			btn.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
 		var cap_i := i
 		btn.pressed.connect(func():
+			_gd_editing = false
 			_gd_selected = cap_i
 			_gd_rebuild_list()
 			_gd_show_detail(cap_i)
@@ -11868,6 +11869,10 @@ func _gd_show_detail(idx: int) -> void:
 	var me: String = _current_user.get("username", "")
 	var is_author: bool = me == doc.get("author", "") or doc.get("author", "") == ""
 
+	# Non-authors can never be in edit mode
+	if not is_author:
+		_gd_editing = false
+
 	if is_author:
 		var edit_btn := Button.new()
 		edit_btn.text = "✏ Edit" if not _gd_editing else "👁 View"
@@ -11892,9 +11897,6 @@ func _gd_show_detail(idx: int) -> void:
 					c.queue_free()
 			)
 			top_row.add_child(del_btn)
-	else:
-		# force view mode for non-authors
-		_gd_editing = false
 
 	_gd_detail.add_child(top_row)
 	_gd_detail.add_child(HSeparator.new())
