@@ -67,6 +67,32 @@ static func _git(args: Array, cwd: String, log: Callable) -> int:
 	var full := ["-C", cwd] + args if not cwd.is_empty() else args
 	return _exec("git", full, log)
 
+# Call the GitHub REST API using curl + our resolved token.
+# Returns the HTTP status code (201/204 = success, 0 = curl not found, -1 = no token).
+static func _github_api(method: String, endpoint: String, body: String, log: Callable) -> int:
+	if not log.is_valid(): log = func(_m): pass
+	var tok := _resolve_token()
+	if tok.is_empty():
+		log.call("⚠️  No GitHub token available — cannot call API.")
+		return -1
+	var url := "https://api.github.com/" + endpoint
+	var curl_args: PackedStringArray = PackedStringArray([
+		"-s", "-o", "/dev/null", "-w", "%{http_code}",
+		"-X", method,
+		"-H", "Authorization: token " + tok,
+		"-H", "Accept: application/vnd.github.v3+json"
+	])
+	if not body.is_empty():
+		curl_args.append("-d")
+		curl_args.append(body)
+	curl_args.append(url)
+	var out: Array = []
+	var exit := OS.execute("curl", curl_args, out, true)
+	if exit != 0 or out.is_empty():
+		log.call("⚠️  curl not found or failed (exit %d)." % exit)
+		return 0
+	return int((out[0] as String).strip_edges())
+
 static func _gh(args: Array, log: Callable) -> int:
 	# gh is often installed outside Godot's PATH.
 	# Try progressively broader shell contexts until one works.
@@ -2354,10 +2380,17 @@ static func auth_approve(approver: String, target: String, log: Callable) -> boo
 	var ok := _git(["push", "origin", "main"], tmp, Callable()) == OK
 	_rm_rf(tmp)
 	if ok and not gh_user.is_empty():
-		log.call("🔑 Granting GitHub access to " + gh_user + "...")
+		log.call("🔑 Granting GitHub access to @" + gh_user + "...")
 		for repo in ["ChillCube/vault", "ChillCube/cc-auth"]:
-			_gh(["api", "-X", "PUT", "repos/" + repo + "/collaborators/" + gh_user,
-				"--field", "permission=push"], log)
+			var code := _github_api("PUT",
+				"repos/" + repo + "/collaborators/" + gh_user,
+				"{\"permission\":\"push\"}", log)
+			if code == 201 or code == 204:
+				log.call("✅ Added @" + gh_user + " to " + repo)
+			elif code == -1 or code == 0:
+				log.call("⚠️  Could not add @" + gh_user + " to " + repo + " — add them manually on github.com")
+			else:
+				log.call("⚠️  GitHub returned %d for %s — may need to add @%s manually" % [code, repo, gh_user])
 	log.call("✅ Approved: " + target if ok else "❌ Push failed.")
 	return ok
 
@@ -2406,9 +2439,9 @@ static func auth_remove(approver: String, target: String, log: Callable) -> bool
 	var ok := _git(["push", "origin", "main"], tmp, Callable()) == OK
 	_rm_rf(tmp)
 	if ok and not gh_user.is_empty():
-		log.call("🔑 Revoking GitHub access from " + gh_user + "...")
+		log.call("🔑 Revoking GitHub access from @" + gh_user + "...")
 		for repo in ["ChillCube/vault", "ChillCube/cc-auth"]:
-			_gh(["api", "-X", "DELETE", "repos/" + repo + "/collaborators/" + gh_user], log)
+			_github_api("DELETE", "repos/" + repo + "/collaborators/" + gh_user, "", log)
 	log.call("✅ Removed: " + target if ok else "❌ Push failed.")
 	return ok
 

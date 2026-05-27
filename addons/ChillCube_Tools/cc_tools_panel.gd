@@ -286,6 +286,7 @@ var _reg_status_lbl: Label
 var _account_status_lbl: Label
 var _pending_list: VBoxContainer
 var _admin_tab_root: Control = null
+var _admin_status_lbl: Label = null
 var _login_thread: Thread = null
 
 var _thread: Thread = null
@@ -9930,6 +9931,11 @@ func _build_admin_tab(tabs: TabContainer) -> void:
 	toolbar.add_child(refresh_btn)
 	root.add_child(toolbar)
 
+	_admin_status_lbl = Label.new()
+	_admin_status_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_admin_status_lbl.add_theme_font_size_override("font_size", 11)
+	root.add_child(_admin_status_lbl)
+
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -10386,6 +10392,15 @@ func _refresh_account_tab() -> void:
 	if is_leader:
 		_refresh_pending_list()
 
+func _set_admin_status(msg: String) -> void:
+	if not is_instance_valid(_admin_status_lbl):
+		return
+	_admin_status_lbl.text = msg
+	if not msg.is_empty():
+		get_tree().create_timer(8.0).timeout.connect(func():
+			if is_instance_valid(_admin_status_lbl):
+				_admin_status_lbl.text = "")
+
 func _refresh_pending_list() -> void:
 	if not is_instance_valid(_pending_list):
 		return
@@ -10481,11 +10496,14 @@ func _on_pending_loaded(all_users: Array, approver: String, fetch_errors: Array)
 					return
 				_login_thread = Thread.new()
 				_login_thread.start(func():
-					Ops.auth_approve(cap_approver, cap_name, Callable())
+					var msgs: Array = []
+					Ops.auth_approve(cap_approver, cap_name,
+						func(m: String): msgs.append(m))
 					call_deferred("_log_activity", "account_approved",
 						"%s approved account for %s" % [cap_approver, cap_name])
 					call_deferred("_refresh_pending_list")
 					call_deferred("_on_approve_done")
+					call_deferred("_set_admin_status", "\n".join(msgs))
 				)
 			)
 			row.add_child(approve_btn)
