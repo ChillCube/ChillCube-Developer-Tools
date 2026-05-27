@@ -5926,7 +5926,35 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 	if "votes.json" in data:
 		var parsed: Variant = JSON.parse_string(data["votes.json"])
 		if parsed is Array:
-			_vote_items = parsed
+			# Merge-by-ID: union-merge votes dicts so locally cast votes survive sync
+			var vault_votes: Array = parsed
+			var local_by_id: Dictionary = {}
+			for v: Dictionary in _vote_items:
+				var vid: String = str(v.get("id", ""))
+				if not vid.is_empty():
+					local_by_id[vid] = v
+			var merged_votes: Array = []
+			var seen_vids: Dictionary = {}
+			for vv: Dictionary in vault_votes:
+				var vid2: String = str(vv.get("id", ""))
+				seen_vids[vid2] = true
+				if vid2 in local_by_id:
+					var lv2: Dictionary = local_by_id[vid2]
+					# Union-merge votes dicts (username -> option)
+					var out_v: Dictionary = vv.duplicate()
+					var merged_d: Dictionary = (vv.get("votes", {}) as Dictionary).duplicate()
+					for user2: String in (lv2.get("votes", {}) as Dictionary):
+						if user2 not in merged_d:
+							merged_d[user2] = (lv2.get("votes", {}) as Dictionary)[user2]
+					out_v["votes"] = merged_d
+					merged_votes.append(out_v)
+				else:
+					merged_votes.append(vv)
+			for lv3: Dictionary in _vote_items:
+				var lid2: String = str(lv3.get("id", ""))
+				if not lid2.is_empty() and lid2 not in seen_vids:
+					merged_votes.append(lv3)
+			_vote_items = merged_votes
 			_save_votes()
 			_refresh_vote_list()
 
@@ -5953,7 +5981,41 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 	if "elections.json" in data:
 		var parsed: Variant = JSON.parse_string(data["elections.json"])
 		if parsed is Dictionary:
-			_election_data = parsed
+			var vault_elec: Dictionary = parsed
+			# Merge pending_votes by ID so locally cast election votes survive sync
+			var local_pvotes: Array = (_election_data.get("pending_votes", []) as Array)
+			var vault_pvotes: Array = (vault_elec.get("pending_votes", []) as Array)
+			var lpv_by_id: Dictionary = {}
+			for pv: Dictionary in local_pvotes:
+				var pvid: String = str(pv.get("id", ""))
+				if not pvid.is_empty():
+					lpv_by_id[pvid] = pv
+			var merged_pvotes: Array = []
+			var seen_pvids: Dictionary = {}
+			for vpv: Dictionary in vault_pvotes:
+				var pvid2: String = str(vpv.get("id", ""))
+				seen_pvids[pvid2] = true
+				if pvid2 in lpv_by_id and not vpv.get("closed", false):
+					var lpv2: Dictionary = lpv_by_id[pvid2]
+					var out_pv: Dictionary = vpv.duplicate()
+					var lvotes: Dictionary = lpv2.get("votes", {"yes": [], "no": []}) as Dictionary
+					var vvotes: Dictionary = vpv.get("votes", {"yes": [], "no": []}) as Dictionary
+					var myes: Array = (vvotes.get("yes", []) as Array).duplicate()
+					var mno: Array = (vvotes.get("no", []) as Array).duplicate()
+					for u: String in (lvotes.get("yes", []) as Array):
+						if u not in myes and u not in mno: myes.append(u)
+					for u: String in (lvotes.get("no", []) as Array):
+						if u not in mno and u not in myes: mno.append(u)
+					out_pv["votes"] = {"yes": myes, "no": mno}
+					merged_pvotes.append(out_pv)
+				else:
+					merged_pvotes.append(vpv)
+			for lpv3: Dictionary in local_pvotes:
+				var lpvid3: String = str(lpv3.get("id", ""))
+				if not lpvid3.is_empty() and lpvid3 not in seen_pvids:
+					merged_pvotes.append(lpv3)
+			vault_elec["pending_votes"] = merged_pvotes
+			_election_data = vault_elec
 			_election_rebuild_role_opt()
 			_refresh_vote_list()
 			_election_refresh_help()
@@ -5971,7 +6033,47 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 	if "doc_suggestions.json" in data:
 		var parsed: Variant = JSON.parse_string(data["doc_suggestions.json"])
 		if parsed is Array:
-			_docs_suggestions = parsed
+			# Merge-by-ID: vault adds new suggestions; for existing ones union-merge
+			# votes so a locally cast vote is never overwritten by stale vault data.
+			var vault_suggs: Array = parsed
+			var local_by_id: Dictionary = {}
+			for s: Dictionary in _docs_suggestions:
+				var sid: String = str(s.get("id", ""))
+				if not sid.is_empty():
+					local_by_id[sid] = s
+			var merged: Array = []
+			var seen_ids: Dictionary = {}
+			for vs: Dictionary in vault_suggs:
+				var vid: String = str(vs.get("id", ""))
+				seen_ids[vid] = true
+				if vid in local_by_id:
+					# Union-merge votes
+					var ls: Dictionary = local_by_id[vid]
+					var lv: Dictionary = ls.get("votes", {}) as Dictionary
+					var vv: Dictionary = vs.get("votes", {}) as Dictionary
+					var ly: Array = lv.get("yes", []) as Array
+					var ln: Array = lv.get("no", []) as Array
+					var vy: Array = vv.get("yes", []) as Array
+					var vn: Array = vv.get("no", []) as Array
+					var my: Array = vy.duplicate()
+					var mn: Array = vn.duplicate()
+					for u: String in ly:
+						if u not in my and u not in mn:
+							my.append(u)
+					for u: String in ln:
+						if u not in mn and u not in my:
+							mn.append(u)
+					var out_s: Dictionary = vs.duplicate()
+					out_s["votes"] = {"yes": my, "no": mn}
+					merged.append(out_s)
+				else:
+					merged.append(vs)
+			# Keep local suggestions not yet known to vault (pending push)
+			for ls: Dictionary in _docs_suggestions:
+				var lid: String = str(ls.get("id", ""))
+				if not lid.is_empty() and lid not in seen_ids:
+					merged.append(ls)
+			_docs_suggestions = merged
 			_save_doc_suggestions()
 			if is_instance_valid(_docs_browser):
 				_docs_navigate(_docs_current_dir)
