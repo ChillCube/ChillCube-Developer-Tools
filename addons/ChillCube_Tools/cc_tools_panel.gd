@@ -5976,6 +5976,38 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 			if is_instance_valid(_docs_browser):
 				_docs_navigate(_docs_current_dir)
 
+	if "asset_meta.json" in data:
+		var parsed: Variant = JSON.parse_string(data["asset_meta.json"])
+		if parsed is Dictionary:
+			_asset_meta = parsed
+			# Write directly — don't call _save_asset_meta() to avoid push loop
+			var fw_am := FileAccess.open(_asset_meta_file(), FileAccess.WRITE)
+			if fw_am:
+				fw_am.store_string(JSON.stringify(_asset_meta, "\t") + "\n")
+				fw_am.close()
+			# Refresh vault browser so author badges update
+			if not _vault_cache.is_empty() and DirAccess.dir_exists_absolute(_vault_cache):
+				_vault_navigate(_vault_current_dir)
+
+	if "contracts.json" in data:
+		var parsed: Variant = JSON.parse_string(data["contracts.json"])
+		if parsed is Dictionary:
+			_contract_items = parsed
+			var fw := FileAccess.open("user://cc_contracts.json", FileAccess.WRITE)
+			if fw:
+				fw.store_string(JSON.stringify(_contract_items, "\t") + "\n")
+				fw.close()
+			_refresh_contracts_list()
+
+	if "deps.json" in data:
+		var parsed: Variant = JSON.parse_string(data["deps.json"])
+		if parsed is Dictionary:
+			_deps_items = parsed
+			var fw2 := FileAccess.open("user://cc_deps.json", FileAccess.WRITE)
+			if fw2:
+				fw2.store_string(JSON.stringify(_deps_items, "\t") + "\n")
+				fw2.close()
+
 	# Always push after pulling so any locally-set data that was never uploaded
 	# (e.g. permissions set while vault was unreachable) gets written to the vault.
 	_activity_auto_push()
