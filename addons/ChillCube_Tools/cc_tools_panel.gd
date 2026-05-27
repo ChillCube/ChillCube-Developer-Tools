@@ -5789,6 +5789,88 @@ func _vault_on_connected(ok: bool) -> void:
 		_vault_navigate("")
 		_docs_files = _docs_filter_files(_vault_files)
 		_docs_navigate(_docs_current_dir)
+		# Pull shared team data from vault so all members see the same state
+		_vault_pull_cc_data()
+
+func _vault_pull_cc_data() -> void:
+	if _vault_cache.is_empty() or not DirAccess.dir_exists_absolute(_vault_cache):
+		return
+	var cache := _vault_cache
+	_vault_thread = Thread.new()
+	_vault_thread.start(func():
+		var data := Ops.cc_data_pull_all(cache)
+		call_deferred("_on_cc_data_pulled", data)
+	)
+
+func _on_cc_data_pulled(data: Dictionary) -> void:
+	if _vault_thread and _vault_thread.is_started():
+		_vault_thread.wait_to_finish()
+	_vault_thread = null
+	if data.is_empty():
+		return
+
+	# Activity: merge vault + local (union by content, sorted newest-first)
+	if "activity.json" in data:
+		var parsed: Variant = JSON.parse_string(data["activity.json"])
+		if parsed is Array:
+			var vault_items: Array = parsed
+			# Build a set of existing item signatures to avoid duplicates
+			var seen: Dictionary = {}
+			for item: Dictionary in _activity_items:
+				var sig := item.get("user","") + item.get("timestamp","") + item.get("text","")
+				seen[sig] = true
+			for item: Dictionary in vault_items:
+				var sig := item.get("user","") + item.get("timestamp","") + item.get("text","")
+				if sig not in seen:
+					_activity_items.append(item)
+					seen[sig] = true
+			# Sort newest-first by timestamp string (ISO format sorts lexically)
+			_activity_items.sort_custom(func(a, b):
+				return a.get("timestamp","") > b.get("timestamp",""))
+			_save_activity()
+			_refresh_activity_list()
+
+	# For all other data, vault wins (replace local state)
+	if "todo.json" in data:
+		var parsed: Variant = JSON.parse_string(data["todo.json"])
+		if parsed is Array:
+			_todo_items = parsed
+			_save_todo()
+			_refresh_todo()
+
+	if "votes.json" in data:
+		var parsed: Variant = JSON.parse_string(data["votes.json"])
+		if parsed is Array:
+			_vote_items = parsed
+			_save_votes()
+			_refresh_vote_list()
+
+	if "schedule.json" in data:
+		var parsed: Variant = JSON.parse_string(data["schedule.json"])
+		if parsed is Array:
+			_schedule_items = parsed
+			_save_schedule()
+			_refresh_schedule_list()
+
+	if "forum.json" in data:
+		var parsed: Variant = JSON.parse_string(data["forum.json"])
+		if parsed is Array:
+			_forum_items = parsed
+			_save_forum()
+			if _forum_thread_idx == -1:
+				_forum_show_list()
+
+	if "planned.json" in data:
+		var parsed: Variant = JSON.parse_string(data["planned.json"])
+		if parsed is Array:
+			_planned_addons = parsed
+
+	if "elections.json" in data:
+		var parsed: Variant = JSON.parse_string(data["elections.json"])
+		if parsed is Dictionary:
+			_election_data = parsed
+			_election_rebuild_role_opt()
+			_refresh_vote_list()
 
 func _vault_navigate(rel: String) -> void:
 	if rel != _vault_current_dir:

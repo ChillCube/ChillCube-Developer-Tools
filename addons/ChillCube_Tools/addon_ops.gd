@@ -1781,6 +1781,20 @@ static func cc_data_read(cache_dir: String, fname: String) -> String:
 		"origin/main:" + CC_DATA_DIR + "/" + fname]), out, true)
 	return out[0] if not out.is_empty() else ""
 
+# Pull all shared data files from the vault cache (after vault_refresh has run).
+# Returns a dict of { "activity.json": "<json>", ... } for every file that exists.
+static func cc_data_pull_all(cache_dir: String) -> Dictionary:
+	var result: Dictionary = {}
+	var files := ["activity.json", "todo.json", "planned.json", "feedback.json",
+		"votes.json", "asset_meta.json", "schedule.json", "forum.json",
+		"contracts.json", "deps.json", "doc_permissions.json",
+		"doc_suggestions.json", "elections.json"]
+	for fname: String in files:
+		var content := cc_data_read(cache_dir, fname)
+		if not content.is_empty():
+			result[fname] = content
+	return result
+
 # ─── FILE VAULT ──────────────────────────────────────────────────────────────
 # Uses a metadata-only clone (no file blobs) for browsing, then extracts
 # individual files on demand. Upload uses a temp shallow clone.
