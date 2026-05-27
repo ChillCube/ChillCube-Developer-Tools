@@ -17,8 +17,21 @@ A **🧊 CC Tools** panel added to the top of the Godot editor. No terminal requ
 
 ## Prerequisites
 
-- [Git](https://git-scm.com/downloads) — required for the install command and for addon management inside the plugin
-- A **GitHub account** — required to register and use team/shared features
+- [Git](https://git-scm.com/downloads) — required for the install command and addon management
+- A [GitHub account](https://github.com/join) — required for team/shared features
+- An **SSH key** linked to your GitHub account — the plugin communicates with private repos over SSH
+
+**Setting up an SSH key (one-time):**
+```bash
+ssh-keygen -t ed25519 -C "your@email.com"   # press Enter to accept defaults
+cat ~/.ssh/id_ed25519.pub                    # copy this output
+```
+Then paste it into **GitHub → Settings → SSH and GPG keys → New SSH key**.
+
+Verify it works:
+```bash
+ssh -T git@github.com   # should say "Hi <username>! You've successfully authenticated"
+```
 
 ## Installation
 
@@ -58,19 +71,26 @@ When you open the plugin for the first time a login screen will appear. There ar
 This creates the private `ChillCube/cc-auth` GitHub repo that stores all team accounts.
 
 **Requirements:**
-- A [GitHub account](https://github.com/join) that is a member (or owner) of the **ChillCube** GitHub organisation
-- [GitHub CLI (`gh`)](https://cli.github.com/) installed and logged in (`gh auth login`)
+- A GitHub account that is a member (or owner) of the **ChillCube** GitHub organisation
+- SSH key set up (see Prerequisites above)
+- [GitHub CLI (`gh`)](https://cli.github.com/) installed and logged in — needed here to create the private repo and manage collaborators
+  ```bash
+  # Install gh, then:
+  gh auth login
+  ```
 
 **Steps:**
 1. Click **⚙ First-time setup (create auth repo)** on the Login tab
-2. Wait for it to finish — it creates the `ChillCube/cc-auth` and sets up the first account
+2. Wait for it to finish — it creates `ChillCube/cc-auth` and sets up the first account
 3. Log in with the default credentials: **`IceCubeMaker`** / **`12345`**
 4. Go to **Account → Change Password** and set a real password immediately
 
 ### Path B — Joining an existing team
 
+`gh` CLI is **not required** for regular members. You only need Git and an SSH key.
+
 **Requirements:**
-- A [GitHub account](https://github.com/join)
+- A GitHub account with an SSH key set up (see Prerequisites above)
 - Ask your **team leader** to add your GitHub username as a collaborator on `ChillCube/cc-auth` and `ChillCube/vault` — they do this from the **Team** tab in the plugin
 
 **Steps:**
@@ -99,9 +119,9 @@ Shell scripts for managing Godot addons from the terminal: `clone-gd-addon`, `re
 ## Prerequisites
 
 - [Git](https://git-scm.com/downloads)
-- [GitHub CLI (`gh`)](https://cli.github.com/) — required for `create-gd-addon` and `push-all-addons`
-  - After installing, log in once: `gh auth login`
-- A [GitHub account](https://github.com/join) that belongs to the **ChillCube** organisation
+- A [GitHub account](https://github.com/join) with an SSH key set up (see plugin Prerequisites above)
+- [GitHub CLI (`gh`)](https://cli.github.com/) — only required for `create-gd-addon` (creates the GitHub repo). `push-all-addons` and the rest use plain git.
+  - After installing: `gh auth login`
 
 ## Installation
 
