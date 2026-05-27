@@ -22,16 +22,55 @@ A **🧊 CC Tools** panel added to the top of the Godot editor. No terminal requ
 - An **SSH key** linked to your GitHub account — the plugin communicates with private repos over SSH
 
 **Setting up an SSH key (one-time):**
-```bash
-ssh-keygen -t ed25519 -C "your@email.com"   # press Enter to accept defaults
-cat ~/.ssh/id_ed25519.pub                    # copy this output
-```
-Then paste it into **GitHub → Settings → SSH and GPG keys → New SSH key**.
 
-Verify it works:
+**1. Generate a key**
+
 ```bash
-ssh -T git@github.com   # should say "Hi <username>! You've successfully authenticated"
+ssh-keygen -t ed25519 -C "your@email.com"
 ```
+Press **Enter** three times to accept the default file location and skip the passphrase.
+
+> [!NOTE]
+> On Windows, run this inside **Git Bash** (not PowerShell or CMD).
+
+**2. Add the key to the SSH agent**
+
+Linux / macOS:
+```bash
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519
+```
+
+Windows (Git Bash):
+```bash
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519
+```
+
+> [!NOTE]
+> On macOS you can add `-K` (`ssh-add -K ~/.ssh/id_ed25519`) to save the passphrase in your Keychain so you never need to re-add it after a reboot.
+
+**3. Add the public key to GitHub**
+
+Copy the public key:
+
+Linux / macOS:
+```bash
+cat ~/.ssh/id_ed25519.pub
+```
+Windows (Git Bash):
+```bash
+cat ~/.ssh/id_ed25519.pub
+```
+
+Then go to **GitHub → Settings → SSH and GPG keys → New SSH key**, paste the output, and save.
+
+**4. Verify it works**
+
+```bash
+ssh -T git@github.com
+```
+You should see: `Hi <username>! You've successfully authenticated.`
 
 **Configuring git with your identity (one-time):**
 
