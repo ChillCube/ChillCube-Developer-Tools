@@ -13,11 +13,16 @@ Two independent tools in one repo. Install one, both, or neither — they work s
 
 A **🧊 CC Tools** panel added to the top of the Godot editor. No terminal required.
 
-**Tabs:** Addons · Graph · Workspace · Bundles · Dependencies · Planning · Bugs · To-Do · Game Ideas · Vault · Terminal · Browse · Docs · Assets · Team · Account · and more.
+**Tabs:** Addons · Graph · Workspace · Bundles · Dependencies · Planning · Bugs · To-Do · Vault · Terminal · Browse · Docs · Assets · Team · Account · and more.
+
+## Prerequisites
+
+- [Git](https://git-scm.com/downloads) — required for the install command and for addon management inside the plugin
+- A **GitHub account** — required to register and use team/shared features
 
 ## Installation
 
-Run from the **root of your Godot project**, then enable **ChillCube Tools** in **Project → Project Settings → Plugins**.
+Open a terminal **in the root of your Godot project** (the folder containing `project.godot`), then run:
 
 **Linux / macOS / Windows (Git Bash)**
 ```bash
@@ -32,6 +37,52 @@ if (-not (Test-Path "project.godot")) { Write-Error "❌ No project.godot found 
 > [!NOTE]
 > No terminal? Download the repo as a ZIP via **Code → Download ZIP**, extract it, and copy the `addons/ChillCube_Tools` folder into your project's `addons/` folder manually.
 
+## Enabling the plugin
+
+After installing:
+
+1. Open your project in Godot
+2. Go to **Project → Project Settings → Plugins**
+3. Find **ChillCube Tools** and tick the **Enable** checkbox
+4. A **🧊 CC Tools** panel will appear at the top of the editor
+
+> [!NOTE]
+> If the panel doesn't appear after enabling, try closing and reopening the project.
+
+## Account setup
+
+When you open the plugin for the first time a login screen will appear. There are two paths depending on whether your team already has an auth repo set up.
+
+### Path A — First person on the team (leader setup)
+
+This creates the private `ChillCube/cc-auth` GitHub repo that stores all team accounts.
+
+**Requirements:**
+- A [GitHub account](https://github.com/join) that is a member (or owner) of the **ChillCube** GitHub organisation
+- [GitHub CLI (`gh`)](https://cli.github.com/) installed and logged in (`gh auth login`)
+
+**Steps:**
+1. Click **⚙ First-time setup (create auth repo)** on the Login tab
+2. Wait for it to finish — it creates the `ChillCube/cc-auth` and sets up the first account
+3. Log in with the default credentials: **`IceCubeMaker`** / **`12345`**
+4. Go to **Account → Change Password** and set a real password immediately
+
+### Path B — Joining an existing team
+
+**Requirements:**
+- A [GitHub account](https://github.com/join)
+- Ask your **team leader** to add your GitHub username as a collaborator on `ChillCube/cc-auth` and `ChillCube/vault` — they do this from the **Team** tab in the plugin
+
+**Steps:**
+1. Switch to the **Register** tab on the login screen
+2. Fill in a username, your GitHub username, and a password
+3. Click **Register** and wait for the confirmation message
+4. Ask your team leader to approve your account — they'll see it under **Team → Pending Accounts**
+5. Once approved, log in on the **Login** tab
+
+> [!IMPORTANT]
+> Your account starts as **pending** and won't work until the team leader approves it. You'll see `⏳ Account pending approval` when you try to log in before that happens.
+
 ## Updating the plugin
 
 Use the **⬆ Update Plugin** button in the Installed Addons tab — it pulls the latest version from GitHub in one click.
@@ -44,6 +95,13 @@ Shell scripts for managing Godot addons from the terminal: `clone-gd-addon`, `re
 
 > [!IMPORTANT]
 > All Godot CLI tools must be run from the **root of your Godot project**.
+
+## Prerequisites
+
+- [Git](https://git-scm.com/downloads)
+- [GitHub CLI (`gh`)](https://cli.github.com/) — required for `create-gd-addon` and `push-all-addons`
+  - After installing, log in once: `gh auth login`
+- A [GitHub account](https://github.com/join) that belongs to the **ChillCube** organisation
 
 ## Installation
 
