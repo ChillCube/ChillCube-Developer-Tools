@@ -894,6 +894,23 @@ func _refresh_dashboard() -> void:
 				_dashboard_list.add_child(_dashboard_vote_card(entry["vote"], entry["idx"]))
 		)
 
+	# ── Pending doc votes ────────────────────────────────────────────────────
+	var pending_doc_votes: Array = []
+	for si: int in range(_docs_suggestions.size()):
+		var s: Dictionary = _docs_suggestions[si]
+		if not (s.get("vote_required", false) and s.get("status", "") == "pending"):
+			continue
+		var svotes: Dictionary = s.get("votes", {}) as Dictionary
+		var sy: Array = svotes.get("yes", []) as Array
+		var sn: Array = svotes.get("no", []) as Array
+		if me not in sy and me not in sn:
+			pending_doc_votes.append({"sugg": s, "idx": si})
+	if pending_doc_votes.size() > 0:
+		_dashboard_section("📄 Doc votes needing your input", func():
+			for entry: Dictionary in pending_doc_votes:
+				_dashboard_list.add_child(_dashboard_doc_vote_card(entry["sugg"] as Dictionary, entry["idx"] as int))
+		)
+
 	# ── Assigned todos ────────────────────────────────────────────────────────
 	var my_todos: Array = []
 	for ti in range(_todo_items.size()):
@@ -952,6 +969,43 @@ func _dashboard_vote_card(vote: Dictionary, vote_idx: int) -> Control:
 		)
 		opts_row.add_child(btn)
 	vb.add_child(opts_row)
+	return card
+
+func _dashboard_doc_vote_card(sugg: Dictionary, sugg_idx: int) -> Control:
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 4)
+	card.add_child(vb)
+	var doc_path: String = sugg.get("doc_path", "") as String
+	var doc_name: String = doc_path.get_file().get_basename()
+	var author: String = sugg.get("author", "?") as String
+	var sugg_type: String = sugg.get("type", "edit") as String
+	var kind: String
+	match sugg_type:
+		"permission_change": kind = "🔒 Permission change"
+		"archive_request": kind = "📦 Archive request"
+		"move_request": kind = "📁 Move request"
+		_: kind = "✏ Edit proposal"
+	var title_lbl := Label.new()
+	title_lbl.text = "%s — %s" % [kind, doc_name]
+	vb.add_child(title_lbl)
+	var sub_lbl := Label.new()
+	sub_lbl.text = "Proposed by %s" % author
+	sub_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+	sub_lbl.add_theme_font_size_override("font_size", 11)
+	vb.add_child(sub_lbl)
+	var btn_row := HBoxContainer.new()
+	var cap_idx := sugg_idx
+	var yes_btn := Button.new()
+	yes_btn.text = "👍 For"
+	yes_btn.pressed.connect(func(): _docs_vote_cast(cap_idx, true))
+	var no_btn := Button.new()
+	no_btn.text = "👎 Against"
+	no_btn.pressed.connect(func(): _docs_vote_cast(cap_idx, false))
+	btn_row.add_child(yes_btn)
+	btn_row.add_child(no_btn)
+	vb.add_child(btn_row)
 	return card
 
 func _dashboard_todo_card(item: Dictionary, item_idx: int) -> Control:
@@ -3912,6 +3966,11 @@ func _cast_vote(vote_idx: int, option: String) -> void:
 	_save_votes()
 	_log_activity("vote_cast", '%s voted "%s" on "%s"' % [username, option, vote.get("title", "")])
 	_refresh_vote_list()
+	_refresh_dashboard()
+	if is_instance_valid(_vote_status_lbl):
+		_vote_status_lbl.text = "✅ Voted: %s" % option
+		get_tree().create_timer(3.0).timeout.connect(func():
+			if is_instance_valid(_vote_status_lbl): _vote_status_lbl.text = "")
 	if _vote_thread and _vote_thread.is_started():
 		return
 	var cap_idx := vote_idx
@@ -8067,6 +8126,11 @@ func _docs_vote_cast(idx: int, vote_yes: bool) -> void:
 	_save_doc_suggestions()
 	var doc_name: String = (sugg.get("doc_path", "") as String).get_file().get_basename()
 	_log_activity("doc_vote", '"%s" voted %s on suggestion for: "%s"' % [me, "👍" if vote_yes else "👎", doc_name])
+	# Show confirmation in vote tab status bar
+	if is_instance_valid(_vote_status_lbl):
+		_vote_status_lbl.text = "✅ Vote recorded — %s on \"%s\"" % ["👍 For" if vote_yes else "👎 Against", doc_name]
+		get_tree().create_timer(3.0).timeout.connect(func():
+			if is_instance_valid(_vote_status_lbl): _vote_status_lbl.text = "")
 	if _docs_vote_threshold_met(sugg):
 		_docs_review_approve(idx)
 	else:
@@ -8074,6 +8138,7 @@ func _docs_vote_cast(idx: int, vote_yes: bool) -> void:
 		if _docs_sel_path == sugg.get("doc_path", ""):
 			_docs_show_view_buttons(_docs_sel_path)
 		_refresh_vote_list()
+	_refresh_dashboard()
 
 func _docs_open_diff_dialog(idx: int) -> void:
 	var sugg: Dictionary = _docs_suggestions[idx]
@@ -11762,6 +11827,10 @@ func _election_cast_vote(vote_id: String, vote_yes: bool) -> void:
 	_election_data["pending_votes"] = pvotes
 	_save_elections()
 	_refresh_vote_list()
+	if is_instance_valid(_vote_status_lbl):
+		_vote_status_lbl.text = "✅ Vote recorded — %s" % ("👍 For" if vote_yes else "👎 Against")
+		get_tree().create_timer(3.0).timeout.connect(func():
+			if is_instance_valid(_vote_status_lbl): _vote_status_lbl.text = "")
 
 func _election_retract_vote(vote_id: String) -> void:
 	var pvotes: Array = _election_data.get("pending_votes", []) as Array
@@ -11783,6 +11852,10 @@ func _election_retract_vote(vote_id: String) -> void:
 	_election_data["pending_votes"] = pvotes
 	_save_elections()
 	_refresh_vote_list()
+	if is_instance_valid(_vote_status_lbl):
+		_vote_status_lbl.text = "✅ Vote removed"
+		get_tree().create_timer(3.0).timeout.connect(func():
+			if is_instance_valid(_vote_status_lbl): _vote_status_lbl.text = "")
 
 func _election_process_approved(pv: Dictionary) -> void:
 	var extra: Dictionary = pv.get("extra", {}) as Dictionary
