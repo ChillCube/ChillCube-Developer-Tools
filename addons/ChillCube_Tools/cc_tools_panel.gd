@@ -5807,8 +5807,8 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 	if _vault_thread and _vault_thread.is_started():
 		_vault_thread.wait_to_finish()
 	_vault_thread = null
-	if data.is_empty():
-		return
+	# Do NOT return early on empty data — we still want to push local state
+	# so anything set before the vault was working gets uploaded.
 
 	# Activity: merge vault + local (union by content, sorted newest-first)
 	if "activity.json" in data:
@@ -5889,6 +5889,10 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 			_save_doc_suggestions()
 			if is_instance_valid(_docs_browser):
 				_docs_navigate(_docs_current_dir)
+
+	# Always push after pulling so any locally-set data that was never uploaded
+	# (e.g. permissions set while vault was unreachable) gets written to the vault.
+	_activity_auto_push()
 
 func _vault_navigate(rel: String) -> void:
 	if rel != _vault_current_dir:
