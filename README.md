@@ -28,9 +28,10 @@ A **🧊 CC Tools** panel added to the top of the Godot editor. No terminal requ
 3. Set an expiration (90 days is a sensible default)
 4. Under **Select scopes**, tick **`repo`** (this covers all repo read/write access)
 5. Click **Generate token** and copy the result — it starts with `ghp_`
+6. When you open the plugin in Godot, a login screen will appear. Paste the token into the **GitHub Token** field on either the **Login** or **Register** tab. It is saved locally and you won't need to enter it again.
 
 > [!IMPORTANT]
-> Copy the token immediately — GitHub only shows it once. If you lose it, just generate a new one.
+> Copy the token immediately — GitHub only shows it once. If you lose it, just generate a new one and paste it into the login screen again.
 
 **Configuring git with your identity (one-time):**
 
