@@ -5818,10 +5818,10 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 			# Build a set of existing item signatures to avoid duplicates
 			var seen: Dictionary = {}
 			for item: Dictionary in _activity_items:
-				var sig := item.get("user","") + item.get("timestamp","") + item.get("text","")
+				var sig: String = str(item.get("user","")) + str(item.get("timestamp","")) + str(item.get("text",""))
 				seen[sig] = true
 			for item: Dictionary in vault_items:
-				var sig := item.get("user","") + item.get("timestamp","") + item.get("text","")
+				var sig: String = str(item.get("user","")) + str(item.get("timestamp","")) + str(item.get("text",""))
 				if sig not in seen:
 					_activity_items.append(item)
 					seen[sig] = true
