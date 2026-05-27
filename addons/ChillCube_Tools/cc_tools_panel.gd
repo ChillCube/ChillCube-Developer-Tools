@@ -164,12 +164,12 @@ var _docs_move_folder_items: Array[String] = []
 var _docs_new_doc_btn: Button
 var _docs_new_dir_btn: Button
 
-var _docs_permissions: Dictionary = {}  # full_path -> {"mode": "anyone"|"role_any"|"role_vote"|"team_vote", "required_role": "", "vote_threshold": "1/2"}
+var _docs_permissions: Dictionary = {}  # full_path -> {"mode": "anyone"|"role_any"|"role_vote"|"team_vote", "required_roles": [], "vote_threshold": "1/2"}
 var _docs_perm_btn: Button
 var _docs_perm_dialog: ConfirmationDialog
 var _docs_perm_mode: OptionButton
 var _docs_perm_role_section: VBoxContainer
-var _docs_perm_role_opt: OptionButton
+var _docs_perm_role_checks: VBoxContainer   # CheckBox list — one per role (multi-select)
 var _docs_perm_path: String = ""
 var _docs_perm_original: Dictionary = {}  # snapshot of permissions when dialog opened
 
@@ -864,11 +864,18 @@ func _ready() -> void:
 	tabs.tab_changed.connect(func(idx: int):
 		var title := tabs.get_tab_title(idx)
 		if title == "Dashboard":
-			_refresh_dashboard()
+			call_deferred("_refresh_dashboard")
 		elif title == "Team" and is_instance_valid(_team_inner_tabs):
 			_on_team_inner_tab_changed(_team_inner_tabs.current_tab)
 		elif title == "Planning" and is_instance_valid(_planning_inner_tabs):
 			_on_planning_inner_tab_changed(_planning_inner_tabs.current_tab)
+		elif title == "Permissions":
+			if is_instance_valid(_perm_list) and _perm_sel_category.is_empty():
+				# Auto-select first category on first open
+				_perm_sel_category = (PERM_DEFS[0] as Dictionary).get("category", "")
+				call_deferred("_perm_refresh_list")
+			elif is_instance_valid(_perm_list):
+				call_deferred("_perm_refresh_list")
 	)
 
 	_refresh_addons()
@@ -4059,30 +4066,33 @@ func _on_team_inner_tab_changed(idx: int) -> void:
 	if not is_instance_valid(_team_inner_tabs):
 		return
 	var title := _team_inner_tabs.get_tab_title(idx)
+	# Always refresh when the user navigates to a tab — clear dirty flag and
+	# call unconditionally so the visibility check inside the refresh function
+	# gets a chance to run now that the tab is actually shown.
+	# call_deferred so Godot has a frame to update child visibility before
+	# the refresh function checks is_visible_in_tree().
 	match title:
 		"Activity":
-			if _activity_needs_refresh:
-				_activity_needs_refresh = false
-				_refresh_activity_list()
+			_activity_needs_refresh = false
+			call_deferred("_refresh_activity_list")
 		"Votes":
-			if _vote_list_needs_refresh:
-				_vote_list_needs_refresh = false
-				_refresh_vote_list()
+			_vote_list_needs_refresh = false
+			call_deferred("_refresh_vote_list")
+		"Decision Log":
+			call_deferred("_refresh_decision_log")
 		"Schedule":
-			if _schedule_needs_refresh:
-				_schedule_needs_refresh = false
-				_refresh_schedule_list()
+			_schedule_needs_refresh = false
+			call_deferred("_refresh_schedule_list")
 		"Forum":
-			# Mark forum as seen so the dashboard badge clears.
 			_save_forum_last_seen()
 
 func _on_planning_inner_tab_changed(idx: int) -> void:
 	if not is_instance_valid(_planning_inner_tabs):
 		return
 	var title := _planning_inner_tabs.get_tab_title(idx)
-	if title == "To-Do" and _todo_needs_refresh:
+	if title == "To-Do":
 		_todo_needs_refresh = false
-		_refresh_todo()
+		call_deferred("_refresh_todo")
 
 # ─── Votes tab ────────────────────────────────────────────────────────────────
 
@@ -4590,12 +4600,12 @@ func _refresh_vote_list() -> void:
 				diff_lines.append("Edit access:  %s  →  %s" % [
 					mode_labels.get(old_mode, old_mode),
 					mode_labels.get(new_mode, new_mode)])
-			var old_role: String = old_p.get("required_role", "")
-			var new_role: String = new_p.get("required_role", "")
-			if old_role != new_role:
-				diff_lines.append("Required role:  %s  →  %s" % [
-					(old_role if not old_role.is_empty() else "—"),
-					(new_role if not new_role.is_empty() else "—")])
+			var old_roles: Array = (old_p.get("required_roles", [old_p.get("required_role", "")]) as Array).filter(func(s): return not (s as String).is_empty())
+			var new_roles: Array = (new_p.get("required_roles", [new_p.get("required_role", "")]) as Array).filter(func(s): return not (s as String).is_empty())
+			if old_roles != new_roles:
+				diff_lines.append("Allowed roles:  %s  →  %s" % [
+					(", ".join(old_roles) if not old_roles.is_empty() else "—"),
+					(", ".join(new_roles) if not new_roles.is_empty() else "—")])
 			var old_thresh: String = old_p.get("vote_threshold", "")
 			var new_thresh: String = new_p.get("vote_threshold", "")
 			if old_thresh != new_thresh:
@@ -7647,18 +7657,22 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	_docs_perm_mode.add_item("🗳  Role holders (must vote)")       # 2 → role_vote
 	_docs_perm_mode.add_item("🗳  All members (full team vote)")   # 3 → team_vote
 	perm_vbox.add_child(_docs_perm_mode)
-	# Role section — shown for modes 1 and 2
+	# Role section — shown for modes 1 and 2; multi-select checkboxes
 	_docs_perm_role_section = VBoxContainer.new()
 	_docs_perm_role_section.visible = false
 	_docs_perm_role_section.add_theme_constant_override("separation", 2)
 	perm_vbox.add_child(_docs_perm_role_section)
 	var role_lbl := Label.new()
-	role_lbl.text = "Required role:"
+	role_lbl.text = "Allowed roles (tick one or more):"
 	role_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 	_docs_perm_role_section.add_child(role_lbl)
-	_docs_perm_role_opt = OptionButton.new()
-	_docs_perm_role_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_docs_perm_role_section.add_child(_docs_perm_role_opt)
+	var role_scroll := ScrollContainer.new()
+	role_scroll.custom_minimum_size = Vector2(0, 80)
+	role_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_perm_role_section.add_child(role_scroll)
+	_docs_perm_role_checks = VBoxContainer.new()
+	_docs_perm_role_checks.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	role_scroll.add_child(_docs_perm_role_checks)
 	# Vote threshold — shown for modes 2 and 3
 	_docs_perm_vote_section = VBoxContainer.new()
 	_docs_perm_vote_section.visible = false
@@ -8329,8 +8343,18 @@ func _docs_can_edit(full_path: String) -> bool:
 		"role_any", "role_vote":
 			if me.is_empty() or _election_is_leader():
 				return true
-			var req_role: String = perm.get("required_role", "")
-			return req_role.is_empty() or _election_is_holder(req_role, me)
+			# Support both legacy single-role and new multi-role formats
+			var req_roles: Array = []
+			if perm.has("required_roles"):
+				req_roles = perm["required_roles"] as Array
+			elif perm.has("required_role") and not (perm.get("required_role", "") as String).is_empty():
+				req_roles = [perm["required_role"]]
+			if req_roles.is_empty():
+				return true  # no role restriction = anyone can edit
+			for rn: String in req_roles:
+				if _election_is_holder(rn, me):
+					return true
+			return false
 		"team_vote":
 			# Only the leader can edit directly; everyone else must vote.
 			return me.is_empty() or _election_is_leader()
@@ -8350,18 +8374,22 @@ func _docs_open_perm_dialog() -> void:
 		mode = "team_vote"
 	var mode_idx_map := {"anyone": 0, "role_any": 1, "role_vote": 2, "team_vote": 3}
 	_docs_perm_mode.select(mode_idx_map.get(mode, 0))
-	# Populate role dropdown with all defined roles
-	if is_instance_valid(_docs_perm_role_opt):
-		_docs_perm_role_opt.clear()
+	# Populate role checkboxes (multi-select) — migrate legacy single required_role
+	if is_instance_valid(_docs_perm_role_checks):
+		for c in _docs_perm_role_checks.get_children():
+			c.queue_free()
 		var roles := _election_sorted_roles()
+		# Migrate legacy single-role format
+		var cur_roles: Array = []
+		if perm.has("required_roles"):
+			cur_roles = perm["required_roles"] as Array
+		elif perm.has("required_role") and not (perm["required_role"] as String).is_empty():
+			cur_roles = [perm["required_role"]]
 		for r: String in roles:
-			_docs_perm_role_opt.add_item(r)
-		var cur_role: String = perm.get("required_role", "")
-		var role_idx := roles.find(cur_role)
-		if role_idx >= 0:
-			_docs_perm_role_opt.select(role_idx)
-		elif not roles.is_empty():
-			_docs_perm_role_opt.select(0)
+			var chk := CheckBox.new()
+			chk.text = r
+			chk.button_pressed = r in cur_roles
+			_docs_perm_role_checks.add_child(chk)
 	_docs_perm_role_section.visible = mode == "role_any" or mode == "role_vote"
 	_docs_perm_vote_section.visible = mode == "role_vote" or mode == "team_vote"
 	var thresh_map := {"1/3": 0, "1/2": 1, "2/3": 2, "3/4": 3}
@@ -8378,9 +8406,13 @@ func _docs_perm_save() -> void:
 	new_perm["mode"] = modes[sel]
 	var thresh_list := ["1/3", "1/2", "2/3", "3/4"]
 	if new_perm["mode"] in ["role_any", "role_vote"]:
-		# Save selected role name
-		if is_instance_valid(_docs_perm_role_opt) and _docs_perm_role_opt.item_count > 0:
-			new_perm["required_role"] = _docs_perm_role_opt.get_item_text(_docs_perm_role_opt.selected)
+		# Collect all checked roles
+		var sel_roles: Array = []
+		if is_instance_valid(_docs_perm_role_checks):
+			for c in _docs_perm_role_checks.get_children():
+				if (c as CheckBox).button_pressed:
+					sel_roles.append((c as CheckBox).text)
+		new_perm["required_roles"] = sel_roles
 	if new_perm["mode"] in ["role_vote", "team_vote"]:
 		new_perm["vote_threshold"] = thresh_list[clamp(_docs_perm_vote_thresh.selected, 0, 3)]
 
@@ -8390,9 +8422,16 @@ func _docs_perm_save() -> void:
 	var orig_mode: String = orig.get("mode", "anyone")
 	if orig_mode == "specific": orig_mode = "anyone"
 	elif orig_mode == "anyone" and orig.get("require_vote", false): orig_mode = "team_vote"
+	var orig_roles: Array = []
+	if orig.has("required_roles"):
+		orig_roles = orig["required_roles"] as Array
+	elif orig.has("required_role") and not (orig.get("required_role", "") as String).is_empty():
+		orig_roles = [orig["required_role"]]
+	var new_roles: Array = new_perm.get("required_roles", []) as Array
 	var changed: bool = (
 		new_perm.get("mode", "anyone") != orig_mode or
-		new_perm.get("required_role", "") != orig.get("required_role", "") or
+		new_roles.size() != orig_roles.size() or
+		new_roles != orig_roles or
 		new_perm.get("vote_threshold", "") != orig.get("vote_threshold", "")
 	)
 	if not changed:
@@ -9222,10 +9261,18 @@ func _docs_vote_threshold_met(sugg: Dictionary, member_count: int = 0) -> bool:
 	var mode: String = perm.get("mode", "anyone")
 	var eligible: int
 	if mode == "role_vote":
-		var req_role: String = perm.get("required_role", "")
-		if not req_role.is_empty():
-			var role_holders: Array = ((_election_data.get("holders", {}) as Dictionary).get(req_role, []) as Array)
-			eligible = max(total_cast, role_holders.size()) if role_holders.size() > 0 else total_cast
+		# Count unique holders across all required roles
+		var req_roles: Array = []
+		if perm.has("required_roles"):
+			req_roles = perm["required_roles"] as Array
+		elif perm.has("required_role") and not (perm.get("required_role", "") as String).is_empty():
+			req_roles = [perm["required_role"]]
+		if not req_roles.is_empty():
+			var holders_set: Dictionary = {}
+			for rn: String in req_roles:
+				for h: String in ((_election_data.get("holders", {}) as Dictionary).get(rn, []) as Array):
+					holders_set[h] = true
+			eligible = max(total_cast, holders_set.size()) if holders_set.size() > 0 else total_cast
 		else:
 			eligible = max(total_cast, member_count) if member_count > 0 else total_cast
 	else:
@@ -12618,10 +12665,10 @@ func _build_elections_tab(tabs: TabContainer) -> void:
 	help_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_election_help_rtl = RichTextLabel.new()
 	_election_help_rtl.bbcode_enabled = true
-	_election_help_rtl.fit_content = false
+	_election_help_rtl.fit_content = true       # grows to content height → scroll container can scroll it
 	_election_help_rtl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_election_help_rtl.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_election_help_rtl.scroll_active = false
+	_election_help_rtl.size_flags_vertical = Control.SIZE_FILL  # don't expand — let it be taller than container
+	_election_help_rtl.scroll_active = false    # scroll is handled by the outer ScrollContainer
 	help_scroll.add_child(_election_help_rtl)
 	right.add_child(help_scroll)
 
@@ -13713,12 +13760,6 @@ func _perm_change_summary(key: String) -> String:
 
 func _build_permissions_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Permissions", tabs)
-
-	# Hide for non-leaders initially — shown after login if leader or has role permission
-	for i in range(tabs.get_tab_count()):
-		if tabs.get_tab_title(i) == "Permissions":
-			tabs.set_tab_hidden(i, true)
-			break
 
 	var intro := Label.new()
 	intro.text = "Configure which roles have which permissions, and who can change each rule."
