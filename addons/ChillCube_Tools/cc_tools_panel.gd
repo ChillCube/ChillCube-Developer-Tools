@@ -9828,14 +9828,14 @@ func _build_admin_tab(tabs: TabContainer) -> void:
 			tabs.set_tab_hidden(i, true)
 			break
 
-	# ── Pending approvals ─────────────────────────────────────────────────────
+	# ── Team management ───────────────────────────────────────────────────────
 	var pending_heading := Label.new()
-	pending_heading.text = "⏳ Pending Accounts"
+	pending_heading.text = "👥 Team Management"
 	pending_heading.add_theme_font_size_override("font_size", 14)
 	root.add_child(pending_heading)
 
 	var hint := Label.new()
-	hint.text = "New members who have registered and are waiting for approval."
+	hint.text = "Approve pending registrations and manage member roles. Only visible to leaders."
 	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 	hint.add_theme_font_size_override("font_size", 11)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -10316,11 +10316,12 @@ func _refresh_pending_list() -> void:
 	var approver: String = _current_user.get("username", "")
 	_login_thread = Thread.new()
 	_login_thread.start(func():
-		var all_users := Ops.auth_fetch_all(Callable())
-		call_deferred("_on_pending_loaded", all_users, approver)
+		var fetch_errors: Array = []
+		var all_users := Ops.auth_fetch_all(func(msg: String): fetch_errors.append(msg))
+		call_deferred("_on_pending_loaded", all_users, approver, fetch_errors)
 	)
 
-func _on_pending_loaded(all_users: Array, approver: String) -> void:
+func _on_pending_loaded(all_users: Array, approver: String, fetch_errors: Array) -> void:
 	if _login_thread:
 		_login_thread.wait_to_finish()
 	_login_thread = null
@@ -10328,32 +10329,66 @@ func _on_pending_loaded(all_users: Array, approver: String) -> void:
 		return
 	for child in _pending_list.get_children():
 		child.queue_free()
+
+	# Show fetch errors if the auth repo could not be reached
+	if all_users.is_empty() and not fetch_errors.is_empty():
+		var err_lbl := Label.new()
+		err_lbl.text = fetch_errors[0]
+		err_lbl.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+		err_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_pending_list.add_child(err_lbl)
+		var hint2 := Label.new()
+		hint2.text = "Make sure your GitHub token is entered on the login screen and has 'repo' scope."
+		hint2.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+		hint2.add_theme_font_size_override("font_size", 11)
+		hint2.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_pending_list.add_child(hint2)
+		return
+
 	if all_users.is_empty():
 		var lbl := Label.new()
 		lbl.text = "No accounts found."
 		lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 		_pending_list.add_child(lbl)
 		return
+
+	# Split users into pending and approved for clear presentation
+	var pending_users: Array = []
+	var approved_users: Array = []
 	for u: Dictionary in all_users:
-		var uname: String = u.get("username", "")
-		if uname.to_lower() == approver.to_lower():
+		if (u.get("username", "") as String).to_lower() == approver.to_lower():
 			continue
-		var approved: bool = u.get("approved", false)
-		var u_role: String = u.get("role", "member")
-		var row := HBoxContainer.new()
-		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var lbl := Label.new()
-		var role_tag := " [leader]" if u_role == "leader" else ""
-		lbl.text = ("✅ " if approved else "⏳ ") + uname + role_tag
-		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		if not approved:
+		if u.get("approved", false):
+			approved_users.append(u)
+		else:
+			pending_users.append(u)
+
+	# ── Pending section ──────────────────────────────────────────────────────
+	var pending_sec := Label.new()
+	pending_sec.text = "⏳ Awaiting Approval"
+	pending_sec.add_theme_font_size_override("font_size", 12)
+	pending_sec.add_theme_color_override("font_color", Color(0.9, 0.7, 0.3))
+	_pending_list.add_child(pending_sec)
+
+	if pending_users.is_empty():
+		var none_lbl := Label.new()
+		none_lbl.text = "  No pending requests."
+		none_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		none_lbl.add_theme_font_size_override("font_size", 11)
+		_pending_list.add_child(none_lbl)
+	else:
+		for u: Dictionary in pending_users:
+			var uname: String = u.get("username", "")
+			var gh_user: String = u.get("github_username", "")
+			var row := HBoxContainer.new()
+			row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var lbl := Label.new()
+			lbl.text = "⏳ " + uname + ("  (@%s)" % gh_user if not gh_user.is_empty() else "")
+			lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			lbl.add_theme_color_override("font_color", Color(0.9, 0.7, 0.3))
-		elif u_role == "leader":
-			lbl.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
-		row.add_child(lbl)
-		if not approved:
+			row.add_child(lbl)
 			var approve_btn := Button.new()
-			approve_btn.text = "Approve"
+			approve_btn.text = "✔ Approve"
 			var cap_name := uname
 			var cap_approver := approver
 			approve_btn.pressed.connect(func():
@@ -10370,7 +10405,54 @@ func _on_pending_loaded(all_users: Array, approver: String) -> void:
 				)
 			)
 			row.add_child(approve_btn)
-		if approved:
+			var remove_btn := Button.new()
+			remove_btn.text = "✖ Reject"
+			remove_btn.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+			var cap_name2 := uname
+			var cap_approver2 := approver
+			remove_btn.pressed.connect(func():
+				remove_btn.disabled = true
+				if _login_thread and _login_thread.is_started():
+					return
+				_login_thread = Thread.new()
+				_login_thread.start(func():
+					Ops.auth_remove(cap_approver2, cap_name2, Callable())
+					call_deferred("_log_activity", "account_rejected",
+						"%s rejected account for %s" % [cap_approver2, cap_name2])
+					call_deferred("_refresh_pending_list")
+					call_deferred("_on_approve_done")
+				)
+			)
+			row.add_child(remove_btn)
+			_pending_list.add_child(row)
+
+	# ── Approved members section ─────────────────────────────────────────────
+	_pending_list.add_child(HSeparator.new())
+	var approved_sec := Label.new()
+	approved_sec.text = "✅ Members"
+	approved_sec.add_theme_font_size_override("font_size", 12)
+	approved_sec.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+	_pending_list.add_child(approved_sec)
+
+	if approved_users.is_empty():
+		var none_lbl2 := Label.new()
+		none_lbl2.text = "  No other members."
+		none_lbl2.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		none_lbl2.add_theme_font_size_override("font_size", 11)
+		_pending_list.add_child(none_lbl2)
+	else:
+		for u: Dictionary in approved_users:
+			var uname: String = u.get("username", "")
+			var u_role: String = u.get("role", "member")
+			var row := HBoxContainer.new()
+			row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var lbl := Label.new()
+			var role_tag := "  👑 leader" if u_role == "leader" else ""
+			lbl.text = "✅ " + uname + role_tag
+			lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			if u_role == "leader":
+				lbl.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+			row.add_child(lbl)
 			var role_btn := Button.new()
 			role_btn.text = "Demote" if u_role == "leader" else "Promote"
 			var cap_name3 := uname
@@ -10390,26 +10472,26 @@ func _on_pending_loaded(all_users: Array, approver: String) -> void:
 				)
 			)
 			row.add_child(role_btn)
-		var remove_btn := Button.new()
-		remove_btn.text = "Remove"
-		remove_btn.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
-		var cap_name2 := uname
-		var cap_approver2 := approver
-		remove_btn.pressed.connect(func():
-			remove_btn.disabled = true
-			if _login_thread and _login_thread.is_started():
-				return
-			_login_thread = Thread.new()
-			_login_thread.start(func():
-				Ops.auth_remove(cap_approver2, cap_name2, Callable())
-				call_deferred("_log_activity", "account_removed",
-					"%s removed account for %s" % [cap_approver2, cap_name2])
-				call_deferred("_refresh_pending_list")
-				call_deferred("_on_approve_done")
+			var remove_btn2 := Button.new()
+			remove_btn2.text = "Remove"
+			remove_btn2.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+			var cap_name4 := uname
+			var cap_approver4 := approver
+			remove_btn2.pressed.connect(func():
+				remove_btn2.disabled = true
+				if _login_thread and _login_thread.is_started():
+					return
+				_login_thread = Thread.new()
+				_login_thread.start(func():
+					Ops.auth_remove(cap_approver4, cap_name4, Callable())
+					call_deferred("_log_activity", "account_removed",
+						"%s removed account for %s" % [cap_approver4, cap_name4])
+					call_deferred("_refresh_pending_list")
+					call_deferred("_on_approve_done")
+				)
 			)
-		)
-		row.add_child(remove_btn)
-		_pending_list.add_child(row)
+			row.add_child(remove_btn2)
+			_pending_list.add_child(row)
 
 	# Bootstrap: sole member with no leader can claim leadership
 	var only_self := true
@@ -10426,14 +10508,14 @@ func _on_pending_loaded(all_users: Array, approver: String) -> void:
 		row2.add_child(hint)
 		var claim_btn := Button.new()
 		claim_btn.text = "👑 Claim Leadership"
-		var cap_approver4 := approver
+		var cap_bs_approver := approver
 		claim_btn.pressed.connect(func():
 			claim_btn.disabled = true
 			if _login_thread and _login_thread.is_started():
 				return
 			_login_thread = Thread.new()
 			_login_thread.start(func():
-				var ok := Ops.auth_set_role(cap_approver4, cap_approver4, "leader", Callable())
+				var ok := Ops.auth_set_role(cap_bs_approver, cap_bs_approver, "leader", Callable())
 				if ok:
 					call_deferred("_on_leadership_claimed")
 				else:
