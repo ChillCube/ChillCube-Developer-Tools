@@ -1759,7 +1759,7 @@ const CC_DATA_DIR := "_cc_tools"
 static func cc_data_push(data: Dictionary, log: Callable) -> bool:
 	if not log.is_valid(): log = func(_m): pass
 	var tmp := OS.get_temp_dir() + "/.cc_data_" + str(int(Time.get_unix_time_from_system()))
-	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+	if _git(["clone", "--depth=1", "--quiet", _vault_url(), tmp], "", log) != OK:
 		log.call("❌ Could not reach vault.")
 		_rm_rf(tmp)
 		return false
@@ -1785,8 +1785,11 @@ static func cc_data_read(cache_dir: String, fname: String) -> String:
 # Uses a metadata-only clone (no file blobs) for browsing, then extracts
 # individual files on demand. Upload uses a temp shallow clone.
 
-const VAULT_SSH := "git@github.com:ChillCube/vault.git"
 const VAULT_REPO := "ChillCube/vault"
+static var _gh_token: String = ""
+static func set_token(token: String) -> void: _gh_token = token
+static func _vault_url() -> String:
+	return "https://oauth2:" + _gh_token + "@github.com/ChillCube/vault.git"
 const FEEDBACK_DIR := "_cc_feedback"
 
 # ─── FEEDBACK ────────────────────────────────────────────────────────────────
@@ -1798,7 +1801,7 @@ static func submit_feedback_request(
 	if not log.is_valid(): log = func(_m): pass
 	var tmp := OS.get_temp_dir() + "/.cc_feedback_" + str(int(Time.get_unix_time_from_system()))
 	log.call("📥 Preparing vault upload...")
-	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+	if _git(["clone", "--depth=1", "--quiet", _vault_url(), tmp], "", log) != OK:
 		log.call("❌ Could not clone vault.")
 		_rm_rf(tmp)
 		return false
@@ -1837,7 +1840,7 @@ static func fetch_feedback_tasks(username: String, log: Callable) -> Array:
 	if not log.is_valid(): log = func(_m): pass
 	var tmp := OS.get_temp_dir() + "/.cc_feedback_fetch_" + str(int(Time.get_unix_time_from_system()))
 	var tasks: Array = []
-	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+	if _git(["clone", "--depth=1", "--quiet", _vault_url(), tmp], "", log) != OK:
 		_rm_rf(tmp)
 		return tasks
 	var req_dir := tmp + "/" + FEEDBACK_DIR + "/requests"
@@ -1866,7 +1869,7 @@ static func submit_feedback_response(req_id: String, response_text: String, revi
 	if not log.is_valid(): log = func(_m): pass
 	var tmp := OS.get_temp_dir() + "/.cc_feedback_resp_" + str(int(Time.get_unix_time_from_system()))
 	log.call("📥 Connecting to vault...")
-	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+	if _git(["clone", "--depth=1", "--quiet", _vault_url(), tmp], "", log) != OK:
 		log.call("❌ Could not clone vault.")
 		_rm_rf(tmp)
 		return false
@@ -1908,12 +1911,13 @@ static func vault_refresh(cache_dir: String, log: Callable) -> bool:
 	if not log.is_valid(): log = func(_m): pass
 	if DirAccess.dir_exists_absolute(cache_dir + "/.git"):
 		log.call("🔄 Refreshing file list...")
+		_git(["remote", "set-url", "origin", _vault_url()], cache_dir, Callable())
 		_git(["fetch", "--quiet", "origin"], cache_dir, log)
 		return true
 	_rm_rf(cache_dir)
 	log.call("📋 Fetching vault file list...")
 	# --no-checkout --filter=blob:none: downloads only tree objects, no file contents
-	if _git(["clone", "--no-checkout", "--filter=blob:none", "--quiet", VAULT_SSH, cache_dir], "", log) == OK:
+	if _git(["clone", "--no-checkout", "--filter=blob:none", "--quiet", _vault_url(), cache_dir], "", log) == OK:
 		log.call("✅ Vault ready.")
 		return true
 	log.call("❌ Could not reach ChillCube/vault.")
@@ -1971,7 +1975,7 @@ static func vault_upload_file(local_file: String, remote_dir: String, log: Calla
 	if not log.is_valid(): log = func(_m): pass
 	var tmp := OS.get_temp_dir() + "/.cc_vaultup_" + str(int(Time.get_unix_time_from_system()))
 	log.call("📥 Preparing upload (shallow clone)...")
-	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+	if _git(["clone", "--depth=1", "--quiet", _vault_url(), tmp], "", log) != OK:
 		log.call("❌ Could not clone vault.")
 		_rm_rf(tmp)
 		return false
@@ -2002,7 +2006,7 @@ static func vault_upload_batch(local_files: Array[String], remote_dir: String, l
 		return false
 	var tmp := OS.get_temp_dir() + "/.cc_vaultup_" + str(int(Time.get_unix_time_from_system()))
 	log.call("📥 Preparing upload (shallow clone)...")
-	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+	if _git(["clone", "--depth=1", "--quiet", _vault_url(), tmp], "", log) != OK:
 		log.call("❌ Could not clone vault.")
 		_rm_rf(tmp)
 		return false
@@ -2073,7 +2077,7 @@ static func vault_move_file(src_rel: String, dest_rel: String, log: Callable) ->
 	if not log.is_valid(): log = func(_m): pass
 	var tmp := OS.get_temp_dir() + "/.cc_vaultmv_" + str(int(Time.get_unix_time_from_system()))
 	log.call("📥 Preparing move (shallow clone)...")
-	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+	if _git(["clone", "--depth=1", "--quiet", _vault_url(), tmp], "", log) != OK:
 		log.call("❌ Could not clone vault.")
 		_rm_rf(tmp)
 		return false
@@ -2099,7 +2103,7 @@ static func vault_move_file(src_rel: String, dest_rel: String, log: Callable) ->
 static func vault_delete_file(remote_rel: String, log: Callable) -> bool:
 	if not log.is_valid(): log = func(_m): pass
 	var tmp := OS.get_temp_dir() + "/.cc_vaultdel_" + str(int(Time.get_unix_time_from_system()))
-	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+	if _git(["clone", "--depth=1", "--quiet", _vault_url(), tmp], "", log) != OK:
 		log.call("❌ Could not clone assets.")
 		_rm_rf(tmp)
 		return false
@@ -2121,7 +2125,7 @@ static func vault_mkdir(dir_path: String, log: Callable) -> bool:
 	if not log.is_valid(): log = func(_m): pass
 	var tmp := OS.get_temp_dir() + "/.cc_vaultmkdir_" + str(int(Time.get_unix_time_from_system()))
 	log.call("📥 Preparing (shallow clone)...")
-	if _git(["clone", "--depth=1", "--quiet", VAULT_SSH, tmp], "", log) != OK:
+	if _git(["clone", "--depth=1", "--quiet", _vault_url(), tmp], "", log) != OK:
 		log.call("❌ Could not clone vault.")
 		_rm_rf(tmp)
 		return false
@@ -2190,7 +2194,8 @@ static func extract_api(addon_path: String) -> Array:
 
 # ─── AUTH ─────────────────────────────────────────────────────────────────────
 
-const AUTH_SSH := "git@github.com:ChillCube/cc-auth.git"
+static func _auth_url() -> String:
+	return "https://oauth2:" + _gh_token + "@github.com/ChillCube/cc-auth.git"
 
 static func auth_hash(password: String) -> String:
 	var ctx := HashingContext.new()
@@ -2211,8 +2216,8 @@ static func _auth_save(tmp: String, data: Dictionary) -> void:
 static func _auth_clone(log: Callable) -> String:
 	if not log.is_valid(): log = func(_m): pass
 	var tmp := _auth_tmp()
-	if _git(["clone", "--depth=1", "--quiet", AUTH_SSH, tmp], "", Callable()) != OK:
-		log.call("❌ Cannot reach auth server. Check SSH/git access.")
+	if _git(["clone", "--depth=1", "--quiet", _auth_url(), tmp], "", Callable()) != OK:
+		log.call("❌ Cannot reach auth server. Check your GitHub token and internet connection.")
 		return ""
 	return tmp
 
@@ -2459,7 +2464,7 @@ static func auth_bootstrap(log: Callable) -> bool:
 	_write(tmp + "/README.md", "# ChillCube Auth\nPrivate — do not share.\n")
 	_git(["add", "."], tmp, log)
 	_git(["commit", "-m", "auth: initialize with IceCubeMaker"], tmp, log)
-	_git(["remote", "add", "origin", AUTH_SSH], tmp, log)
+	_git(["remote", "add", "origin", _auth_url()], tmp, log)
 	var ok := _git(["push", "-u", "origin", "main"], tmp, log) == OK
 	_rm_rf(tmp)
 	log.call("✅ Auth repo ready! IceCubeMaker / 12345" if ok else "❌ Push failed.")

@@ -9760,8 +9760,14 @@ func _build_login_overlay() -> Control:
 	var pw_lbl := Label.new(); pw_lbl.text = "Password"
 	var pw_field := LineEdit.new()
 	pw_field.secret = true; pw_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var tok_lbl := Label.new(); tok_lbl.text = "GitHub Token"
+	var tok_field := LineEdit.new()
+	tok_field.secret = true; tok_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tok_field.placeholder_text = "ghp_…"
+	tok_field.text = _current_user.get("github_token", "")
 	lg.add_child(un_lbl); lg.add_child(un_field)
 	lg.add_child(pw_lbl); lg.add_child(pw_field)
+	lg.add_child(tok_lbl); lg.add_child(tok_field)
 	login_vbox.add_child(lg)
 
 	var login_btn := Button.new()
@@ -9798,10 +9804,15 @@ func _build_login_overlay() -> Control:
 	var rpw2_lbl := Label.new(); rpw2_lbl.text = "Confirm"
 	var rpw2_field := LineEdit.new()
 	rpw2_field.secret = true; rpw2_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var rtok_lbl := Label.new(); rtok_lbl.text = "GitHub Token"
+	var rtok_field := LineEdit.new()
+	rtok_field.secret = true; rtok_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	rtok_field.placeholder_text = "ghp_…"
 	rg.add_child(run_lbl); rg.add_child(run_field)
 	rg.add_child(rgh_lbl); rg.add_child(rgh_field)
 	rg.add_child(rpw_lbl); rg.add_child(rpw_field)
 	rg.add_child(rpw2_lbl); rg.add_child(rpw2_field)
+	rg.add_child(rtok_lbl); rg.add_child(rtok_field)
 	reg_vbox.add_child(rg)
 
 	var reg_btn := Button.new()
@@ -9818,15 +9829,19 @@ func _build_login_overlay() -> Control:
 			return
 		var u := un_field.text.strip_edges()
 		var p := pw_field.text
-		if u.is_empty() or p.is_empty():
-			_login_status_lbl.text = "Enter username and password."
+		var tok := tok_field.text.strip_edges()
+		if u.is_empty() or p.is_empty() or tok.is_empty():
+			_login_status_lbl.text = "Enter username, password, and GitHub token."
 			return
+		Ops.set_token(tok)
 		login_btn.disabled = true
 		_login_status_lbl.text = "🔄 Connecting..."
 		_login_thread = Thread.new()
 		_login_thread.start(func():
 			var result := Ops.auth_verify(u, p,
 				func(msg): call_deferred("_set_login_status", msg))
+			if not result.is_empty():
+				result["github_token"] = tok
 			call_deferred("_on_login_done", result, login_btn)
 		)
 
@@ -9853,12 +9868,14 @@ func _build_login_overlay() -> Control:
 		var gh := rgh_field.text.strip_edges()
 		var p := rpw_field.text
 		var p2 := rpw2_field.text
-		if u.is_empty() or gh.is_empty() or p.is_empty():
+		var tok := rtok_field.text.strip_edges()
+		if u.is_empty() or gh.is_empty() or p.is_empty() or tok.is_empty():
 			_reg_status_lbl.text = "Fill in all fields."
 			return
 		if p != p2:
 			_reg_status_lbl.text = "Passwords do not match."
 			return
+		Ops.set_token(tok)
 		reg_btn.disabled = true
 		_reg_status_lbl.text = "🔄 Registering..."
 		_login_thread = Thread.new()
@@ -9927,6 +9944,7 @@ func _session_restore() -> void:
 	if not (parsed is Dictionary) or (parsed as Dictionary).is_empty():
 		return
 	_current_user = parsed
+	Ops.set_token(_current_user.get("github_token", ""))
 	if is_instance_valid(_login_overlay):
 		_login_overlay.visible = false
 	_refresh_account_tab()

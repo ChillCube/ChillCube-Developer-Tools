@@ -19,50 +19,18 @@ A **🧊 CC Tools** panel added to the top of the Godot editor. No terminal requ
 
 - [Git](https://git-scm.com/downloads) — required for the install command and addon management
 - A [GitHub account](https://github.com/join) — required for team/shared features
-- An **SSH key** linked to your GitHub account — the plugin communicates with private repos over SSH
+- A **GitHub personal access token (classic)** — the plugin uses this to push and pull from private GitHub repos. You enter it once on the login screen and it is saved locally.
 
-**Setting up an SSH key (one-time):**
+**Creating a GitHub token (one-time):**
 
-> [!NOTE]
-> On Windows, run all of these commands inside **Git Bash** (not PowerShell or CMD).
+1. Go to **[GitHub → Settings → Developer Settings → Personal access tokens → Tokens (classic)](https://github.com/settings/tokens/new)**
+2. Give it a name (e.g. `ChillCube Tools`)
+3. Set an expiration (90 days is a sensible default)
+4. Under **Select scopes**, tick **`repo`** (this covers all repo read/write access)
+5. Click **Generate token** and copy the result — it starts with `ghp_`
 
-**1. Check if you already have a key**
-
-```bash
-ls ~/.ssh/id_ed25519.pub
-```
-If the file exists, skip to step 3. If you get "No such file or directory", continue to step 2.
-
-**2. Generate a key**
-
-```bash
-ssh-keygen -t ed25519 -C "your@email.com"
-```
-Press **Enter** three times to accept the default file location and skip the passphrase.
-
-**3. Add the key to the SSH agent**
-
-```bash
-eval "$(ssh-agent -s)"
-ssh-add ~/.ssh/id_ed25519
-```
-
-> [!NOTE]
-> On macOS, use `ssh-add --apple-use-keychain ~/.ssh/id_ed25519` instead to save it in your Keychain — otherwise you'll need to re-add it every reboot.
-
-**4. Add the public key to GitHub**
-
-```bash
-cat ~/.ssh/id_ed25519.pub
-```
-Copy the output, then go to **[GitHub → Settings → SSH and GPG keys → New SSH key](https://github.com/settings/ssh/new)**, paste it in, and click **Add SSH key**.
-
-**5. Verify it works**
-
-```bash
-ssh -T git@github.com
-```
-You should see: `Hi <username>! You've successfully authenticated.`
+> [!IMPORTANT]
+> Copy the token immediately — GitHub only shows it once. If you lose it, just generate a new one.
 
 **Configuring git with your identity (one-time):**
 
@@ -112,7 +80,7 @@ This creates the private `ChillCube/cc-auth` GitHub repo that stores all team ac
 
 **Requirements:**
 - A GitHub account that is a member (or owner) of the **ChillCube** GitHub organisation
-- SSH key set up (see Prerequisites above)
+- A GitHub token with `repo` scope (see Prerequisites above)
 - [GitHub CLI (`gh`)](https://cli.github.com/) installed and logged in — needed here to create the private repo and manage collaborators
   ```bash
   # Install gh, then:
@@ -127,10 +95,10 @@ This creates the private `ChillCube/cc-auth` GitHub repo that stores all team ac
 
 ### Path B — Joining an existing team
 
-`gh` CLI is **not required** for regular members. You only need Git and an SSH key.
+`gh` CLI is **not required** for regular members — just Git and a GitHub token.
 
 **Requirements:**
-- A GitHub account with an SSH key set up (see Prerequisites above)
+- A GitHub account with a token (see Prerequisites above)
 - Ask your **team leader** to add your GitHub username as a collaborator on `ChillCube/cc-auth` and `ChillCube/vault` — they do this from the **Team** tab in the plugin
 
 **Steps:**
@@ -159,7 +127,7 @@ Shell scripts for managing Godot addons from the terminal: `clone-gd-addon`, `re
 ## Prerequisites
 
 - [Git](https://git-scm.com/downloads)
-- A [GitHub account](https://github.com/join) with an SSH key set up (see plugin Prerequisites above)
+- A [GitHub account](https://github.com/join) with a token (see plugin Prerequisites above)
 - [GitHub CLI (`gh`)](https://cli.github.com/) — only required for `create-gd-addon` (creates the GitHub repo). `push-all-addons` and the rest use plain git.
   - After installing: `gh auth login`
 
