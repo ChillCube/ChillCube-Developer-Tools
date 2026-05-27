@@ -116,6 +116,12 @@ This creates the private `ChillCube/cc-auth` GitHub repo that stores all team ac
 
 Use the **⬆ Update Plugin** button in the Installed Addons tab — it pulls the latest version from GitHub in one click.
 
+## Troubleshooting
+
+**"No VCS plugins are available in the project"**
+
+This is a Godot dialog unrelated to ChillCube Tools. It appears when your project is inside a git repo but Godot has no VCS plugin installed to integrate with it. Click **OK** to dismiss — it won't affect anything.
+
 ---
 
 # CLI Tools
