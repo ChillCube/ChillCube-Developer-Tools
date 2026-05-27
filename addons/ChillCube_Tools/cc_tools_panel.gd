@@ -5873,6 +5873,23 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 			_election_rebuild_role_opt()
 			_refresh_vote_list()
 
+	if "doc_permissions.json" in data:
+		var parsed: Variant = JSON.parse_string(data["doc_permissions.json"])
+		if parsed is Dictionary:
+			_docs_permissions = parsed
+			_save_doc_permissions()
+			# Refresh docs view so permission badges/edit buttons update
+			if is_instance_valid(_docs_browser):
+				_docs_navigate(_docs_current_dir)
+
+	if "doc_suggestions.json" in data:
+		var parsed: Variant = JSON.parse_string(data["doc_suggestions.json"])
+		if parsed is Array:
+			_docs_suggestions = parsed
+			_save_doc_suggestions()
+			if is_instance_valid(_docs_browser):
+				_docs_navigate(_docs_current_dir)
+
 func _vault_navigate(rel: String) -> void:
 	if rel != _vault_current_dir:
 		_vault_sel_files.clear()
