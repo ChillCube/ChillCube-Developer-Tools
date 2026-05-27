@@ -8,6 +8,11 @@ if [ -z "$REPO_URL" ]; then
     exit 1
 fi
 
+if [ ! -f "project.godot" ]; then
+    echo "❌ Error: No project.godot found. Run clone-gd-addon from the root of your Godot project."
+    exit 1
+fi
+
 AUTO_MARKER="# --- Automated Dependencies (Managed by Script) ---"
 MANUAL_MARKER="# --- Manually Add Dependencies Here  ---"
 

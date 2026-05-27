@@ -21,12 +21,12 @@ Run from the **root of your Godot project**, then enable **ChillCube Tools** in 
 
 **Linux / macOS / Windows (Git Bash)**
 ```bash
-git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git .cc-tmp && mkdir -p addons && cp -r .cc-tmp/addons/ChillCube_Tools addons/ && rm -rf .cc-tmp
+[ -f project.godot ] || { echo "❌ No project.godot found — run this from the root of your Godot project."; false; } && rm -rf .cc-tmp && git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git .cc-tmp && mkdir -p addons && cp -r .cc-tmp/addons/ChillCube_Tools addons/ && rm -rf .cc-tmp
 ```
 
 **Windows (PowerShell)**
 ```powershell
-git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git .cc-tmp; New-Item -ItemType Directory -Force addons | Out-Null; Copy-Item -Recurse .cc-tmp\addons\ChillCube_Tools addons\; Remove-Item -Recurse -Force .cc-tmp
+if (-not (Test-Path "project.godot")) { Write-Error "❌ No project.godot found — run this from the root of your Godot project." } else { Remove-Item -Recurse -Force .cc-tmp -ErrorAction SilentlyContinue; git clone --depth=1 https://github.com/ChillCube/ChillCube-Developer-Tools.git .cc-tmp; New-Item -ItemType Directory -Force addons | Out-Null; Copy-Item -Recurse .cc-tmp\addons\ChillCube_Tools addons\; Remove-Item -Recurse -Force .cc-tmp }
 ```
 
 > [!NOTE]

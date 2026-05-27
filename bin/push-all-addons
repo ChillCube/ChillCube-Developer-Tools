@@ -17,6 +17,11 @@ if [ "$EUID" -eq 0 ]; then
     exit 1
 fi
 
+if [ ! -f "project.godot" ]; then
+    echo "❌ Error: No project.godot found. Run push-all-addons from the root of your Godot project." >&2
+    exit 1
+fi
+
 PROJECT_ROOT=$(pwd)
 UPDATED_COUNT=0
 AUTO_MARKER="# --- Automated Dependencies (Managed by Script) ---"

@@ -8,13 +8,12 @@ echo "🧊 ChillCube Addon Initializer"
 echo "--------------------------------------------------"
 
 # 1. Setup Directory Structure
-if [ -f "project.godot" ]; then
-    echo "🏠 Godot project detected. Addon will be its own repo inside addons/."
-    BASE_DIR="addons"
-else
-    echo "⚠️  No project.godot found. Creating standalone addon directory."
-    BASE_DIR="."
+if [ ! -f "project.godot" ]; then
+    echo "❌ Error: No project.godot found. Run create-gd-addon from the root of your Godot project."
+    exit 1
 fi
+echo "🏠 Godot project detected. Addon will be its own repo inside addons/."
+BASE_DIR="addons"
 
 # 2. Collect Addon Info (accept positional args for non-interactive use)
 ADDON_NAME="${1:-}"

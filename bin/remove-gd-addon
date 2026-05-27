@@ -11,6 +11,11 @@ if [ -z "$TARGET_ADDON" ]; then
     exit 1
 fi
 
+if [ ! -f "project.godot" ]; then
+    echo "❌ Error: No project.godot found. Run remove-gd-addon from the root of your Godot project."
+    exit 1
+fi
+
 ADDON_PATH="addons/$TARGET_ADDON"
 
 if [ ! -d "$ADDON_PATH" ]; then
