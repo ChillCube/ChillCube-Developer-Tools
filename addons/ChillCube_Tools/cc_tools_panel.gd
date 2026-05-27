@@ -163,13 +163,12 @@ var _docs_move_folder_items: Array[String] = []
 var _docs_new_doc_btn: Button
 var _docs_new_dir_btn: Button
 
-var _docs_permissions: Dictionary = {}  # full_path -> {"mode": "anyone"|"specific", "users": [...]}
+var _docs_permissions: Dictionary = {}  # full_path -> {"mode": "anyone"|"role_any"|"role_vote"|"team_vote", "required_role": "", "vote_threshold": "1/2"}
 var _docs_perm_btn: Button
 var _docs_perm_dialog: ConfirmationDialog
 var _docs_perm_mode: OptionButton
-var _docs_perm_user_section: VBoxContainer
-var _docs_perm_user_list: VBoxContainer
-var _docs_perm_input: LineEdit
+var _docs_perm_role_section: VBoxContainer
+var _docs_perm_role_opt: OptionButton
 var _docs_perm_path: String = ""
 var _docs_perm_original: Dictionary = {}  # snapshot of permissions when dialog opened
 
@@ -182,13 +181,19 @@ var _docs_review_dialog: AcceptDialog
 var _docs_review_list: VBoxContainer
 var _docs_review_view: RichTextLabel
 
-var _docs_perm_vote_check: CheckBox
 var _docs_perm_vote_section: VBoxContainer
 var _docs_perm_vote_thresh: OptionButton
 
 var _docs_diff_dialog: AcceptDialog
 var _docs_diff_left: RichTextLabel
 var _docs_diff_right: RichTextLabel
+
+var _docs_comments: Dictionary = {}   # full_path -> [{id, author, text, timestamp, resolved, ...}]
+var _docs_comment_panel: VBoxContainer
+var _docs_comment_list: VBoxContainer
+var _docs_comment_input: TextEdit
+var _docs_comment_btn: Button         # "💬 N" in header
+var _docs_comment_show_resolved: bool = false
 
 var _gd_docs: Array = []           # Array of Dictionaries, each is one design doc
 var _gd_selected: int = -1
@@ -822,6 +827,7 @@ func _ready() -> void:
 	_load_contracts()
 	_load_doc_permissions()
 	_load_doc_suggestions()
+	_load_doc_comments()
 	_load_elections()
 	_load_forum_last_seen()
 
@@ -1018,7 +1024,12 @@ func _refresh_dashboard() -> void:
 	var my_todos: Array = []
 	for ti in range(_todo_items.size()):
 		var item: Dictionary = _todo_items[ti]
-		if not item.get("done", false) and item.get("assigned_to", "") == me:
+		if item.get("done", false):
+			continue
+		var assigned_to_me: bool = item.get("assigned_to", "") == me
+		var item_role: String = item.get("assigned_role", "")
+		var assigned_via_role: bool = not item_role.is_empty() and _election_is_holder(item_role, me)
+		if assigned_to_me or assigned_via_role:
 			my_todos.append({"item": item, "idx": ti})
 	if my_todos.size() > 0:
 		_dashboard_section("📋 Assigned to you", func():
@@ -3693,12 +3704,42 @@ func _refresh_todo() -> void:
 			assign_lbl.add_theme_font_size_override("font_size", 11)
 			assign_lbl.custom_minimum_size = Vector2(44, 0)
 			assign_row.add_child(assign_lbl)
+			# Toggle: User vs Role
+			var assign_type_opt := OptionButton.new()
+			assign_type_opt.add_item("User")
+			assign_type_opt.add_item("Role")
+			assign_type_opt.add_theme_font_size_override("font_size", 11)
+			var has_role_assign: bool = not (item.get("assigned_role", "") as String).is_empty()
+			assign_type_opt.select(1 if has_role_assign else 0)
+			assign_row.add_child(assign_type_opt)
+			# User text input
 			var assign_edit := LineEdit.new()
 			assign_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			assign_edit.placeholder_text = "username (leave blank to unassign)"
+			assign_edit.placeholder_text = "username"
 			assign_edit.add_theme_font_size_override("font_size", 11)
 			assign_edit.text = item.get("assigned_to", "")
+			assign_edit.visible = not has_role_assign
 			assign_row.add_child(assign_edit)
+			# Role dropdown
+			var assign_role_opt := OptionButton.new()
+			assign_role_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			assign_role_opt.add_theme_font_size_override("font_size", 11)
+			assign_role_opt.add_item("— (unassign)")
+			var all_roles_todo := _election_sorted_roles()
+			for tr: String in all_roles_todo:
+				assign_role_opt.add_item(tr)
+			var cur_assigned_role: String = item.get("assigned_role", "")
+			var role_sel_idx := 0
+			if not cur_assigned_role.is_empty():
+				var ri := all_roles_todo.find(cur_assigned_role)
+				if ri >= 0: role_sel_idx = ri + 1
+			assign_role_opt.select(role_sel_idx)
+			assign_role_opt.visible = has_role_assign
+			assign_row.add_child(assign_role_opt)
+			assign_type_opt.item_selected.connect(func(tidx: int):
+				assign_edit.visible = tidx == 0
+				assign_role_opt.visible = tidx == 1
+			)
 			fields.add_child(assign_row)
 			# ── Repeat row ──
 			var repeat_row := HBoxContainer.new()
@@ -3727,6 +3768,9 @@ func _refresh_todo() -> void:
 			row.add_child(fields)
 			var cap_edit := edit
 			var cap_assign := assign_edit
+			var cap_assign_type := assign_type_opt
+			var cap_assign_role := assign_role_opt
+			var cap_all_roles := all_roles_todo
 			var cap_repeat_chk := repeat_chk
 			var cap_repeat_spin := repeat_spin
 			var cap_repeat_unit := repeat_unit_btn
@@ -3734,11 +3778,22 @@ func _refresh_todo() -> void:
 			confirm_btn.text = "✓"
 			confirm_btn.pressed.connect(func():
 				_todo_items[cap_i]["text"] = cap_edit.text.strip_edges()
-				var assignee := cap_assign.text.strip_edges().lstrip("@")
-				if assignee.is_empty():
+				if cap_assign_type.selected == 1:
+					# Role assignment
 					_todo_items[cap_i].erase("assigned_to")
+					var ri2 := cap_assign_role.selected - 1  # -1 because item 0 = "unassign"
+					if ri2 >= 0 and ri2 < cap_all_roles.size():
+						_todo_items[cap_i]["assigned_role"] = cap_all_roles[ri2]
+					else:
+						_todo_items[cap_i].erase("assigned_role")
 				else:
-					_todo_items[cap_i]["assigned_to"] = assignee
+					# User assignment
+					_todo_items[cap_i].erase("assigned_role")
+					var assignee := cap_assign.text.strip_edges().lstrip("@")
+					if assignee.is_empty():
+						_todo_items[cap_i].erase("assigned_to")
+					else:
+						_todo_items[cap_i]["assigned_to"] = assignee
 				var units := ["days", "weeks", "months"]
 				_todo_items[cap_i]["repeat"] = cap_repeat_chk.button_pressed
 				_todo_items[cap_i]["repeat_every"] = int(cap_repeat_spin.value)
@@ -3766,12 +3821,20 @@ func _refresh_todo() -> void:
 			lbl.pop()
 			row.add_child(lbl)
 			var assignee: String = item.get("assigned_to", "")
+			var assigned_role_name: String = item.get("assigned_role", "")
 			if not assignee.is_empty():
 				var a_lbl := Label.new()
 				a_lbl.text = "@" + assignee
 				a_lbl.add_theme_font_size_override("font_size", 11)
 				a_lbl.add_theme_color_override("font_color", Color(0.4, 0.7, 1.0))
 				a_lbl.tooltip_text = "Assigned to " + assignee
+				row.add_child(a_lbl)
+			elif not assigned_role_name.is_empty():
+				var a_lbl := Label.new()
+				a_lbl.text = "🏅 " + assigned_role_name
+				a_lbl.add_theme_font_size_override("font_size", 11)
+				a_lbl.add_theme_color_override("font_color", Color(0.7, 0.9, 0.5))
+				a_lbl.tooltip_text = "Assigned to role: " + assigned_role_name
 				row.add_child(a_lbl)
 			if item.get("repeat", false):
 				var repeat_lbl := Label.new()
@@ -3896,6 +3959,7 @@ func _cc_data_bundle() -> Dictionary:
 		"deps.json": JSON.stringify(_deps_items, "\t") + "\n",
 		"doc_permissions.json": JSON.stringify(_docs_permissions, "\t") + "\n",
 		"doc_suggestions.json": JSON.stringify(_docs_suggestions, "\t") + "\n",
+		"doc_comments.json": JSON.stringify(_docs_comments, "\t") + "\n",
 		"elections.json": JSON.stringify(_election_data, "\t") + "\n"
 	}
 
@@ -4410,21 +4474,38 @@ func _refresh_vote_list() -> void:
 		if is_perm:
 			var new_p: Dictionary = s.get("new_permissions", {})
 			var old_p: Dictionary = s.get("old_permissions", {})
-			# Build a human-readable old → new diff for each changed field.
-			var diff_lines: Array[String] = []
+			# Human-readable mode labels
+			var mode_labels := {
+				"anyone": "🌐 Anyone",
+				"specific": "🌐 Anyone",  # legacy
+				"role_any": "🏅 Role (free edit)",
+				"role_vote": "🗳 Role (vote required)",
+				"team_vote": "🗳 Full team vote"
+			}
 			var old_mode: String = old_p.get("mode", "anyone")
 			var new_mode: String = new_p.get("mode", "anyone")
+			# Legacy migration for display
+			if old_mode == "anyone" and old_p.get("require_vote", false): old_mode = "team_vote"
+			if new_mode == "anyone" and new_p.get("require_vote", false): new_mode = "team_vote"
+			var diff_lines: Array[String] = []
 			if old_mode != new_mode:
-				diff_lines.append("Edit access:  %s  →  %s" % [old_mode, new_mode])
-			var old_rv: bool = old_p.get("require_vote", false)
-			var new_rv: bool = new_p.get("require_vote", false)
-			var old_thresh: String = ("on (%s)" % old_p.get("vote_threshold", "")) if old_rv else "off"
-			var new_thresh: String = ("on (%s)" % new_p.get("vote_threshold", "")) if new_rv else "off"
+				diff_lines.append("Edit access:  %s  →  %s" % [
+					mode_labels.get(old_mode, old_mode),
+					mode_labels.get(new_mode, new_mode)])
+			var old_role: String = old_p.get("required_role", "")
+			var new_role: String = new_p.get("required_role", "")
+			if old_role != new_role:
+				diff_lines.append("Required role:  %s  →  %s" % [
+					(old_role if not old_role.is_empty() else "—"),
+					(new_role if not new_role.is_empty() else "—")])
+			var old_thresh: String = old_p.get("vote_threshold", "")
+			var new_thresh: String = new_p.get("vote_threshold", "")
 			if old_thresh != new_thresh:
-				diff_lines.append("Vote lock:  %s  →  %s" % [old_thresh, new_thresh])
-			# Fallback if no old_permissions stored (legacy suggestion).
+				diff_lines.append("Vote threshold:  %s  →  %s" % [
+					(old_thresh if not old_thresh.is_empty() else "none"),
+					(new_thresh if not new_thresh.is_empty() else "none")])
 			if diff_lines.is_empty():
-				diff_lines.append("Access: %s   Vote lock: %s" % [new_mode, new_thresh])
+				diff_lines.append("Access: %s" % mode_labels.get(new_mode, new_mode))
 			for dl: String in diff_lines:
 				var perm_lbl := Label.new()
 				perm_lbl.text = "  " + dl
@@ -6282,6 +6363,42 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 						_docs_review_approve(si)
 						break  # one at a time; next sync will catch more
 
+	if "doc_comments.json" in data:
+		var parsed: Variant = JSON.parse_string(data["doc_comments.json"])
+		if parsed is Dictionary:
+			# Merge: union each doc's comment list by ID (vault authoritative, keep local-only comments)
+			var vault_cmts: Dictionary = parsed as Dictionary
+			var merged_cmts: Dictionary = {}
+			var all_keys: Dictionary = {}
+			for k: String in (_docs_comments.keys() as Array):
+				all_keys[k] = true
+			for k: String in (vault_cmts.keys() as Array):
+				all_keys[k] = true
+			for doc_path: String in all_keys:
+				var local_list: Array = (_docs_comments.get(doc_path, []) as Array)
+				var vault_list: Array = (vault_cmts.get(doc_path, []) as Array)
+				var by_id: Dictionary = {}
+				for c: Dictionary in local_list:
+					by_id[c.get("id", "")] = c
+				var result: Array = []
+				for vc: Dictionary in vault_list:
+					var vid: String = vc.get("id", "")
+					if vid in by_id:
+						# Vault wins on resolved state (more recent)
+						result.append(vc)
+						by_id.erase(vid)
+					else:
+						result.append(vc)
+				for rem_id: String in by_id:
+					result.append(by_id[rem_id])  # local-only, not yet pushed
+				merged_cmts[doc_path] = result
+			_docs_comments = merged_cmts
+			_save_doc_comments()
+			# Refresh comment list if panel is open
+			if is_instance_valid(_docs_comment_panel) and _docs_comment_panel.visible:
+				_docs_refresh_comments()
+			_docs_show_view_buttons(_docs_sel_path)
+
 	if "asset_meta.json" in data:
 		var parsed: Variant = JSON.parse_string(data["asset_meta.json"])
 		if parsed is Dictionary:
@@ -7233,6 +7350,67 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 		_docs_editor.add_theme_font_override("font", code_font)
 	_docs_view_panel.add_child(_docs_editor)
 
+	# ── Comments panel ────────────────────────────────────────────────────────
+	_docs_comment_panel = VBoxContainer.new()
+	_docs_comment_panel.visible = false
+	_docs_comment_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_comment_panel.add_theme_constant_override("separation", 4)
+	_docs_view_panel.add_child(HSeparator.new())
+	_docs_view_panel.add_child(_docs_comment_panel)
+
+	var comment_hdr := HBoxContainer.new()
+	var comment_hdr_lbl := Label.new()
+	comment_hdr_lbl.text = "💬 Comments"
+	comment_hdr_lbl.add_theme_font_size_override("font_size", 12)
+	comment_hdr_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	comment_hdr.add_child(comment_hdr_lbl)
+	var show_res_chk := CheckBox.new()
+	show_res_chk.text = "Show resolved"
+	show_res_chk.add_theme_font_size_override("font_size", 11)
+	show_res_chk.button_pressed = false
+	show_res_chk.toggled.connect(func(on: bool):
+		_docs_comment_show_resolved = on
+		_docs_refresh_comments()
+	)
+	comment_hdr.add_child(show_res_chk)
+	_docs_comment_panel.add_child(comment_hdr)
+
+	var comment_scroll := ScrollContainer.new()
+	comment_scroll.custom_minimum_size = Vector2(0, 80)
+	comment_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_comment_list = VBoxContainer.new()
+	_docs_comment_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_comment_list.add_theme_constant_override("separation", 4)
+	comment_scroll.add_child(_docs_comment_list)
+	_docs_comment_panel.add_child(comment_scroll)
+
+	var comment_input_row := VBoxContainer.new()
+	comment_input_row.add_theme_constant_override("separation", 2)
+	_docs_comment_input = TextEdit.new()
+	_docs_comment_input.placeholder_text = "Add a comment…"
+	_docs_comment_input.custom_minimum_size = Vector2(0, 44)
+	_docs_comment_input.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	comment_input_row.add_child(_docs_comment_input)
+	var comment_submit_btn := Button.new()
+	comment_submit_btn.text = "💬 Post"
+	comment_submit_btn.size_flags_horizontal = Control.SIZE_SHRINK_END
+	comment_submit_btn.pressed.connect(_docs_post_comment)
+	comment_input_row.add_child(comment_submit_btn)
+	_docs_comment_panel.add_child(comment_input_row)
+
+	# Comment button in the header
+	_docs_comment_btn = Button.new()
+	_docs_comment_btn.text = "💬"
+	_docs_comment_btn.tooltip_text = "Comments"
+	_docs_comment_btn.visible = false
+	_docs_comment_btn.pressed.connect(func():
+		if is_instance_valid(_docs_comment_panel):
+			_docs_comment_panel.visible = not _docs_comment_panel.visible
+			if _docs_comment_panel.visible:
+				_docs_refresh_comments()
+	)
+	doc_header.add_child(_docs_comment_btn)
+
 	split.add_child(_docs_view_panel)
 	root.add_child(split)
 
@@ -7320,53 +7498,40 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	_docs_perm_dialog = ConfirmationDialog.new()
 	_docs_perm_dialog.exclusive = false
 	_docs_perm_dialog.title = "Document Permissions"
-	_docs_perm_dialog.size = Vector2i(400, 420)
+	_docs_perm_dialog.size = Vector2i(420, 320)
 	var perm_vbox := VBoxContainer.new()
 	perm_vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	perm_vbox.add_theme_constant_override("separation", 6)
 	_docs_perm_dialog.add_child(perm_vbox)
 	var perm_mode_lbl := Label.new()
-	perm_mode_lbl.text = "Who can edit this document?"
+	perm_mode_lbl.text = "Edit access:"
+	perm_mode_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
 	perm_vbox.add_child(perm_mode_lbl)
 	_docs_perm_mode = OptionButton.new()
-	_docs_perm_mode.add_item("Anyone")
-	_docs_perm_mode.add_item("Specific users only")
+	_docs_perm_mode.add_item("🌐  Anyone")                         # 0 → anyone
+	_docs_perm_mode.add_item("🏅  Role holders (free edit)")       # 1 → role_any
+	_docs_perm_mode.add_item("🗳  Role holders (must vote)")       # 2 → role_vote
+	_docs_perm_mode.add_item("🗳  All members (full team vote)")   # 3 → team_vote
 	perm_vbox.add_child(_docs_perm_mode)
-	_docs_perm_user_section = VBoxContainer.new()
-	var perm_user_section := _docs_perm_user_section
-	perm_vbox.add_child(perm_user_section)
-	var perm_users_lbl := Label.new()
-	perm_users_lbl.text = "Allowed users:"
-	perm_users_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-	perm_user_section.add_child(perm_users_lbl)
-	var perm_scroll := ScrollContainer.new()
-	perm_scroll.custom_minimum_size = Vector2(0, 100)
-	perm_user_section.add_child(perm_scroll)
-	_docs_perm_user_list = VBoxContainer.new()
-	_docs_perm_user_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	perm_scroll.add_child(_docs_perm_user_list)
-	var perm_add_row := HBoxContainer.new()
-	_docs_perm_input = LineEdit.new()
-	_docs_perm_input.placeholder_text = "Username"
-	_docs_perm_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var perm_add_btn := Button.new()
-	perm_add_btn.text = "+ Add"
-	perm_add_btn.pressed.connect(_docs_perm_add_user)
-	perm_add_row.add_child(_docs_perm_input)
-	perm_add_row.add_child(perm_add_btn)
-	perm_user_section.add_child(perm_add_row)
-	_docs_perm_mode.item_selected.connect(func(idx: int):
-		if is_instance_valid(_docs_perm_user_section):
-			_docs_perm_user_section.visible = idx == 1
-	)
-	perm_vbox.add_child(HSeparator.new())
-	_docs_perm_vote_check = CheckBox.new()
-	_docs_perm_vote_check.text = "Require team vote to change"
-	perm_vbox.add_child(_docs_perm_vote_check)
+	# Role section — shown for modes 1 and 2
+	_docs_perm_role_section = VBoxContainer.new()
+	_docs_perm_role_section.visible = false
+	_docs_perm_role_section.add_theme_constant_override("separation", 2)
+	perm_vbox.add_child(_docs_perm_role_section)
+	var role_lbl := Label.new()
+	role_lbl.text = "Required role:"
+	role_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	_docs_perm_role_section.add_child(role_lbl)
+	_docs_perm_role_opt = OptionButton.new()
+	_docs_perm_role_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_docs_perm_role_section.add_child(_docs_perm_role_opt)
+	# Vote threshold — shown for modes 2 and 3
 	_docs_perm_vote_section = VBoxContainer.new()
 	_docs_perm_vote_section.visible = false
+	_docs_perm_vote_section.add_theme_constant_override("separation", 2)
 	perm_vbox.add_child(_docs_perm_vote_section)
 	var vote_thresh_lbl := Label.new()
-	vote_thresh_lbl.text = "Approval threshold (yes votes / all team members):"
+	vote_thresh_lbl.text = "Approval threshold:"
 	vote_thresh_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 	_docs_perm_vote_section.add_child(vote_thresh_lbl)
 	_docs_perm_vote_thresh = OptionButton.new()
@@ -7376,9 +7541,11 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	_docs_perm_vote_thresh.add_item("3/4  (strong consensus)")
 	_docs_perm_vote_thresh.select(1)
 	_docs_perm_vote_section.add_child(_docs_perm_vote_thresh)
-	_docs_perm_vote_check.toggled.connect(func(on: bool):
+	_docs_perm_mode.item_selected.connect(func(idx: int):
+		if is_instance_valid(_docs_perm_role_section):
+			_docs_perm_role_section.visible = idx == 1 or idx == 2
 		if is_instance_valid(_docs_perm_vote_section):
-			_docs_perm_vote_section.visible = on
+			_docs_perm_vote_section.visible = idx == 2 or idx == 3
 	)
 	_docs_perm_dialog.confirmed.connect(_docs_perm_save)
 	_docs_perm_dialog.canceled.connect(func():
@@ -7676,6 +7843,10 @@ func _docs_select(full_path: String) -> void:
 	_docs_save_btn.visible = false
 	_docs_suggest_submit_btn.visible = false
 	_docs_cancel_btn.visible = false
+	if is_instance_valid(_docs_comment_btn):
+		_docs_comment_btn.visible = false
+	if is_instance_valid(_docs_comment_panel):
+		_docs_comment_panel.visible = false
 	_docs_status_lbl.text = "Loading…"
 	_docs_view.text = ""
 	_docs_editor.visible = false
@@ -8016,11 +8187,20 @@ func _save_doc_permissions() -> void:
 
 func _docs_can_edit(full_path: String) -> bool:
 	var perm: Dictionary = _docs_permissions.get(full_path, {})
-	if perm.get("mode", "anyone") == "anyone":
-		return true
-	var users: Array = perm.get("users", [])
+	var mode: String = perm.get("mode", "anyone")
 	var me: String = _current_user.get("username", "")
-	return me.is_empty() or me in users
+	match mode:
+		"anyone", "specific":          # legacy "specific" treated as anyone
+			return true
+		"role_any", "role_vote":
+			if me.is_empty() or _election_is_leader():
+				return true
+			var req_role: String = perm.get("required_role", "")
+			return req_role.is_empty() or _election_is_holder(req_role, me)
+		"team_vote":
+			# Only the leader can edit directly; everyone else must vote.
+			return me.is_empty() or _election_is_leader()
+	return true
 
 func _docs_open_perm_dialog() -> void:
 	if _docs_sel_path.is_empty():
@@ -8028,76 +8208,58 @@ func _docs_open_perm_dialog() -> void:
 	_docs_perm_path = _docs_sel_path
 	var perm: Dictionary = _docs_permissions.get(_docs_perm_path, {})
 	_docs_perm_original = perm.duplicate(true)  # snapshot for cancel & no-op detection
+	# Migrate legacy modes
 	var mode: String = perm.get("mode", "anyone")
-	_docs_perm_mode.select(0 if mode == "anyone" else 1)
-	_docs_perm_user_section.visible = mode == "specific"
-	_docs_perm_refresh_users(perm.get("users", []))
-	_docs_perm_input.text = ""
-	var req_vote: bool = perm.get("require_vote", false)
-	_docs_perm_vote_check.set_pressed_no_signal(req_vote)
-	_docs_perm_vote_section.visible = req_vote
+	if mode == "specific":
+		mode = "anyone"
+	elif mode == "anyone" and perm.get("require_vote", false):
+		mode = "team_vote"
+	var mode_idx_map := {"anyone": 0, "role_any": 1, "role_vote": 2, "team_vote": 3}
+	_docs_perm_mode.select(mode_idx_map.get(mode, 0))
+	# Populate role dropdown with all defined roles
+	if is_instance_valid(_docs_perm_role_opt):
+		_docs_perm_role_opt.clear()
+		var roles := _election_sorted_roles()
+		for r: String in roles:
+			_docs_perm_role_opt.add_item(r)
+		var cur_role: String = perm.get("required_role", "")
+		var role_idx := roles.find(cur_role)
+		if role_idx >= 0:
+			_docs_perm_role_opt.select(role_idx)
+		elif not roles.is_empty():
+			_docs_perm_role_opt.select(0)
+	_docs_perm_role_section.visible = mode == "role_any" or mode == "role_vote"
+	_docs_perm_vote_section.visible = mode == "role_vote" or mode == "team_vote"
 	var thresh_map := {"1/3": 0, "1/2": 1, "2/3": 2, "3/4": 3}
 	_docs_perm_vote_thresh.select(thresh_map.get(perm.get("vote_threshold", "1/2"), 1))
 	_docs_perm_dialog.popup_centered()
-
-func _docs_perm_refresh_users(users: Array) -> void:
-	for c in _docs_perm_user_list.get_children():
-		c.queue_free()
-	for u: String in users:
-		var cap_u := u
-		var row := HBoxContainer.new()
-		var lbl := Label.new()
-		lbl.text = cap_u
-		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var rm := Button.new()
-		rm.text = "✕"
-		rm.flat = true
-		rm.pressed.connect(func():
-			var perm: Dictionary = _docs_permissions.get(_docs_perm_path, {})
-			var lst: Array = perm.get("users", [])
-			lst.erase(cap_u)
-			perm["users"] = lst
-			_docs_permissions[_docs_perm_path] = perm
-			_docs_perm_refresh_users(lst)
-		)
-		row.add_child(lbl)
-		row.add_child(rm)
-		_docs_perm_user_list.add_child(row)
-
-func _docs_perm_add_user() -> void:
-	var username := _docs_perm_input.text.strip_edges()
-	if username.is_empty():
-		return
-	var perm: Dictionary = _docs_permissions.get(_docs_perm_path, {})
-	var users: Array = perm.get("users", [])
-	if username not in users:
-		users.append(username)
-	perm["users"] = users
-	_docs_permissions[_docs_perm_path] = perm
-	_docs_perm_input.text = ""
-	_docs_perm_refresh_users(users)
 
 func _docs_perm_save() -> void:
 	if _docs_perm_path.is_empty():
 		return
 	# Build the new permissions from dialog controls.
+	var modes := ["anyone", "role_any", "role_vote", "team_vote"]
 	var new_perm: Dictionary = {}
-	new_perm["mode"] = "anyone" if _docs_perm_mode.selected == 0 else "specific"
-	if new_perm["mode"] == "specific":
-		# Preserve the (potentially live-edited) users list from _docs_permissions.
-		new_perm["users"] = (_docs_permissions.get(_docs_perm_path, {}) as Dictionary).get("users", [])
-	new_perm["require_vote"] = _docs_perm_vote_check.button_pressed
-	if new_perm["require_vote"]:
-		var thresh_list := ["1/3", "1/2", "2/3", "3/4"]
-		new_perm["vote_threshold"] = thresh_list[_docs_perm_vote_thresh.selected]
+	var sel := clamp(_docs_perm_mode.selected, 0, modes.size() - 1)
+	new_perm["mode"] = modes[sel]
+	var thresh_list := ["1/3", "1/2", "2/3", "3/4"]
+	if new_perm["mode"] in ["role_any", "role_vote"]:
+		# Save selected role name
+		if is_instance_valid(_docs_perm_role_opt) and _docs_perm_role_opt.item_count > 0:
+			new_perm["required_role"] = _docs_perm_role_opt.get_item_text(_docs_perm_role_opt.selected)
+	if new_perm["mode"] in ["role_vote", "team_vote"]:
+		new_perm["vote_threshold"] = thresh_list[clamp(_docs_perm_vote_thresh.selected, 0, 3)]
 
 	# Compare against the snapshot taken when the dialog was opened.
 	var orig := _docs_perm_original
+	# Normalise orig mode (legacy migration)
+	var orig_mode: String = orig.get("mode", "anyone")
+	if orig_mode == "specific": orig_mode = "anyone"
+	elif orig_mode == "anyone" and orig.get("require_vote", false): orig_mode = "team_vote"
 	var changed: bool = (
-		new_perm.get("mode", "anyone") != orig.get("mode", "anyone") or
-		new_perm.get("require_vote", false) != orig.get("require_vote", false) or
-		new_perm.get("vote_threshold", "") != orig.get("vote_threshold", "") or
-		JSON.stringify(new_perm.get("users", [])) != JSON.stringify(orig.get("users", []))
+		new_perm.get("mode", "anyone") != orig_mode or
+		new_perm.get("required_role", "") != orig.get("required_role", "") or
+		new_perm.get("vote_threshold", "") != orig.get("vote_threshold", "")
 	)
 	if not changed:
 		# Nothing actually changed — restore original and close silently.
@@ -8105,7 +8267,8 @@ func _docs_perm_save() -> void:
 		return
 
 	# If the doc currently requires a vote, changing permissions needs team approval.
-	if orig.get("require_vote", false):
+	var orig_requires_vote: bool = orig_mode in ["role_vote", "team_vote"]
+	if orig_requires_vote:
 		var me: String = _current_user.get("username", "?")
 		var doc_name := _docs_perm_path.get_file().get_basename()
 		_docs_suggestions.append({
@@ -8177,6 +8340,159 @@ func _docs_pending_suggestions(full_path: String) -> int:
 func _docs_is_archived(full_path: String) -> bool:
 	return full_path.begins_with(DOCS_PREFIX + "/" + DOCS_ARCHIVE_REL + "/")
 
+# ─── Docs comments ───────────────────────────────────────────────────────────
+
+func _docs_comments_file() -> String:
+	return ProjectSettings.globalize_path("user://cc_doc_comments.json")
+
+func _load_doc_comments() -> void:
+	_docs_comments = {}
+	var path := _docs_comments_file()
+	if not FileAccess.file_exists(path):
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if not f:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if parsed is Dictionary:
+		_docs_comments = parsed
+
+func _save_doc_comments() -> void:
+	var fw := FileAccess.open(_docs_comments_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(_docs_comments, "\t") + "\n")
+		fw.close()
+	_activity_auto_push()
+
+func _docs_post_comment() -> void:
+	if _docs_sel_path.is_empty() or not is_instance_valid(_docs_comment_input):
+		return
+	var text := _docs_comment_input.text.strip_edges()
+	if text.is_empty():
+		return
+	var me: String = _current_user.get("username", "?")
+	var comments: Array = (_docs_comments.get(_docs_sel_path, []) as Array).duplicate()
+	comments.append({
+		"id": str(int(Time.get_unix_time_from_system())) + "_cmt_" + me,
+		"author": me,
+		"text": text,
+		"timestamp": Time.get_datetime_string_from_system(),
+		"resolved": false,
+		"resolved_by": "",
+		"resolved_at": ""
+	})
+	_docs_comments[_docs_sel_path] = comments
+	_save_doc_comments()
+	_docs_comment_input.text = ""
+	_log_activity("doc_comment", '💬 %s commented on "%s"' % [me, _docs_sel_path.get_file().get_basename()])
+	_docs_refresh_comments()
+	_docs_show_view_buttons(_docs_sel_path)  # refresh badge count
+
+func _docs_resolve_comment(doc_path: String, comment_id: String) -> void:
+	var me: String = _current_user.get("username", "?")
+	var comments: Array = (_docs_comments.get(doc_path, []) as Array).duplicate()
+	for i: int in range(comments.size()):
+		var c: Dictionary = comments[i] as Dictionary
+		if c.get("id", "") == comment_id:
+			c["resolved"] = true
+			c["resolved_by"] = me
+			c["resolved_at"] = Time.get_datetime_string_from_system()
+			comments[i] = c
+			break
+	_docs_comments[doc_path] = comments
+	_save_doc_comments()
+	_docs_refresh_comments()
+	_docs_show_view_buttons(doc_path)
+
+func _docs_reopen_comment(doc_path: String, comment_id: String) -> void:
+	var comments: Array = (_docs_comments.get(doc_path, []) as Array).duplicate()
+	for i: int in range(comments.size()):
+		var c: Dictionary = comments[i] as Dictionary
+		if c.get("id", "") == comment_id:
+			c["resolved"] = false
+			c["resolved_by"] = ""
+			c["resolved_at"] = ""
+			comments[i] = c
+			break
+	_docs_comments[doc_path] = comments
+	_save_doc_comments()
+	_docs_refresh_comments()
+	_docs_show_view_buttons(doc_path)
+
+func _docs_refresh_comments() -> void:
+	if not is_instance_valid(_docs_comment_list):
+		return
+	for c in _docs_comment_list.get_children():
+		c.queue_free()
+	if _docs_sel_path.is_empty():
+		return
+	var comments: Array = (_docs_comments.get(_docs_sel_path, []) as Array)
+	var me: String = _current_user.get("username", "")
+	var can_edit := _docs_can_edit(_docs_sel_path)
+	if comments.is_empty():
+		var empty_lbl := Label.new()
+		empty_lbl.text = "No comments yet."
+		empty_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+		empty_lbl.add_theme_font_size_override("font_size", 11)
+		_docs_comment_list.add_child(empty_lbl)
+		return
+	for c: Dictionary in comments:
+		var resolved: bool = c.get("resolved", false)
+		if resolved and not _docs_comment_show_resolved:
+			continue
+		var cap_cid: String = c.get("id", "")
+		var cap_path := _docs_sel_path
+		var panel := PanelContainer.new()
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		if resolved:
+			panel.modulate = Color(0.6, 0.6, 0.6, 0.6)
+		var vb := VBoxContainer.new()
+		vb.add_theme_constant_override("separation", 2)
+		panel.add_child(vb)
+		var meta_row := HBoxContainer.new()
+		var author_lbl := Label.new()
+		author_lbl.text = c.get("author", "?")
+		author_lbl.add_theme_font_size_override("font_size", 11)
+		author_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 1.0))
+		meta_row.add_child(author_lbl)
+		var ts_lbl := Label.new()
+		var ts: String = c.get("timestamp", "")
+		ts_lbl.text = "  " + ts.substr(0, 16)
+		ts_lbl.add_theme_font_size_override("font_size", 10)
+		ts_lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
+		ts_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		meta_row.add_child(ts_lbl)
+		if resolved:
+			var res_lbl := Label.new()
+			res_lbl.text = "✅ Resolved"
+			res_lbl.add_theme_font_size_override("font_size", 10)
+			res_lbl.add_theme_color_override("font_color", Color(0.4, 0.8, 0.4))
+			meta_row.add_child(res_lbl)
+			if can_edit or c.get("author", "") == me:
+				var reopen_btn := Button.new()
+				reopen_btn.text = "↩ Reopen"
+				reopen_btn.flat = true
+				reopen_btn.add_theme_font_size_override("font_size", 10)
+				reopen_btn.pressed.connect(func(): _docs_reopen_comment(cap_path, cap_cid))
+				meta_row.add_child(reopen_btn)
+		else:
+			if can_edit or c.get("author", "") == me:
+				var resolve_btn := Button.new()
+				resolve_btn.text = "✓ Resolve"
+				resolve_btn.flat = true
+				resolve_btn.add_theme_font_size_override("font_size", 10)
+				resolve_btn.add_theme_color_override("font_color", Color(0.4, 0.9, 0.4))
+				resolve_btn.pressed.connect(func(): _docs_resolve_comment(cap_path, cap_cid))
+				meta_row.add_child(resolve_btn)
+		vb.add_child(meta_row)
+		var text_lbl := Label.new()
+		text_lbl.text = c.get("text", "")
+		text_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		text_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		vb.add_child(text_lbl)
+		_docs_comment_list.add_child(panel)
+
 func _docs_show_view_buttons(full_path: String) -> void:
 	if _docs_is_archived(full_path):
 		_docs_edit_btn.visible = false
@@ -8188,6 +8504,8 @@ func _docs_show_view_buttons(full_path: String) -> void:
 		_docs_save_btn.visible = false
 		_docs_suggest_submit_btn.visible = false
 		_docs_cancel_btn.visible = false
+		if is_instance_valid(_docs_comment_btn):
+			_docs_comment_btn.visible = false
 		_docs_title_lbl.add_theme_color_override("font_color", Color(0.65, 0.55, 0.45))
 		return
 	var can_edit := _docs_can_edit(full_path)
@@ -8202,6 +8520,13 @@ func _docs_show_view_buttons(full_path: String) -> void:
 	_docs_review_btn.visible = show_review
 	if show_review:
 		_docs_review_btn.text = ("📬 " + str(pending)) if pending > 0 else "📬"
+	# Comments button — visible whenever a doc is open
+	if is_instance_valid(_docs_comment_btn):
+		_docs_comment_btn.visible = not full_path.is_empty()
+		var cmt_count: int = (_docs_comments.get(full_path, []) as Array).filter(
+			func(c: Dictionary) -> bool: return not c.get("resolved", false)
+		).size()
+		_docs_comment_btn.text = ("💬 %d" % cmt_count) if cmt_count > 0 else "💬"
 
 func _docs_enter_suggest() -> void:
 	_docs_in_suggest_mode = true
@@ -8489,7 +8814,12 @@ func _docs_review_reject(idx: int) -> void:
 	_refresh_vote_list()
 
 func _docs_requires_vote(full_path: String) -> bool:
-	return _docs_permissions.get(full_path, {}).get("require_vote", false)
+	var perm: Dictionary = _docs_permissions.get(full_path, {})
+	var mode: String = perm.get("mode", "anyone")
+	# Legacy: mode == "anyone" with require_vote flag
+	if mode == "anyone" and perm.get("require_vote", false):
+		return true
+	return mode in ["role_vote", "team_vote"]
 
 func _docs_vote_threshold_met(sugg: Dictionary, member_count: int = 0) -> bool:
 	var votes: Dictionary = sugg.get("votes", {})
@@ -8498,12 +8828,24 @@ func _docs_vote_threshold_met(sugg: Dictionary, member_count: int = 0) -> bool:
 	var total_cast := yes_count + no_count
 	if total_cast == 0:
 		return false
-	# Use total eligible voters so 1-of-1 can't pass a 3/4 threshold.
-	# Fall back to votes-cast only if we never loaded the member count.
-	var eligible := max(total_cast, member_count) if member_count > 0 else total_cast
+	# For role_vote mode, denominator = number of role holders (not all members).
+	var doc_path: String = sugg.get("doc_path", "")
+	var perm: Dictionary = _docs_permissions.get(doc_path, {})
+	var mode: String = perm.get("mode", "anyone")
+	var eligible: int
+	if mode == "role_vote":
+		var req_role: String = perm.get("required_role", "")
+		if not req_role.is_empty():
+			var role_holders: Array = ((_election_data.get("holders", {}) as Dictionary).get(req_role, []) as Array)
+			eligible = max(total_cast, role_holders.size()) if role_holders.size() > 0 else total_cast
+		else:
+			eligible = max(total_cast, member_count) if member_count > 0 else total_cast
+	else:
+		# team_vote or legacy: use all-member count.
+		eligible = max(total_cast, member_count) if member_count > 0 else total_cast
 	match sugg.get("vote_threshold", "1/2"):
 		"1/3": return yes_count * 3 >= eligible
-		"1/2": return yes_count * 2 >= eligible   # ≥ half of all members
+		"1/2": return yes_count * 2 >= eligible
 		"2/3": return yes_count * 3 >= eligible * 2
 		"3/4": return yes_count * 4 >= eligible * 3
 	return false
@@ -11400,7 +11742,13 @@ func _election_seed_initial_leader(users: Array) -> void:
 	if auth_leader.is_empty():
 		return
 	var today := Time.get_date_string_from_system()
-	roles["Leader"] = {"description": "The project lead. Holds full administrative access — approves accounts, manages team members, and controls vault and addon settings.", "desc_locked": false}
+	roles["Leader"] = {
+		"description": "The project lead. Holds full administrative access — approves accounts, manages team members, and controls vault and addon settings.",
+		"desc_locked": false,
+		"max_holders": 1,
+		"star_threshold": 3.5,
+		"appointer_role": ""
+	}
 	_election_data["roles"] = roles
 	var holders: Dictionary = _election_data.get("holders", {}) as Dictionary
 	holders["Leader"] = [auth_leader]
@@ -11440,8 +11788,111 @@ func _election_maybe_snapshot(role: String) -> void:
 	snaps_dict[role] = snaps
 	_election_data["snapshots"] = snaps_dict
 
+func _election_role_max_holders(role: String) -> int:
+	var role_data: Dictionary = ((_election_data.get("roles", {}) as Dictionary).get(role, {}) as Dictionary)
+	return int(role_data.get("max_holders", 1))
+
+func _election_role_star_threshold(role: String) -> float:
+	var role_data: Dictionary = ((_election_data.get("roles", {}) as Dictionary).get(role, {}) as Dictionary)
+	return float(role_data.get("star_threshold", 3.5))
+
+func _election_role_appointer(role: String) -> String:
+	var role_data: Dictionary = ((_election_data.get("roles", {}) as Dictionary).get(role, {}) as Dictionary)
+	return role_data.get("appointer_role", "") as String
+
 func _election_eval_takeovers(role: String) -> void:
+	# Roles with an appointer are manually managed — skip score-based evaluation.
+	if not _election_role_appointer(role).is_empty():
+		return
+
+	var max_h: int = _election_role_max_holders(role)
 	var holders: Array = ((_election_data.get("holders", {}) as Dictionary).get(role, []) as Array)
+
+	# ── Unlimited roles: anyone above star threshold gets/keeps the role ─────
+	if max_h == -1:
+		var star_thresh := _election_role_star_threshold(role)
+		var new_holders: Array = []
+		for u: Dictionary in _election_members:
+			var uname: String = u.get("username", "") as String
+			if uname.is_empty():
+				continue
+			if not _election_meets_threshold(role, uname):
+				continue
+			if _election_avg(role, uname) >= star_thresh:
+				new_holders.append(uname)
+		# Apply changes
+		var gained: Array = []
+		var lost: Array = []
+		for uname: String in new_holders:
+			if uname not in holders:
+				gained.append(uname)
+		for uname: String in holders:
+			if uname not in new_holders:
+				lost.append(uname)
+		if gained.is_empty() and lost.is_empty():
+			return
+		var holders_dict: Dictionary = _election_data.get("holders", {}) as Dictionary
+		holders_dict[role] = new_holders
+		_election_data["holders"] = holders_dict
+		var holder_since: Dictionary = _election_data.get("holder_since", {}) as Dictionary
+		var role_since: Dictionary = holder_since.get(role, {}) as Dictionary
+		var today := Time.get_date_string_from_system()
+		for uname: String in gained:
+			role_since[uname] = today
+			_log_activity("election_assigned", '🏆 %s earned role "%s" (score threshold met)' % [uname, role])
+		for uname: String in lost:
+			role_since.erase(uname)
+			_log_activity("election_changed", '📉 %s lost role "%s" (score fell below threshold)' % [uname, role])
+		holder_since[role] = role_since
+		_election_data["holder_since"] = holder_since
+		_election_update_lock_flags()
+		call_deferred("_election_rebuild_role_opt")
+		return
+
+	# ── Multi-holder fixed-count roles: keep top N by score ─────────────────
+	if max_h > 1:
+		# Collect all candidates with scores meeting the voter threshold
+		var scored: Array = []
+		for u: Dictionary in _election_members:
+			var uname: String = u.get("username", "") as String
+			if uname.is_empty(): continue
+			if not _election_is_candidate(role, uname): continue
+			if not _election_meets_threshold(role, uname): continue
+			scored.append({"username": uname, "avg": _election_avg(role, uname)})
+		scored.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return float(a["avg"]) > float(b["avg"])
+		)
+		var top_n: Array = []
+		for i: int in range(min(max_h, scored.size())):
+			top_n.append(scored[i]["username"] as String)
+		# Only apply if the set changed
+		var holders_set: Array = holders.duplicate()
+		holders_set.sort()
+		var top_n_sorted: Array = top_n.duplicate()
+		top_n_sorted.sort()
+		if holders_set == top_n_sorted:
+			return
+		var holders_dict: Dictionary = _election_data.get("holders", {}) as Dictionary
+		holders_dict[role] = top_n
+		_election_data["holders"] = holders_dict
+		var holder_since: Dictionary = _election_data.get("holder_since", {}) as Dictionary
+		var role_since: Dictionary = holder_since.get(role, {}) as Dictionary
+		var today := Time.get_date_string_from_system()
+		for uname: String in top_n:
+			if uname not in holders:
+				role_since[uname] = today
+				_log_activity("election_assigned", '🏆 %s earned role "%s" (top %d)' % [uname, role, max_h])
+		for uname: String in holders:
+			if uname not in top_n:
+				role_since.erase(uname)
+				_log_activity("election_changed", '📉 %s lost role "%s" (no longer in top %d)' % [uname, role, max_h])
+		holder_since[role] = role_since
+		_election_data["holder_since"] = holder_since
+		_election_update_lock_flags()
+		call_deferred("_election_rebuild_role_opt")
+		return
+
+	# ── Single-holder roles: challenger-must-lead-N-weeks logic ─────────────
 	var snaps: Array = ((_election_data.get("snapshots", {}) as Dictionary).get(role, []) as Array)
 	var weeks_to_replace: int = int(_election_setting("weeks_to_replace", 4))
 	var weeks_to_announce: int = int(_election_setting("weeks_to_announce", 2))
@@ -11644,6 +12095,11 @@ func _build_elections_tab(tabs: TabContainer) -> void:
 	del_role_btn.tooltip_text = "Delete current role"
 	del_role_btn.pressed.connect(_election_delete_selected_role)
 	toolbar.add_child(del_role_btn)
+	var cfg_role_btn := Button.new()
+	cfg_role_btn.text = "⚙ Role"
+	cfg_role_btn.tooltip_text = "Configure selected role (leader only)"
+	cfg_role_btn.pressed.connect(_election_configure_role)
+	toolbar.add_child(cfg_role_btn)
 	var settings_btn := Button.new()
 	settings_btn.text = "⚙"
 	settings_btn.tooltip_text = "Election settings"
@@ -11796,16 +12252,31 @@ func _election_refresh_roles_summary() -> void:
 		return
 	for role: String in roles:
 		var holders: Array = (holders_dict.get(role, []) as Array)
+		var role_data: Dictionary = ((_election_data.get("roles", {}) as Dictionary).get(role, {}) as Dictionary)
+		var max_h: int = int(role_data.get("max_holders", 1))
 		var entry := VBoxContainer.new()
 		entry.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		entry.add_theme_constant_override("separation", 1)
+		var role_row := HBoxContainer.new()
 		var role_lbl := Label.new()
 		role_lbl.text = role
 		role_lbl.add_theme_font_size_override("font_size", 11)
 		role_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
 		role_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		role_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		entry.add_child(role_lbl)
+		role_row.add_child(role_lbl)
+		if max_h != 1:
+			var cap_lbl := Label.new()
+			cap_lbl.add_theme_font_size_override("font_size", 10)
+			if max_h == -1:
+				cap_lbl.text = "∞"
+				cap_lbl.tooltip_text = "Unlimited holders"
+			else:
+				cap_lbl.text = "%d/%d" % [holders.size(), max_h]
+				cap_lbl.tooltip_text = "Holders: %d of %d" % [holders.size(), max_h]
+			cap_lbl.add_theme_color_override("font_color", Color(0.5, 0.7, 1.0))
+			role_row.add_child(cap_lbl)
+		entry.add_child(role_row)
 		var holder_lbl := Label.new()
 		if holders.is_empty():
 			holder_lbl.text = "  — vacant"
@@ -11848,6 +12319,18 @@ func _election_refresh_help() -> void:
 	t += "A challenger must lead the current holder for [b]%d consecutive week%s[/b]. " % [weeks_replace, "s" if weeks_replace != 1 else ""]
 	t += "The change is announced [b]%d week%s[/b] before it takes effect.\n\n" % [weeks_announce, "s" if weeks_announce != 1 else ""]
 
+	t += "[color=%s]Multi-holder roles[/color]\n" % acc
+	t += "Set [b]max holders > 1[/b] in ⚙ Role to let multiple people share a role. "
+	t += "The top N scorers hold it — holders are updated weekly.\n\n"
+
+	t += "[color=%s]Unlimited roles[/color]\n" % acc
+	t += "Set [b]max holders = ∞[/b] and a [b]star threshold[/b] — anyone whose average score "
+	t += "meets that threshold automatically earns the role.\n\n"
+
+	t += "[color=%s]Appointed roles[/color]\n" % acc
+	t += "Set an [b]appointer role[/b] in ⚙ Role. Holders of the appointer role can directly "
+	t += "add or remove members without a score election.\n\n"
+
 	t += "[color=%s]Role lock[/color]\n" % acc
 	t += "Roles held for [b]%d+ month%s[/b] require a vote to modify their description or reassign.\n\n" % [lock_months, "s" if lock_months != 1 else ""]
 
@@ -11884,9 +12367,10 @@ func _election_refresh() -> void:
 			if is_instance_valid(_election_edit_desc_btn):
 				_election_edit_desc_btn.visible = false
 
-	# Candidate button
+	# Candidate button — hidden for appointed roles
 	if is_instance_valid(_election_candidate_btn):
-		if not role.is_empty() and not me.is_empty():
+		var appointer_r := _election_role_appointer(role)
+		if not role.is_empty() and not me.is_empty() and appointer_r.is_empty():
 			_election_candidate_btn.visible = true
 			if _election_is_candidate(role, me):
 				_election_candidate_btn.text = "❌ Withdraw candidacy for \"%s\"" % role
@@ -11950,6 +12434,25 @@ func _election_refresh() -> void:
 	)
 
 	var role_scores: Dictionary = ((_election_data.get("scores", {}) as Dictionary).get(role, {}) as Dictionary)
+	var appointer_role := _election_role_appointer(role)
+	var i_can_appoint: bool = (not appointer_role.is_empty() and _election_is_holder(appointer_role, me)) or _election_is_leader()
+	var max_h := _election_role_max_holders(role)
+	var current_holders: Array = ((_election_data.get("holders", {}) as Dictionary).get(role, []) as Array)
+	var holder_count := current_holders.size()
+
+	# Header showing holder count for multi-holder roles
+	if max_h != 1:
+		var mh_info := Label.new()
+		mh_info.add_theme_font_size_override("font_size", 11)
+		mh_info.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+		if max_h == -1:
+			var st := _election_role_star_threshold(role)
+			mh_info.text = "Unlimited holders — score threshold: %.1f/5" % st
+		else:
+			mh_info.text = "Holders: %d / %d" % [holder_count, max_h]
+		if not appointer_role.is_empty():
+			mh_info.text += "   (appointed by: %s)" % appointer_role
+		_election_member_list.add_child(mh_info)
 
 	for entry: Dictionary in rows:
 		var uname: String = entry["username"]
@@ -11986,9 +12489,32 @@ func _election_refresh() -> void:
 		score_lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3) if meets else Color(0.55, 0.55, 0.55))
 		score_lbl.add_theme_font_size_override("font_size", 11)
 		hdr.add_child(score_lbl)
+
+		# Appoint / Remove buttons (shown for appointer role holders + leader)
+		if i_can_appoint and uname != me:
+			var cap_u := uname
+			var cap_r := role
+			if is_hld:
+				var rem_btn := Button.new()
+				rem_btn.text = "🚫 Remove"
+				rem_btn.flat = true
+				rem_btn.add_theme_color_override("font_color", Color(0.9, 0.4, 0.4))
+				rem_btn.pressed.connect(func(): _election_remove_holder(cap_r, cap_u))
+				hdr.add_child(rem_btn)
+			else:
+				var can_add: bool = max_h == -1 or holder_count < max_h
+				var appt_btn := Button.new()
+				appt_btn.text = "✚ Appoint"
+				appt_btn.flat = true
+				appt_btn.disabled = not can_add
+				appt_btn.add_theme_color_override("font_color", Color(0.4, 0.9, 0.5))
+				appt_btn.pressed.connect(func(): _election_appoint_holder(cap_r, cap_u))
+				hdr.add_child(appt_btn)
+
 		vb.add_child(hdr)
 
-		if uname != me:
+		# Score row — hide for fully-appointed roles (appointer handles it, scoring irrelevant)
+		if appointer_role.is_empty() and uname != me:
 			var vote_row := HBoxContainer.new()
 			var vote_lbl := Label.new()
 			vote_lbl.text = "Your score:"
@@ -12101,7 +12627,10 @@ func _election_create_role(name: String) -> void:
 		"created_at": Time.get_date_string_from_system(),
 		"created_by": _current_user.get("username", "?"),
 		"description": "",
-		"desc_locked": false
+		"desc_locked": false,
+		"max_holders": 1,       # 1=single, N=multi, -1=unlimited (star threshold)
+		"star_threshold": 3.5,  # average score required for unlimited roles
+		"appointer_role": ""    # if set, holders of this role directly appoint/remove
 	}
 	_election_data["roles"] = roles
 	_election_sel_role = name
@@ -12410,6 +12939,158 @@ func _election_show_settings() -> void:
 		inner.add_child(HSeparator.new())
 
 	_election_settings_dialog.popup_centered()
+
+func _election_configure_role() -> void:
+	if not _election_is_leader():
+		if is_instance_valid(_election_status_lbl):
+			_election_status_lbl.text = "⚠ Only the Leader can configure roles"
+			get_tree().create_timer(2.5).timeout.connect(func():
+				if is_instance_valid(_election_status_lbl): _election_status_lbl.text = "")
+		return
+	var role := _election_sel_role
+	if role.is_empty():
+		return
+	var role_data: Dictionary = ((_election_data.get("roles", {}) as Dictionary).get(role, {}) as Dictionary)
+
+	var dlg := AcceptDialog.new()
+	dlg.exclusive = false
+	dlg.title = "Configure role: " + role
+	dlg.size = Vector2i(420, 340)
+	var vb := VBoxContainer.new()
+	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vb.add_theme_constant_override("separation", 6)
+	dlg.add_child(vb)
+
+	# ── Max holders ──────────────────────────────────────────────────────────
+	var mh_lbl := Label.new()
+	mh_lbl.text = "Max holders:"
+	mh_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	vb.add_child(mh_lbl)
+	var mh_row := HBoxContainer.new()
+	var mh_opt := OptionButton.new()
+	mh_opt.add_item("1  (single holder — score election)")
+	mh_opt.add_item("2  holders")
+	mh_opt.add_item("3  holders")
+	mh_opt.add_item("5  holders")
+	mh_opt.add_item("∞  unlimited (star threshold)")
+	var mh_val_map := [1, 2, 3, 5, -1]
+	var cur_mh: int = int(role_data.get("max_holders", 1))
+	var cur_mh_idx := 0
+	for i: int in range(mh_val_map.size()):
+		if mh_val_map[i] == cur_mh:
+			cur_mh_idx = i
+			break
+	mh_opt.select(cur_mh_idx)
+	mh_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mh_row.add_child(mh_opt)
+	vb.add_child(mh_row)
+
+	# ── Star threshold (only for unlimited) ──────────────────────────────────
+	var st_section := VBoxContainer.new()
+	st_section.visible = cur_mh == -1
+	vb.add_child(st_section)
+	var st_lbl := Label.new()
+	st_lbl.text = "Min average score to earn role (1–5):"
+	st_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	st_section.add_child(st_lbl)
+	var st_spin := SpinBox.new()
+	st_spin.min_value = 1.0
+	st_spin.max_value = 5.0
+	st_spin.step = 0.5
+	st_spin.value = float(role_data.get("star_threshold", 3.5))
+	st_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	st_section.add_child(st_spin)
+	mh_opt.item_selected.connect(func(idx: int):
+		st_section.visible = mh_val_map[idx] == -1
+	)
+
+	vb.add_child(HSeparator.new())
+
+	# ── Appointer role ────────────────────────────────────────────────────────
+	var ap_lbl := Label.new()
+	ap_lbl.text = "Appointer role (holders of this role can directly appoint/remove):"
+	ap_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	ap_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	vb.add_child(ap_lbl)
+	var ap_opt := OptionButton.new()
+	ap_opt.add_item("— None (score-based election)")
+	ap_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var all_roles := _election_sorted_roles()
+	var cur_appointer: String = role_data.get("appointer_role", "") as String
+	var ap_sel_idx := 0
+	for ri: int in range(all_roles.size()):
+		var rn: String = all_roles[ri]
+		if rn == role:
+			continue  # can't appoint yourself
+		ap_opt.add_item(rn)
+		if rn == cur_appointer:
+			ap_sel_idx = ap_opt.item_count - 1
+	ap_opt.select(ap_sel_idx)
+	vb.add_child(ap_opt)
+
+	add_child(dlg)
+	dlg.confirmed.connect(func():
+		var roles_dict: Dictionary = _election_data.get("roles", {}) as Dictionary
+		var rd: Dictionary = roles_dict.get(role, {}) as Dictionary
+		rd["max_holders"] = mh_val_map[mh_opt.selected]
+		rd["star_threshold"] = st_spin.value
+		var ap_idx := ap_opt.selected
+		if ap_idx == 0:
+			rd["appointer_role"] = ""
+		else:
+			# Item 0 is "None", items 1+ are role names (skipping self)
+			var ap_roles: Array = []
+			for rn2: String in all_roles:
+				if rn2 != role:
+					ap_roles.append(rn2)
+			var role_ap_idx := ap_idx - 1
+			if role_ap_idx >= 0 and role_ap_idx < ap_roles.size():
+				rd["appointer_role"] = ap_roles[role_ap_idx]
+		roles_dict[role] = rd
+		_election_data["roles"] = roles_dict
+		_save_elections()
+		_election_rebuild_role_opt()
+		_election_refresh()
+		dlg.queue_free()
+	)
+	dlg.canceled.connect(func(): dlg.queue_free())
+	dlg.popup_centered()
+
+func _election_appoint_holder(role: String, username: String) -> void:
+	var holders_dict: Dictionary = _election_data.get("holders", {}) as Dictionary
+	var holder_list: Array = holders_dict.get(role, []) as Array
+	if username in holder_list:
+		return
+	holder_list.append(username)
+	holders_dict[role] = holder_list
+	_election_data["holders"] = holders_dict
+	var holder_since: Dictionary = _election_data.get("holder_since", {}) as Dictionary
+	var role_since: Dictionary = holder_since.get(role, {}) as Dictionary
+	role_since[username] = Time.get_date_string_from_system()
+	holder_since[role] = role_since
+	_election_data["holder_since"] = holder_since
+	_save_elections()
+	_log_activity("election_assigned", '👤 %s appointed %s to role "%s"' % [
+		_current_user.get("username", "?"), username, role])
+	_election_rebuild_role_opt()
+	_election_refresh()
+
+func _election_remove_holder(role: String, username: String) -> void:
+	var holders_dict: Dictionary = _election_data.get("holders", {}) as Dictionary
+	var holder_list: Array = holders_dict.get(role, []) as Array
+	holder_list.erase(username)
+	holders_dict[role] = holder_list
+	_election_data["holders"] = holders_dict
+	var holder_since: Dictionary = _election_data.get("holder_since", {}) as Dictionary
+	var role_since: Dictionary = holder_since.get(role, {}) as Dictionary
+	role_since.erase(username)
+	holder_since[role] = role_since
+	_election_data["holder_since"] = holder_since
+	_save_elections()
+	_log_activity("election_changed", '🚫 %s removed %s from role "%s"' % [
+		_current_user.get("username", "?"), username, role])
+	_election_rebuild_role_opt()
+	_election_refresh()
 
 # ─── Bundles tab ──────────────────────────────────────────────────────────────
 
