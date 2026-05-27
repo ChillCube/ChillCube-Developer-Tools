@@ -23,49 +23,41 @@ A **🧊 CC Tools** panel added to the top of the Godot editor. No terminal requ
 
 **Setting up an SSH key (one-time):**
 
-**1. Generate a key**
+> [!NOTE]
+> On Windows, run all of these commands inside **Git Bash** (not PowerShell or CMD).
+
+**1. Check if you already have a key**
+
+```bash
+ls ~/.ssh/id_ed25519.pub
+```
+If the file exists, skip to step 3. If you get "No such file or directory", continue to step 2.
+
+**2. Generate a key**
 
 ```bash
 ssh-keygen -t ed25519 -C "your@email.com"
 ```
 Press **Enter** three times to accept the default file location and skip the passphrase.
 
-> [!NOTE]
-> On Windows, run this inside **Git Bash** (not PowerShell or CMD).
+**3. Add the key to the SSH agent**
 
-**2. Add the key to the SSH agent**
-
-Linux / macOS:
-```bash
-eval "$(ssh-agent -s)"
-ssh-add ~/.ssh/id_ed25519
-```
-
-Windows (Git Bash):
 ```bash
 eval "$(ssh-agent -s)"
 ssh-add ~/.ssh/id_ed25519
 ```
 
 > [!NOTE]
-> On macOS you can add `-K` (`ssh-add -K ~/.ssh/id_ed25519`) to save the passphrase in your Keychain so you never need to re-add it after a reboot.
+> On macOS, use `ssh-add --apple-use-keychain ~/.ssh/id_ed25519` instead to save it in your Keychain — otherwise you'll need to re-add it every reboot.
 
-**3. Add the public key to GitHub**
+**4. Add the public key to GitHub**
 
-Copy the public key:
-
-Linux / macOS:
 ```bash
 cat ~/.ssh/id_ed25519.pub
 ```
-Windows (Git Bash):
-```bash
-cat ~/.ssh/id_ed25519.pub
-```
+Copy the output, then go to **[GitHub → Settings → SSH and GPG keys → New SSH key](https://github.com/settings/ssh/new)**, paste it in, and click **Add SSH key**.
 
-Then go to **GitHub → Settings → SSH and GPG keys → New SSH key**, paste the output, and save.
-
-**4. Verify it works**
+**5. Verify it works**
 
 ```bash
 ssh -T git@github.com
