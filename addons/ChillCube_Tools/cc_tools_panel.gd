@@ -293,6 +293,16 @@ var _login_thread: Thread = null
 
 var _thread: Thread = null
 
+# ─── Optimisation: tab refs + dirty flags + misc thread + terminal cache ──────
+var _team_inner_tabs: TabContainer = null
+var _planning_inner_tabs: TabContainer = null
+var _activity_needs_refresh: bool = false
+var _vote_list_needs_refresh: bool = false
+var _todo_needs_refresh: bool = false
+var _schedule_needs_refresh: bool = false
+var _misc_thread: Thread = null
+var _term_emulator_cache: String = ""
+
 # ─── Elections ────────────────────────────────────────────────────────────────
 var _election_data: Dictionary = {}
 var _election_sel_role: String = ""
@@ -788,8 +798,13 @@ func _ready() -> void:
 	_build_admin_tab(tabs)
 
 	tabs.tab_changed.connect(func(idx: int):
-		if tabs.get_tab_title(idx) == "Dashboard":
+		var title := tabs.get_tab_title(idx)
+		if title == "Dashboard":
 			_refresh_dashboard()
+		elif title == "Team" and is_instance_valid(_team_inner_tabs):
+			_on_team_inner_tab_changed(_team_inner_tabs.current_tab)
+		elif title == "Planning" and is_instance_valid(_planning_inner_tabs):
+			_on_planning_inner_tab_changed(_planning_inner_tabs.current_tab)
 	)
 
 	_refresh_addons()
@@ -840,6 +855,8 @@ func _exit_tree() -> void:
 		_election_thread.wait_to_finish()
 	if _leader_sync_thread and _leader_sync_thread.is_started():
 		_leader_sync_thread.wait_to_finish()
+	if _misc_thread and _misc_thread.is_started():
+		_misc_thread.wait_to_finish()
 	if _gd_thread and _gd_thread.is_started():
 		_gd_thread.wait_to_finish()
 
@@ -1413,10 +1430,12 @@ func _show_addon_meta_dialog(addon_path: String, current: Dictionary) -> void:
 		new_fields["category"] = cat_opt.get_item_text(cat_opt.selected)
 		var cfg_path := addon_path + "/plugin.cfg"
 		if Ops.update_cfg(cfg_path, new_fields):
-			var t := Thread.new()
-			t.start(func():
+			if _misc_thread and _misc_thread.is_started():
+				_misc_thread.wait_to_finish()
+			_misc_thread = Thread.new()
+			_misc_thread.start(func():
 				Ops.files_quick_commit(addon_path, ["plugin.cfg"], "meta: update addon metadata", Callable())
-				t.call_deferred("wait_to_finish")
+				call_deferred("_misc_thread_done")
 			)
 			_refresh_addons()
 		dlg.queue_free()
@@ -1425,10 +1444,12 @@ func _show_addon_meta_dialog(addon_path: String, current: Dictionary) -> void:
 	dlg.popup_centered()
 
 func _dep_commit_bg(addon_path: String) -> void:
-	var t := Thread.new()
-	t.start(func():
+	if _misc_thread and _misc_thread.is_started():
+		_misc_thread.wait_to_finish()
+	_misc_thread = Thread.new()
+	_misc_thread.start(func():
 		Ops.dep_quick_commit(addon_path, func(msg): call_deferred("_append_log", _installed_log, msg))
-		t.call_deferred("wait_to_finish")
+		call_deferred("_misc_thread_done")
 	)
 
 func _build_dep_candidates(current_folder: String, current_deps: Array) -> Array:
@@ -2331,14 +2352,15 @@ func _ws_find_next(backwards: bool) -> void:
 
 func _build_planning_tab(tabs: TabContainer) -> void:
 	var outer := _vbox("Planning", tabs)
-	var inner_tabs := TabContainer.new()
-	inner_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	inner_tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	outer.add_child(inner_tabs)
-	_build_planned_subtab(inner_tabs)
-	_build_bugs_subtab(inner_tabs)
-	_build_todo_subtab(inner_tabs)
-	_build_feedback_subtab(inner_tabs)
+	_planning_inner_tabs = TabContainer.new()
+	_planning_inner_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_planning_inner_tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	outer.add_child(_planning_inner_tabs)
+	_build_planned_subtab(_planning_inner_tabs)
+	_build_bugs_subtab(_planning_inner_tabs)
+	_build_todo_subtab(_planning_inner_tabs)
+	_build_feedback_subtab(_planning_inner_tabs)
+	_planning_inner_tabs.tab_changed.connect(_on_planning_inner_tab_changed)
 
 func _build_feedback_subtab(tabs: TabContainer) -> void:
 	var root := _vbox("Feedback", tabs)
@@ -3468,6 +3490,12 @@ func _todo_bbcode(text: String, done: bool = false) -> String:
 	return out
 
 func _refresh_todo() -> void:
+	if not is_instance_valid(_todo_list):
+		return
+	# Skip rebuild when To-Do tab isn't visible; mark dirty for lazy rebuild.
+	if not _todo_list.is_visible_in_tree():
+		_todo_needs_refresh = true
+		return
 	for child in _todo_list.get_children():
 		child.queue_free()
 
@@ -3800,16 +3828,45 @@ func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
 func _build_team_supertab(tabs: TabContainer) -> void:
 	var root := _vbox("Team", tabs)
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var inner_tabs := TabContainer.new()
-	inner_tabs.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	inner_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	root.add_child(inner_tabs)
-	_build_activity_tab(inner_tabs)
-	_build_votes_tab(inner_tabs)
-	_build_decision_log_tab(inner_tabs)
-	_build_schedule_tab(inner_tabs)
-	_build_forum_tab(inner_tabs)
-	_build_elections_tab(inner_tabs)
+	_team_inner_tabs = TabContainer.new()
+	_team_inner_tabs.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_team_inner_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_child(_team_inner_tabs)
+	_build_activity_tab(_team_inner_tabs)
+	_build_votes_tab(_team_inner_tabs)
+	_build_decision_log_tab(_team_inner_tabs)
+	_build_schedule_tab(_team_inner_tabs)
+	_build_forum_tab(_team_inner_tabs)
+	_build_elections_tab(_team_inner_tabs)
+	_team_inner_tabs.tab_changed.connect(_on_team_inner_tab_changed)
+
+# ─── Lazy-refresh handlers (flush dirty flags when tab becomes visible) ────────
+
+func _on_team_inner_tab_changed(idx: int) -> void:
+	if not is_instance_valid(_team_inner_tabs):
+		return
+	var title := _team_inner_tabs.get_tab_title(idx)
+	match title:
+		"Activity":
+			if _activity_needs_refresh:
+				_activity_needs_refresh = false
+				_refresh_activity_list()
+		"Votes":
+			if _vote_list_needs_refresh:
+				_vote_list_needs_refresh = false
+				_refresh_vote_list()
+		"Schedule":
+			if _schedule_needs_refresh:
+				_schedule_needs_refresh = false
+				_refresh_schedule_list()
+
+func _on_planning_inner_tab_changed(idx: int) -> void:
+	if not is_instance_valid(_planning_inner_tabs):
+		return
+	var title := _planning_inner_tabs.get_tab_title(idx)
+	if title == "To-Do" and _todo_needs_refresh:
+		_todo_needs_refresh = false
+		_refresh_todo()
 
 # ─── Votes tab ────────────────────────────────────────────────────────────────
 
@@ -4009,6 +4066,10 @@ func _on_vote_member_count(vote_idx: int, member_count: int) -> void:
 
 func _refresh_vote_list() -> void:
 	if not is_instance_valid(_vote_list):
+		return
+	# Skip rebuild when Votes tab isn't visible; mark dirty for lazy rebuild.
+	if not _vote_list.is_visible_in_tree():
+		_vote_list_needs_refresh = true
 		return
 	for c in _vote_list.get_children():
 		c.queue_free()
@@ -5079,6 +5140,10 @@ func _save_schedule() -> void:
 
 func _refresh_schedule_list() -> void:
 	if not is_instance_valid(_schedule_list):
+		return
+	# Skip rebuild when Schedule tab isn't visible; mark dirty for lazy rebuild.
+	if not _schedule_list.is_visible_in_tree():
+		_schedule_needs_refresh = true
 		return
 	for c in _schedule_list.get_children():
 		c.queue_free()
@@ -8654,13 +8719,15 @@ func _term_on_done(raw: String) -> void:
 	_term_input.grab_focus()
 
 func _term_open_external(initial_cmd: String = "") -> void:
-	var candidates := ["xterm", "kitty", "alacritty", "konsole", "gnome-terminal", "xfce4-terminal", "lxterminal", "mate-terminal"]
-	var found := ""
-	for t in candidates:
-		var which: Array = []
-		if OS.execute("which", [t], which, true) == 0 and not (which[0] as String).strip_edges().is_empty():
-			found = t
-			break
+	# Re-use the cached result so we don't probe 8 executables every call.
+	if _term_emulator_cache.is_empty():
+		var candidates := ["xterm", "kitty", "alacritty", "konsole", "gnome-terminal", "xfce4-terminal", "lxterminal", "mate-terminal"]
+		for t in candidates:
+			var which: Array = []
+			if OS.execute("which", [t], which, true) == 0 and not (which[0] as String).strip_edges().is_empty():
+				_term_emulator_cache = t
+				break
+	var found := _term_emulator_cache
 	if found.is_empty():
 		_term_append("⚠ No terminal emulator found. Install xterm, kitty, or konsole.")
 		return
@@ -9502,11 +9569,18 @@ func _activity_auto_push() -> void:
 		_activity_push_pending = true
 		return
 	_activity_push_pending = false
+	if is_instance_valid(_activity_status_lbl):
+		_activity_status_lbl.text = "⏳ Syncing…"
 	_activity_thread = Thread.new()
 	_activity_thread.start(func():
 		var pushed := Ops.cc_data_push(_cc_data_bundle(), Callable())
 		call_deferred("_activity_on_pushed", pushed)
 	)
+
+func _misc_thread_done() -> void:
+	if _misc_thread and _misc_thread.is_started():
+		_misc_thread.wait_to_finish()
+	_misc_thread = null
 
 func _activity_on_pushed(pushed: bool) -> void:
 	if _activity_thread:
@@ -9526,6 +9600,10 @@ const _REACTION_EMOJIS := ["👍", "❤", "😄", "🔥", "🎉", "👀", "🤔"
 
 func _refresh_activity_list() -> void:
 	if not is_instance_valid(_activity_list):
+		return
+	# Skip rebuild when the Activity tab isn't visible; mark dirty for lazy rebuild.
+	if not _activity_list.is_visible_in_tree():
+		_activity_needs_refresh = true
 		return
 	for child in _activity_list.get_children():
 		child.queue_free()
