@@ -165,12 +165,13 @@ var _docs_new_dir_btn: Button
 
 var _docs_permissions: Dictionary = {}  # full_path -> {"mode": "anyone"|"specific", "users": [...]}
 var _docs_perm_btn: Button
-var _docs_perm_dialog: AcceptDialog
+var _docs_perm_dialog: ConfirmationDialog
 var _docs_perm_mode: OptionButton
 var _docs_perm_user_section: VBoxContainer
 var _docs_perm_user_list: VBoxContainer
 var _docs_perm_input: LineEdit
 var _docs_perm_path: String = ""
+var _docs_perm_original: Dictionary = {}  # snapshot of permissions when dialog opened
 
 var _docs_suggestions: Array = []
 var _docs_suggest_btn: Button
@@ -302,6 +303,11 @@ var _todo_needs_refresh: bool = false
 var _schedule_needs_refresh: bool = false
 var _misc_thread: Thread = null
 var _term_emulator_cache: String = ""
+
+# ─── Doc vote: async threshold check + approval queue ────────────────────────
+var _docs_vote_thread: Thread = null
+var _docs_pending_approve_idx: int = -1
+var _cached_member_count: int = 0
 
 # ─── Elections ────────────────────────────────────────────────────────────────
 var _election_data: Dictionary = {}
@@ -857,6 +863,8 @@ func _exit_tree() -> void:
 		_leader_sync_thread.wait_to_finish()
 	if _misc_thread and _misc_thread.is_started():
 		_misc_thread.wait_to_finish()
+	if _docs_vote_thread and _docs_vote_thread.is_started():
+		_docs_vote_thread.wait_to_finish()
 	if _gd_thread and _gd_thread.is_started():
 		_gd_thread.wait_to_finish()
 
@@ -4045,6 +4053,8 @@ func _on_vote_member_count(vote_idx: int, member_count: int) -> void:
 	if _vote_thread:
 		_vote_thread.wait_to_finish()
 	_vote_thread = null
+	if member_count > 0:
+		_cached_member_count = member_count  # share with doc vote threshold checks
 	if vote_idx < 0 or vote_idx >= _vote_items.size():
 		return
 	var vote: Dictionary = _vote_items[vote_idx]
@@ -4289,7 +4299,15 @@ func _refresh_vote_list() -> void:
 		title_lbl.bbcode_enabled = true
 		title_lbl.fit_content = true
 		title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var kind := "🔒 Permission Change" if is_perm else ("📦 Archive Request" if is_archive else ("📁 Move Request" if is_move_req2 else "📄 " + doc_name))
+		var kind := ""
+		if is_perm:
+			kind = "🔒 " + doc_name + " — Permission Change"
+		elif is_archive:
+			kind = "📦 " + doc_name + " — Archive Request"
+		elif is_move_req2:
+			kind = "📁 " + doc_name + " — Move Request"
+		else:
+			kind = "📄 " + doc_name
 		title_lbl.text = "[b]%s[/b]  [color=#aaaaff][DOC VOTE][/color]  [color=#42a5f5][OPEN][/color]" % kind
 		header.add_child(title_lbl)
 		var diff_btn := Button.new()
@@ -4309,14 +4327,28 @@ func _refresh_vote_list() -> void:
 		sub_lbl.add_theme_font_size_override("font_size", 11)
 		cvbox.add_child(sub_lbl)
 		if is_perm:
-			var perm_lbl := Label.new()
 			var new_p: Dictionary = s.get("new_permissions", {})
-			var req_v: bool = new_p.get("require_vote", false)
-			var mode: String = new_p.get("mode", "anyone")
-			perm_lbl.text = "  Edit access: %s   Vote lock: %s" % [
-				mode, ("on (%s)" % new_p.get("vote_threshold", "")) if req_v else "off"]
-			perm_lbl.add_theme_color_override("font_color", Color(0.7, 0.65, 1.0))
-			cvbox.add_child(perm_lbl)
+			var old_p: Dictionary = s.get("old_permissions", {})
+			# Build a human-readable old → new diff for each changed field.
+			var diff_lines: Array[String] = []
+			var old_mode: String = old_p.get("mode", "anyone")
+			var new_mode: String = new_p.get("mode", "anyone")
+			if old_mode != new_mode:
+				diff_lines.append("Edit access:  %s  →  %s" % [old_mode, new_mode])
+			var old_rv: bool = old_p.get("require_vote", false)
+			var new_rv: bool = new_p.get("require_vote", false)
+			var old_thresh: String = ("on (%s)" % old_p.get("vote_threshold", "")) if old_rv else "off"
+			var new_thresh: String = ("on (%s)" % new_p.get("vote_threshold", "")) if new_rv else "off"
+			if old_thresh != new_thresh:
+				diff_lines.append("Vote lock:  %s  →  %s" % [old_thresh, new_thresh])
+			# Fallback if no old_permissions stored (legacy suggestion).
+			if diff_lines.is_empty():
+				diff_lines.append("Access: %s   Vote lock: %s" % [new_mode, new_thresh])
+			for dl: String in diff_lines:
+				var perm_lbl := Label.new()
+				perm_lbl.text = "  " + dl
+				perm_lbl.add_theme_color_override("font_color", Color(0.7, 0.65, 1.0))
+				cvbox.add_child(perm_lbl)
 		# Vote bars
 		var tally_row := HBoxContainer.new()
 		for pair in [["👍 For", yes_n, Color(0.4, 0.9, 0.5)], ["👎 Against", no_n, Color(0.9, 0.4, 0.4)]]:
@@ -6142,6 +6174,14 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 			_save_doc_suggestions()
 			if is_instance_valid(_docs_browser):
 				_docs_navigate(_docs_current_dir)
+			# Check whether any pending suggestion crossed its threshold
+			# now that new votes have arrived via sync.
+			for si in range(_docs_suggestions.size()):
+				var sc: Dictionary = _docs_suggestions[si]
+				if sc.get("status", "") == "pending" and sc.get("vote_required", false):
+					if _docs_vote_threshold_met(sc, _cached_member_count):
+						_docs_review_approve(si)
+						break  # one at a time; next sync will catch more
 
 	if "asset_meta.json" in data:
 		var parsed: Variant = JSON.parse_string(data["asset_meta.json"])
@@ -7178,7 +7218,7 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	)
 	add_child(_docs_move_dialog)
 
-	_docs_perm_dialog = AcceptDialog.new()
+	_docs_perm_dialog = ConfirmationDialog.new()
 	_docs_perm_dialog.exclusive = false
 	_docs_perm_dialog.title = "Document Permissions"
 	_docs_perm_dialog.size = Vector2i(400, 420)
@@ -7227,7 +7267,7 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	_docs_perm_vote_section.visible = false
 	perm_vbox.add_child(_docs_perm_vote_section)
 	var vote_thresh_lbl := Label.new()
-	vote_thresh_lbl.text = "Approval threshold (yes / total votes cast):"
+	vote_thresh_lbl.text = "Approval threshold (yes votes / all team members):"
 	vote_thresh_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 	_docs_perm_vote_section.add_child(vote_thresh_lbl)
 	_docs_perm_vote_thresh = OptionButton.new()
@@ -7242,6 +7282,11 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 			_docs_perm_vote_section.visible = on
 	)
 	_docs_perm_dialog.confirmed.connect(_docs_perm_save)
+	_docs_perm_dialog.canceled.connect(func():
+		# Restore any live edits made to _docs_permissions during the dialog session.
+		if not _docs_perm_path.is_empty() and not _docs_perm_original.is_empty():
+			_docs_permissions[_docs_perm_path] = _docs_perm_original.duplicate(true)
+	)
 	add_child(_docs_perm_dialog)
 
 	_docs_review_dialog = AcceptDialog.new()
@@ -7754,6 +7799,10 @@ func _docs_on_archived(old_path: String, new_path: String) -> void:
 		_docs_thread.wait_to_finish()
 	_docs_thread = null
 	_docs_status_lbl.text = "✅ Archived"
+	if _docs_pending_approve_idx >= 0:
+		var pending := _docs_pending_approve_idx
+		_docs_pending_approve_idx = -1
+		_docs_review_approve(pending)
 	_vault_files = Ops.vault_list_files(_vault_cache)
 	_docs_files = _docs_filter_files(_vault_files)
 	if _docs_sel_path == old_path:
@@ -7813,6 +7862,10 @@ func _docs_on_moved(old_path: String, new_path: String) -> void:
 		_docs_thread.wait_to_finish()
 	_docs_thread = null
 	_docs_status_lbl.text = "✅ Moved"
+	if _docs_pending_approve_idx >= 0:
+		var pending := _docs_pending_approve_idx
+		_docs_pending_approve_idx = -1
+		_docs_review_approve(pending)
 	# Migrate permissions so they follow the doc to its new path
 	if _docs_permissions.has(old_path):
 		_docs_permissions[new_path] = _docs_permissions[old_path]
@@ -7875,6 +7928,7 @@ func _docs_open_perm_dialog() -> void:
 		return
 	_docs_perm_path = _docs_sel_path
 	var perm: Dictionary = _docs_permissions.get(_docs_perm_path, {})
+	_docs_perm_original = perm.duplicate(true)  # snapshot for cancel & no-op detection
 	var mode: String = perm.get("mode", "anyone")
 	_docs_perm_mode.select(0 if mode == "anyone" else 1)
 	_docs_perm_user_section.visible = mode == "specific"
@@ -7927,42 +7981,60 @@ func _docs_perm_add_user() -> void:
 func _docs_perm_save() -> void:
 	if _docs_perm_path.is_empty():
 		return
-	var old_perm: Dictionary = _docs_permissions.get(_docs_perm_path, {})
-	var new_perm: Dictionary = old_perm.duplicate()
+	# Build the new permissions from dialog controls.
+	var new_perm: Dictionary = {}
 	new_perm["mode"] = "anyone" if _docs_perm_mode.selected == 0 else "specific"
-	if new_perm["mode"] == "anyone":
-		new_perm.erase("users")
+	if new_perm["mode"] == "specific":
+		# Preserve the (potentially live-edited) users list from _docs_permissions.
+		new_perm["users"] = (_docs_permissions.get(_docs_perm_path, {}) as Dictionary).get("users", [])
 	new_perm["require_vote"] = _docs_perm_vote_check.button_pressed
 	if new_perm["require_vote"]:
 		var thresh_list := ["1/3", "1/2", "2/3", "3/4"]
 		new_perm["vote_threshold"] = thresh_list[_docs_perm_vote_thresh.selected]
-	else:
-		new_perm.erase("vote_threshold")
-	# If the doc currently requires a vote, changing vote settings itself requires a vote
-	if old_perm.get("require_vote", false):
+
+	# Compare against the snapshot taken when the dialog was opened.
+	var orig := _docs_perm_original
+	var changed: bool = (
+		new_perm.get("mode", "anyone") != orig.get("mode", "anyone") or
+		new_perm.get("require_vote", false) != orig.get("require_vote", false) or
+		new_perm.get("vote_threshold", "") != orig.get("vote_threshold", "") or
+		JSON.stringify(new_perm.get("users", [])) != JSON.stringify(orig.get("users", []))
+	)
+	if not changed:
+		# Nothing actually changed — restore original and close silently.
+		_docs_permissions[_docs_perm_path] = orig.duplicate(true)
+		return
+
+	# If the doc currently requires a vote, changing permissions needs team approval.
+	if orig.get("require_vote", false):
 		var me: String = _current_user.get("username", "?")
+		var doc_name := _docs_perm_path.get_file().get_basename()
 		_docs_suggestions.append({
 			"id": str(Time.get_unix_time_from_system()) + "_perm_" + me,
 			"doc_path": _docs_perm_path,
+			"doc_name": doc_name,
 			"author": me,
 			"timestamp": Time.get_datetime_string_from_system(),
-			"content": _docs_loaded_content,
-			"original_content": _docs_loaded_content,
 			"status": "pending",
 			"type": "permission_change",
+			"old_permissions": orig.duplicate(true),
 			"new_permissions": new_perm,
 			"vote_required": true,
-			"vote_threshold": old_perm.get("vote_threshold", "1/2"),
+			"vote_threshold": orig.get("vote_threshold", "1/2"),
 			"votes": {"yes": [], "no": []}
 		})
+		# Restore original while vote is pending (don't apply yet).
+		_docs_permissions[_docs_perm_path] = orig.duplicate(true)
+		_save_doc_permissions()
 		_save_doc_suggestions()
-		var doc_name := _docs_perm_path.get_file().get_basename()
 		_log_activity("doc_suggestion", '"%s" proposed permission change for: "%s"' % [me, doc_name])
 		_docs_perm_dialog.hide()
-		_docs_status_lbl.text = "⏳ Permission change submitted for team vote"
-		get_tree().create_timer(4.0).timeout.connect(func():
-			if is_instance_valid(_docs_status_lbl): _docs_status_lbl.text = ""
-		)
+		if is_instance_valid(_docs_status_lbl):
+			_docs_status_lbl.text = "⏳ Permission change submitted for team vote"
+			get_tree().create_timer(4.0).timeout.connect(func():
+				if is_instance_valid(_docs_status_lbl): _docs_status_lbl.text = ""
+			)
+		_refresh_vote_list()
 		if _docs_sel_path == _docs_perm_path:
 			_docs_show_view_buttons(_docs_sel_path)
 		return
@@ -8198,13 +8270,17 @@ func _docs_review_build(full_path: String) -> void:
 
 func _docs_review_approve(idx: int) -> void:
 	if _docs_thread and _docs_thread.is_started():
+		# Queue for retry once the current docs thread finishes.
+		_docs_pending_approve_idx = idx
 		return
 	var sugg: Dictionary = _docs_suggestions[idx]
 	sugg["status"] = "approved"
 	sugg["approved_by"] = _current_user.get("username", "?")
 	_docs_suggestions[idx] = sugg
 	_save_doc_suggestions()
-	_docs_review_dialog.hide()
+	_refresh_vote_list()  # Remove the card from the vote list immediately.
+	if is_instance_valid(_docs_review_dialog):
+		_docs_review_dialog.hide()
 	# Archive request: move doc to archive directory
 	if sugg.get("type", "") == "archive_request":
 		var doc_path: String = sugg["doc_path"]
@@ -8272,8 +8348,32 @@ func _docs_review_approve(idx: int) -> void:
 	_docs_thread.start(func():
 		Ops.vault_upload_file(tmp_file, doc_path.get_base_dir(), Callable())
 		Ops.vault_refresh(cache, Callable())
-		call_deferred("_docs_on_saved", cap_path, cap_content)
+		call_deferred("_docs_on_suggestion_applied", cap_path, cap_content)
 	)
+
+func _docs_on_suggestion_applied(full_path: String, new_content: String) -> void:
+	if _docs_thread and _docs_thread.is_started():
+		_docs_thread.wait_to_finish()
+	_docs_thread = null
+	if is_instance_valid(_docs_status_lbl):
+		_docs_status_lbl.text = "✅ Change applied"
+		get_tree().create_timer(3.0).timeout.connect(func():
+			if is_instance_valid(_docs_status_lbl): _docs_status_lbl.text = "")
+	# Update the viewer if this doc is currently open.
+	if _docs_sel_path == full_path:
+		_docs_loaded_content = new_content
+		if is_instance_valid(_docs_view):
+			_docs_view.parse_bbcode(_md_to_bbcode(new_content))
+	_vault_files = Ops.vault_list_files(_vault_cache)
+	_docs_files = _docs_filter_files(_vault_files)
+	var doc_name := full_path.get_file().get_basename()
+	var me: String = _current_user.get("username", "?")
+	_log_activity("doc_approved", '"%s" applied approved change to: "%s"' % [me, doc_name])
+	# Flush any approval that was queued while this thread was running.
+	if _docs_pending_approve_idx >= 0:
+		var pending := _docs_pending_approve_idx
+		_docs_pending_approve_idx = -1
+		_docs_review_approve(pending)
 
 func _docs_review_reject(idx: int) -> void:
 	var sugg: Dictionary = _docs_suggestions[idx]
@@ -8292,18 +8392,21 @@ func _docs_review_reject(idx: int) -> void:
 func _docs_requires_vote(full_path: String) -> bool:
 	return _docs_permissions.get(full_path, {}).get("require_vote", false)
 
-func _docs_vote_threshold_met(sugg: Dictionary) -> bool:
+func _docs_vote_threshold_met(sugg: Dictionary, member_count: int = 0) -> bool:
 	var votes: Dictionary = sugg.get("votes", {})
 	var yes_count: int = votes.get("yes", []).size()
 	var no_count: int = votes.get("no", []).size()
-	var total := yes_count + no_count
-	if total == 0:
+	var total_cast := yes_count + no_count
+	if total_cast == 0:
 		return false
+	# Use total eligible voters so 1-of-1 can't pass a 3/4 threshold.
+	# Fall back to votes-cast only if we never loaded the member count.
+	var eligible := max(total_cast, member_count) if member_count > 0 else total_cast
 	match sugg.get("vote_threshold", "1/2"):
-		"1/3": return yes_count * 3 >= total
-		"1/2": return yes_count * 2 > total
-		"2/3": return yes_count * 3 >= total * 2
-		"3/4": return yes_count * 4 >= total * 3
+		"1/3": return yes_count * 3 >= eligible
+		"1/2": return yes_count * 2 >= eligible   # ≥ half of all members
+		"2/3": return yes_count * 3 >= eligible * 2
+		"3/4": return yes_count * 4 >= eligible * 3
 	return false
 
 func _docs_vote_cast(idx: int, vote_yes: bool) -> void:
@@ -8325,19 +8428,46 @@ func _docs_vote_cast(idx: int, vote_yes: bool) -> void:
 	_save_doc_suggestions()
 	var doc_name: String = (sugg.get("doc_path", "") as String).get_file().get_basename()
 	_log_activity("doc_vote", '"%s" voted %s on suggestion for: "%s"' % [me, "👍" if vote_yes else "👎", doc_name])
+	# Always refresh UI immediately so count updates are visible.
+	_docs_review_build(sugg.get("doc_path", _docs_sel_path))
+	if _docs_sel_path == sugg.get("doc_path", ""):
+		_docs_show_view_buttons(_docs_sel_path)
+	_refresh_vote_list()
+	_refresh_dashboard()
 	# Show confirmation in vote tab status bar
 	if is_instance_valid(_vote_status_lbl):
 		_vote_status_lbl.text = "✅ Vote recorded — %s on \"%s\"" % ["👍 For" if vote_yes else "👎 Against", doc_name]
 		get_tree().create_timer(3.0).timeout.connect(func():
 			if is_instance_valid(_vote_status_lbl): _vote_status_lbl.text = "")
-	if _docs_vote_threshold_met(sugg):
+	# Check threshold against real member count (async).
+	# Fall back to cached count if thread is still running.
+	if _docs_vote_thread and _docs_vote_thread.is_started():
+		if _docs_vote_threshold_met(sugg, _cached_member_count):
+			_docs_review_approve(idx)
+		return
+	var cap_idx := idx
+	_docs_vote_thread = Thread.new()
+	_docs_vote_thread.start(func():
+		var all_users := Ops.auth_fetch_all(Callable())
+		var mc := 0
+		for u: Dictionary in all_users:
+			if u.get("approved", false): mc += 1
+		call_deferred("_docs_on_vote_member_count", cap_idx, mc)
+	)
+
+func _docs_on_vote_member_count(idx: int, member_count: int) -> void:
+	if _docs_vote_thread and _docs_vote_thread.is_started():
+		_docs_vote_thread.wait_to_finish()
+	_docs_vote_thread = null
+	if member_count > 0:
+		_cached_member_count = member_count
+	if idx < 0 or idx >= _docs_suggestions.size():
+		return
+	var sugg: Dictionary = _docs_suggestions[idx]
+	if sugg.get("status", "") != "pending":
+		return
+	if _docs_vote_threshold_met(sugg, _cached_member_count):
 		_docs_review_approve(idx)
-	else:
-		_docs_review_build(sugg.get("doc_path", _docs_sel_path))
-		if _docs_sel_path == sugg.get("doc_path", ""):
-			_docs_show_view_buttons(_docs_sel_path)
-		_refresh_vote_list()
-	_refresh_dashboard()
 
 func _docs_open_diff_dialog(idx: int) -> void:
 	var sugg: Dictionary = _docs_suggestions[idx]
