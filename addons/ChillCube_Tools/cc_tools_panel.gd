@@ -296,6 +296,7 @@ var _election_data: Dictionary = {}
 var _election_sel_role: String = ""
 var _election_members: Array = []
 var _election_thread: Thread = null
+var _leader_sync_thread: Thread = null
 var _election_status_lbl: Label
 var _election_role_opt: OptionButton
 var _election_member_list: VBoxContainer
@@ -831,6 +832,8 @@ func _exit_tree() -> void:
 		_login_thread.wait_to_finish()
 	if _election_thread and _election_thread.is_started():
 		_election_thread.wait_to_finish()
+	if _leader_sync_thread and _leader_sync_thread.is_started():
+		_leader_sync_thread.wait_to_finish()
 	if _gd_thread and _gd_thread.is_started():
 		_gd_thread.wait_to_finish()
 
@@ -4326,6 +4329,12 @@ func _refresh_vote_list() -> void:
 				change_btn.flat = true
 				change_btn.pressed.connect(func(): _election_cast_vote(cap_id, not already_yes))
 				voted_row.add_child(change_btn)
+				var retract_btn := Button.new()
+				retract_btn.text = "✕ Remove"
+				retract_btn.flat = true
+				retract_btn.add_theme_color_override("font_color", Color(0.8, 0.5, 0.5))
+				retract_btn.pressed.connect(func(): _election_retract_vote(cap_id))
+				voted_row.add_child(retract_btn)
 				cvbox.add_child(voted_row)
 		_vote_list.add_child(panel)
 
@@ -10830,7 +10839,7 @@ func _election_seed_initial_leader(users: Array) -> void:
 	if auth_leader.is_empty():
 		return
 	var today := Time.get_date_string_from_system()
-	roles["Leader"] = {"description": "Project leader.", "desc_locked": false}
+	roles["Leader"] = {"description": "The project lead. Holds full administrative access — approves accounts, manages team members, and controls vault and addon settings.", "desc_locked": false}
 	_election_data["roles"] = roles
 	var holders: Dictionary = _election_data.get("holders", {}) as Dictionary
 	holders["Leader"] = [auth_leader]
@@ -10875,7 +10884,6 @@ func _election_eval_takeovers(role: String) -> void:
 	var snaps: Array = ((_election_data.get("snapshots", {}) as Dictionary).get(role, []) as Array)
 	var weeks_to_replace: int = int(_election_setting("weeks_to_replace", 4))
 	var weeks_to_announce: int = int(_election_setting("weeks_to_announce", 2))
-	var first_holder_weeks: int = int(_election_setting("first_holder_weeks", 1))
 	var pending_takeovers: Dictionary = _election_data.get("pending_takeovers", {}) as Dictionary
 	var role_takeovers: Array = pending_takeovers.get(role, []) as Array
 	var updated_takeovers: Array = []
@@ -10924,20 +10932,29 @@ func _election_eval_takeovers(role: String) -> void:
 					best_challenger, holder, role, weeks_to_replace - weeks_ahead])
 		updated_takeovers.append(pt)
 
-	if holders.is_empty() and snaps.size() >= first_holder_weeks:
-		var best_first := ""
-		var best_first_avg := 0.0
-		for u: Dictionary in _election_members:
-			var uname: String = u.get("username", "") as String
-			if uname.is_empty() or not _election_is_candidate(role, uname) or not _election_meets_threshold(role, uname):
-				continue
-			var avg := _election_avg(role, uname)
-			if avg > best_first_avg:
-				best_first_avg = avg
-				best_first = uname
-		if not best_first.is_empty():
-			_election_execute_takeover(role, "", best_first)
+	if holders.is_empty():
+		# Vacant role — first come first served
+		var candidates_d: Dictionary = _election_data.get("candidates", {}) as Dictionary
+		var role_candidates: Array = candidates_d.get(role, []) as Array
+		if role_candidates.size() == 1:
+			# Only one candidate — assign immediately, no waiting, no vote threshold
+			_election_execute_takeover(role, "", role_candidates[0] as String)
 			return
+		elif role_candidates.size() > 1:
+			# Multiple candidates — use score-based assignment (no week wait)
+			var best_first := ""
+			var best_first_avg := 0.0
+			for u: Dictionary in _election_members:
+				var uname: String = u.get("username", "") as String
+				if uname.is_empty() or not _election_is_candidate(role, uname) or not _election_meets_threshold(role, uname):
+					continue
+				var avg := _election_avg(role, uname)
+				if avg > best_first_avg:
+					best_first_avg = avg
+					best_first = uname
+			if not best_first.is_empty():
+				_election_execute_takeover(role, "", best_first)
+				return
 
 	pending_takeovers[role] = updated_takeovers
 	_election_data["pending_takeovers"] = pending_takeovers
@@ -10971,6 +10988,20 @@ func _election_execute_takeover(role: String, old_holder: String, new_holder: St
 		_log_activity("election_assigned", '🏆 %s was assigned role "%s"' % [new_holder, role])
 	else:
 		_log_activity("election_changed", '🔄 %s replaced %s as "%s"' % [new_holder, old_holder, role])
+	# Sync admin powers when the Leader role changes hands
+	if role.to_lower() == "leader" and not new_holder.is_empty():
+		var me: String = _current_user.get("username", "")
+		var cap_new := new_holder
+		var cap_old := old_holder
+		if _leader_sync_thread and _leader_sync_thread.is_started():
+			_leader_sync_thread.wait_to_finish()
+		_leader_sync_thread = Thread.new()
+		_leader_sync_thread.start(func():
+			Ops.auth_set_role(me, cap_new, "leader", Callable())
+			if not cap_old.is_empty():
+				Ops.auth_set_role(me, cap_old, "member", Callable())
+			call_deferred("_refresh_account_tab")
+		)
 
 func _election_update_lock_flags() -> void:
 	var lock_months: float = float(int(_election_setting("role_lock_months", 1)))
@@ -11030,6 +11061,21 @@ func _build_elections_tab(tabs: TabContainer) -> void:
 	_election_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
 	left.add_child(_election_status_lbl)
 
+	# Role holders summary — always visible at top of left panel
+	left.add_child(HSeparator.new())
+	var roles_heading := HBoxContainer.new()
+	var roles_heading_lbl := Label.new()
+	roles_heading_lbl.text = "Current Holders"
+	roles_heading_lbl.add_theme_font_size_override("font_size", 11)
+	roles_heading_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	roles_heading_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	roles_heading.add_child(roles_heading_lbl)
+	left.add_child(roles_heading)
+	_election_roles_summary = VBoxContainer.new()
+	_election_roles_summary.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_election_roles_summary.add_theme_constant_override("separation", 2)
+	left.add_child(_election_roles_summary)
+
 	left.add_child(HSeparator.new())
 
 	# Description
@@ -11075,19 +11121,6 @@ func _build_elections_tab(tabs: TabContainer) -> void:
 	_election_candidate_btn.visible = false
 	_election_candidate_btn.pressed.connect(_election_toggle_candidate)
 	left.add_child(_election_candidate_btn)
-
-	left.add_child(HSeparator.new())
-
-	# Role holders summary
-	var roles_lbl := Label.new()
-	roles_lbl.text = "Current Holders"
-	roles_lbl.add_theme_font_size_override("font_size", 11)
-	roles_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
-	left.add_child(roles_lbl)
-	_election_roles_summary = VBoxContainer.new()
-	_election_roles_summary.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_election_roles_summary.add_theme_constant_override("separation", 2)
-	left.add_child(_election_roles_summary)
 
 	left.add_child(HSeparator.new())
 
@@ -11212,25 +11245,23 @@ func _election_refresh_help() -> void:
 	var frac_pct: String = str(int(round(frac * 100))) + "%"
 	var weeks_replace: int = int(_election_setting("weeks_to_replace", 4))
 	var weeks_announce: int = int(_election_setting("weeks_to_announce", 2))
-	var weeks_first: int = int(_election_setting("first_holder_weeks", 1))
 	var change_thresh: String = str(_election_setting("change_threshold", "2/3"))
 	var lock_months: int = int(_election_setting("role_lock_months", 1))
 	var total: int = _election_total_members()
 	var quorum: int = int(ceil(float(total) * frac))
 
 	var t := ""
-	var dim := "#888888"
 	var acc := "#7ec8e3"
-	var warn := "#e8c87a"
+
+	t += "[color=%s]Vacant roles — first come first served[/color]\n" % acc
+	t += "When a role is vacant, the first person to declare candidacy gets it [b]immediately[/b]. "
+	t += "If multiple people declare at the same time, the one with the highest score wins.\n\n"
 
 	t += "[color=%s]Scoring[/color]\n" % acc
 	t += "Rate candidates [b]1–5[/b]. A score is counted once [b]%s[/b] of the team has voted" % frac_pct
 	if total > 0:
 		t += " ([b]%d / %d[/b] members)" % [quorum, total]
 	t += ".\n\n"
-
-	t += "[color=%s]First holder[/color]\n" % acc
-	t += "If only one candidate has enough votes, they are assigned after [b]%d week%s[/b].\n\n" % [weeks_first, "s" if weeks_first != 1 else ""]
 
 	t += "[color=%s]Role changes[/color]\n" % acc
 	t += "A challenger must lead the current holder for [b]%d consecutive week%s[/b]. " % [weeks_replace, "s" if weeks_replace != 1 else ""]
@@ -11243,7 +11274,7 @@ func _election_refresh_help() -> void:
 	t += "Any change to these settings requires a [b]%s majority[/b] vote to pass.\n\n" % change_thresh
 
 	t += "[color=%s]Proposing a vote[/color]\n" % acc
-	t += "Open [b]⚙[/b] to propose a settings change. Votes appear in the [b]Votes[/b] tab." % []
+	t += "Open [b]⚙[/b] to propose a settings change. Votes appear in the [b]Votes[/b] tab."
 
 	_election_help_rtl.text = t
 
@@ -11439,6 +11470,11 @@ func _election_toggle_candidate() -> void:
 	candidates[role] = cand_list
 	_election_data["candidates"] = candidates
 	_save_elections()
+	# First-come-first-served: if I just declared and I'm the only candidate for a vacant role, auto-assign
+	if me in cand_list:
+		var holders: Array = ((_election_data.get("holders", {}) as Dictionary).get(role, []) as Array)
+		if holders.is_empty() and cand_list.size() == 1:
+			_election_execute_takeover(role, "", me)
 	_election_refresh()
 
 func _election_prompt_create_role() -> void:
@@ -11500,6 +11536,12 @@ func _election_delete_selected_role() -> void:
 		return
 	var role := _election_sel_role
 	if role.is_empty():
+		return
+	if role.to_lower() == "leader":
+		if is_instance_valid(_election_status_lbl):
+			_election_status_lbl.text = "⚠ The Leader role cannot be removed"
+		get_tree().create_timer(2.5).timeout.connect(func():
+			if is_instance_valid(_election_status_lbl): _election_status_lbl.text = "")
 		return
 	var months := _election_role_occupied_months(role)
 	var lock_months: float = float(int(_election_setting("role_lock_months", 1)))
@@ -11645,6 +11687,27 @@ func _election_cast_vote(vote_id: String, vote_yes: bool) -> void:
 	_save_elections()
 	_refresh_vote_list()
 
+func _election_retract_vote(vote_id: String) -> void:
+	var pvotes: Array = _election_data.get("pending_votes", []) as Array
+	var me: String = _current_user.get("username", "")
+	for i: int in range(pvotes.size()):
+		var pv: Dictionary = pvotes[i] as Dictionary
+		if pv.get("id", "") != vote_id or pv.get("closed", false):
+			continue
+		var votes: Dictionary = pv.get("votes", {"yes": [], "no": []}) as Dictionary
+		var yes_list: Array = votes.get("yes", []) as Array
+		var no_list: Array = votes.get("no", []) as Array
+		yes_list.erase(me)
+		no_list.erase(me)
+		votes["yes"] = yes_list
+		votes["no"] = no_list
+		pv["votes"] = votes
+		pvotes[i] = pv
+		break
+	_election_data["pending_votes"] = pvotes
+	_save_elections()
+	_refresh_vote_list()
+
 func _election_process_approved(pv: Dictionary) -> void:
 	var extra: Dictionary = pv.get("extra", {}) as Dictionary
 	var type: String = pv.get("type", "") as String
@@ -11703,9 +11766,7 @@ func _election_show_settings() -> void:
 		{"key": "change_threshold", "label": "Vote threshold for settings changes",
 			"options": [["1/2", "1/2"], ["2/3 (default)", "2/3"], ["3/4", "3/4"]]},
 		{"key": "role_lock_months", "label": "Months before role requires vote to modify",
-			"options": [["1 month (default)", 1], ["2 months", 2], ["3 months", 3]]},
-		{"key": "first_holder_weeks", "label": "Weeks before first holder is assigned",
-			"options": [["1 week (default)", 1], ["2 weeks", 2]]}
+			"options": [["1 month (default)", 1], ["2 months", 2], ["3 months", 3]]}
 	]
 
 	for sdef: Dictionary in settings_def:
