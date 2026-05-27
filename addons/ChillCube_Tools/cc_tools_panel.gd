@@ -10988,6 +10988,8 @@ func _election_execute_takeover(role: String, old_holder: String, new_holder: St
 		_log_activity("election_assigned", '🏆 %s was assigned role "%s"' % [new_holder, role])
 	else:
 		_log_activity("election_changed", '🔄 %s replaced %s as "%s"' % [new_holder, old_holder, role])
+	# Refresh UI so summary and dropdown reflect the new holder
+	call_deferred("_election_rebuild_role_opt")
 	# Sync admin powers when the Leader role changes hands
 	if role.to_lower() == "leader" and not new_holder.is_empty():
 		var me: String = _current_user.get("username", "")
@@ -11015,14 +11017,45 @@ func _election_update_lock_flags() -> void:
 func _build_elections_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Elections", tabs)
 
-	# ── Outer split: left (main) + right (how it works) ──────────────────────
+	# ── Outer split: holders | main | how-it-works ────────────────────────────
 	var outer := HBoxContainer.new()
 	outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	outer.add_theme_constant_override("separation", 10)
+	outer.add_theme_constant_override("separation", 8)
 	root.add_child(outer)
 
-	# ── Left column ───────────────────────────────────────────────────────────
+	# ── Holders panel (leftmost) ──────────────────────────────────────────────
+	var holders_panel := PanelContainer.new()
+	holders_panel.custom_minimum_size = Vector2(160, 0)
+	holders_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.add_child(holders_panel)
+
+	var holders_inner := VBoxContainer.new()
+	holders_inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	holders_inner.add_theme_constant_override("separation", 4)
+	holders_panel.add_child(holders_inner)
+
+	var holders_heading := Label.new()
+	holders_heading.text = "👑 Holders"
+	holders_heading.add_theme_font_size_override("font_size", 11)
+	holders_heading.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	holders_inner.add_child(holders_heading)
+	holders_inner.add_child(HSeparator.new())
+
+	var holders_scroll := ScrollContainer.new()
+	holders_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	holders_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_election_roles_summary = VBoxContainer.new()
+	_election_roles_summary.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_election_roles_summary.add_theme_constant_override("separation", 6)
+	holders_scroll.add_child(_election_roles_summary)
+	holders_inner.add_child(holders_scroll)
+
+	var holders_vsep := VSeparator.new()
+	holders_vsep.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.add_child(holders_vsep)
+
+	# ── Middle column (main content) ──────────────────────────────────────────
 	var left := VBoxContainer.new()
 	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -11060,23 +11093,6 @@ func _build_elections_tab(tabs: TabContainer) -> void:
 	_election_status_lbl = Label.new()
 	_election_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
 	left.add_child(_election_status_lbl)
-
-	# Role holders summary — always visible at top of left panel
-	left.add_child(HSeparator.new())
-	var roles_heading := HBoxContainer.new()
-	var roles_heading_lbl := Label.new()
-	roles_heading_lbl.text = "Current Holders"
-	roles_heading_lbl.add_theme_font_size_override("font_size", 11)
-	roles_heading_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-	roles_heading_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	roles_heading.add_child(roles_heading_lbl)
-	left.add_child(roles_heading)
-	_election_roles_summary = VBoxContainer.new()
-	_election_roles_summary.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_election_roles_summary.add_theme_constant_override("separation", 2)
-	left.add_child(_election_roles_summary)
-
-	left.add_child(HSeparator.new())
 
 	# Description
 	var desc_box := HBoxContainer.new()
@@ -11218,25 +11234,28 @@ func _election_refresh_roles_summary() -> void:
 		return
 	for role: String in roles:
 		var holders: Array = (holders_dict.get(role, []) as Array)
-		var row := HBoxContainer.new()
-		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var entry := VBoxContainer.new()
+		entry.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		entry.add_theme_constant_override("separation", 1)
 		var role_lbl := Label.new()
 		role_lbl.text = role
 		role_lbl.add_theme_font_size_override("font_size", 11)
-		role_lbl.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
-		role_lbl.custom_minimum_size = Vector2(90, 0)
-		row.add_child(role_lbl)
+		role_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+		role_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		role_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		entry.add_child(role_lbl)
 		var holder_lbl := Label.new()
 		if holders.is_empty():
-			holder_lbl.text = "— vacant"
-			holder_lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
+			holder_lbl.text = "  — vacant"
+			holder_lbl.add_theme_color_override("font_color", Color(0.38, 0.38, 0.38))
 		else:
-			holder_lbl.text = ", ".join(PackedStringArray(holders))
+			holder_lbl.text = "  " + ", ".join(PackedStringArray(holders))
 			holder_lbl.add_theme_color_override("font_color", Color(0.55, 0.85, 0.55))
 		holder_lbl.add_theme_font_size_override("font_size", 11)
 		holder_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(holder_lbl)
-		_election_roles_summary.add_child(row)
+		holder_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		entry.add_child(holder_lbl)
+		_election_roles_summary.add_child(entry)
 
 func _election_refresh_help() -> void:
 	if not is_instance_valid(_election_help_rtl):
