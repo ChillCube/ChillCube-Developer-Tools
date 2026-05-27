@@ -857,7 +857,6 @@ func _ready() -> void:
 	_build_planning_tab(tabs)
 	_build_team_supertab(tabs)
 	_build_resources_supertab(tabs)
-	_build_permissions_tab(tabs)
 	_build_account_tab(tabs)
 	_build_admin_tab(tabs)
 
@@ -869,13 +868,6 @@ func _ready() -> void:
 			_on_team_inner_tab_changed(_team_inner_tabs.current_tab)
 		elif title == "Planning" and is_instance_valid(_planning_inner_tabs):
 			_on_planning_inner_tab_changed(_planning_inner_tabs.current_tab)
-		elif title == "Permissions":
-			if is_instance_valid(_perm_list) and _perm_sel_category.is_empty():
-				# Auto-select first category on first open
-				_perm_sel_category = (PERM_DEFS[0] as Dictionary).get("category", "")
-				call_deferred("_perm_refresh_list")
-			elif is_instance_valid(_perm_list):
-				call_deferred("_perm_refresh_list")
 	)
 
 	_refresh_addons()
@@ -4058,6 +4050,7 @@ func _build_team_supertab(tabs: TabContainer) -> void:
 	_build_schedule_tab(_team_inner_tabs)
 	_build_forum_tab(_team_inner_tabs)
 	_build_elections_tab(_team_inner_tabs)
+	_build_permissions_tab(_team_inner_tabs)
 	_team_inner_tabs.tab_changed.connect(_on_team_inner_tab_changed)
 
 # ─── Lazy-refresh handlers (flush dirty flags when tab becomes visible) ────────
@@ -4085,6 +4078,11 @@ func _on_team_inner_tab_changed(idx: int) -> void:
 			call_deferred("_refresh_schedule_list")
 		"Forum":
 			_save_forum_last_seen()
+		"Permissions":
+			if is_instance_valid(_perm_list) and _perm_sel_category.is_empty():
+				_perm_sel_category = (PERM_DEFS[0] as Dictionary).get("category", "")
+			if is_instance_valid(_perm_list):
+				call_deferred("_perm_refresh_list")
 
 func _on_planning_inner_tab_changed(idx: int) -> void:
 	if not is_instance_valid(_planning_inner_tabs):
