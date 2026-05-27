@@ -1821,6 +1821,15 @@ static func cc_data_pull_all(cache_dir: String) -> Dictionary:
 			result[fname] = content
 	return result
 
+# Fetch latest from origin then pull all shared data. Used for background periodic sync.
+# Returns empty dict if the vault cache doesn't exist.
+static func cc_data_fetch_and_pull(cache_dir: String) -> Dictionary:
+	if not DirAccess.dir_exists_absolute(cache_dir + "/.git"):
+		return {}
+	_git(["remote", "set-url", "origin", _vault_url()], cache_dir, Callable())
+	_git(["fetch", "--quiet", "origin"], cache_dir, Callable())
+	return cc_data_pull_all(cache_dir)
+
 # ─── FILE VAULT ──────────────────────────────────────────────────────────────
 # Uses a metadata-only clone (no file blobs) for browsing, then extracts
 # individual files on demand. Upload uses a temp shallow clone.

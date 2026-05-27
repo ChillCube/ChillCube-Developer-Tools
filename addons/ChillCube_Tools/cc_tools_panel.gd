@@ -107,6 +107,8 @@ var _vault_log: TextEdit
 var _vault_thread: Thread = null
 var _vault_cache: String = ""
 var _vault_file_dialog: EditorFileDialog
+var _sync_timer: Timer = null
+var _sync_thread: Thread = null
 var _vault_files: Array[String] = []
 var _vault_sel_files: Array[String] = []
 var _vault_sel_count_lbl: Label
@@ -814,6 +816,10 @@ func _exit_tree() -> void:
 		_todo_thread.wait_to_finish()
 	if _plan_thread and _plan_thread.is_started():
 		_plan_thread.wait_to_finish()
+	if _sync_timer and is_instance_valid(_sync_timer):
+		_sync_timer.stop()
+	if _sync_thread and _sync_thread.is_started():
+		_sync_thread.wait_to_finish()
 	if _vault_thread and _vault_thread.is_started():
 		_vault_thread.wait_to_finish()
 	if _vault_preview_thread and _vault_preview_thread.is_started():
@@ -5803,6 +5809,7 @@ func _vault_on_connected(ok: bool) -> void:
 		_docs_navigate(_docs_current_dir)
 		# Pull shared team data from vault so all members see the same state
 		_vault_pull_cc_data()
+		_start_sync_timer()
 
 func _vault_pull_cc_data() -> void:
 	if _vault_cache.is_empty() or not DirAccess.dir_exists_absolute(_vault_cache):
@@ -5906,6 +5913,36 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 	# Always push after pulling so any locally-set data that was never uploaded
 	# (e.g. permissions set while vault was unreachable) gets written to the vault.
 	_activity_auto_push()
+
+func _start_sync_timer() -> void:
+	if not is_instance_valid(_sync_timer):
+		_sync_timer = Timer.new()
+		_sync_timer.wait_time = 120.0  # background pull every 2 minutes
+		_sync_timer.autostart = false
+		_sync_timer.one_shot = false
+		_sync_timer.timeout.connect(_on_sync_timer)
+		add_child(_sync_timer)
+	_sync_timer.start()
+
+func _on_sync_timer() -> void:
+	if _vault_cache.is_empty() or not DirAccess.dir_exists_absolute(_vault_cache + "/.git"):
+		return
+	if _sync_thread and _sync_thread.is_started():
+		return  # previous sync still running — skip this tick
+	var cache := _vault_cache
+	_sync_thread = Thread.new()
+	_sync_thread.start(func():
+		var data := Ops.cc_data_fetch_and_pull(cache)
+		call_deferred("_on_cc_data_synced", data)
+	)
+
+func _on_cc_data_synced(data: Dictionary) -> void:
+	if _sync_thread and _sync_thread.is_started():
+		_sync_thread.wait_to_finish()
+	_sync_thread = null
+	if data.is_empty():
+		return
+	_on_cc_data_pulled(data)
 
 func _vault_navigate(rel: String) -> void:
 	if rel != _vault_current_dir:
