@@ -33,6 +33,15 @@ Verify it works:
 ssh -T git@github.com   # should say "Hi <username>! You've successfully authenticated"
 ```
 
+**Configuring git with your identity (one-time):**
+
+The plugin makes git commits on your behalf (registration, vault saves, etc.), so git needs to know who you are:
+```bash
+git config --global user.name "Your Name"
+git config --global user.email "your@email.com"
+```
+Use the same email as your GitHub account so commits are linked to your profile.
+
 ## Installation
 
 Open a terminal **in the root of your Godot project** (the folder containing `project.godot`), then run:
