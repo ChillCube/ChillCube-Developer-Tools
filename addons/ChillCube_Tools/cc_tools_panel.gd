@@ -3429,10 +3429,25 @@ func _refresh_todo() -> void:
 			)
 			_todo_tag_bar.add_child(tag_btn)
 
-	# Build filtered index list
+	# Wake up any recurring tasks whose next_due has arrived
+	var today := _todo_today_unix()
+	var woke_any := false
+	for i in range(_todo_items.size()):
+		var it: Dictionary = _todo_items[i]
+		if it.get("repeat", false) and not it.get("next_due", "").is_empty():
+			if _todo_str_to_unix(it["next_due"]) <= today:
+				_todo_items[i].erase("next_due")
+				woke_any = true
+	if woke_any:
+		_save_todo()
+
+	# Build filtered index list — hide snoozed recurring tasks
 	var filtered: Array[int] = []
 	for i in range(_todo_items.size()):
-		if _todo_active_tag.is_empty() or _todo_active_tag in _todo_extract_tags(_todo_items[i].get("text", "")):
+		var it: Dictionary = _todo_items[i]
+		if it.get("repeat", false) and not it.get("next_due", "").is_empty():
+			continue  # snoozed until next_due
+		if _todo_active_tag.is_empty() or _todo_active_tag in _todo_extract_tags(it.get("text", "")):
 			filtered.append(i)
 
 	if filtered.is_empty():
@@ -3544,10 +3559,7 @@ func _refresh_todo() -> void:
 				_todo_items[cap_i]["repeat"] = cap_repeat_chk.button_pressed
 				_todo_items[cap_i]["repeat_every"] = int(cap_repeat_spin.value)
 				_todo_items[cap_i]["repeat_unit"] = units[cap_repeat_unit.selected]
-				if cap_repeat_chk.button_pressed and _todo_items[cap_i].get("next_due", "").is_empty():
-					# Set first due date to today if not already scheduled
-					_todo_items[cap_i]["next_due"] = _todo_unix_to_str(_todo_today_unix())
-				elif not cap_repeat_chk.button_pressed:
+				if not cap_repeat_chk.button_pressed:
 					_todo_items[cap_i].erase("repeat_every")
 					_todo_items[cap_i].erase("repeat_unit")
 					_todo_items[cap_i].erase("next_due")
@@ -3578,25 +3590,13 @@ func _refresh_todo() -> void:
 				a_lbl.tooltip_text = "Assigned to " + assignee
 				row.add_child(a_lbl)
 			if item.get("repeat", false):
-				var due_lbl := Label.new()
-				due_lbl.add_theme_font_size_override("font_size", 11)
-				var next_due: String = item.get("next_due", "")
-				var today := _todo_today_unix()
-				var due_unix := _todo_str_to_unix(next_due)
-				var days_diff := int((due_unix - today) / 86400.0)
-				if next_due.is_empty() or days_diff <= 0:
-					due_lbl.text = "⟳ due today" if days_diff == 0 else "⟳ overdue"
-					due_lbl.add_theme_color_override("font_color", Color(1.0, 0.45, 0.3) if days_diff < 0 else Color(1.0, 0.85, 0.2))
-				elif days_diff == 1:
-					due_lbl.text = "⟳ tomorrow"
-					due_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
-				else:
-					var every: int = item.get("repeat_every", 1)
-					var unit: String = item.get("repeat_unit", "days")
-					due_lbl.text = "⟳ in %d days" % days_diff
-					due_lbl.tooltip_text = "Repeats every %d %s" % [every, unit]
-					due_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
-				row.add_child(due_lbl)
+				var repeat_lbl := Label.new()
+				repeat_lbl.add_theme_font_size_override("font_size", 11)
+				var every: int = item.get("repeat_every", 1)
+				var unit: String = item.get("repeat_unit", "days")
+				repeat_lbl.text = "⟳ every %d %s" % [every, unit]
+				repeat_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+				row.add_child(repeat_lbl)
 			var edit_btn := Button.new()
 			edit_btn.text = "✏"
 			edit_btn.pressed.connect(func():
