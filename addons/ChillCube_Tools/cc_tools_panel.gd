@@ -12032,11 +12032,13 @@ func _gd_show_detail(idx: int) -> void:
 
 	if _gd_field_mode == "markdown":
 		# ── Markdown editor ───────────────────────────────────────────────────
+		# Note: SIZE_EXPAND_FILL doesn't work inside a ScrollContainer (the child
+		# is never height-constrained). Use a large minimum size instead.
 		var te := TextEdit.new()
 		te.text = doc.get("markdown", "")
 		te.placeholder_text = "Write your design document in Markdown…"
-		te.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		te.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		te.custom_minimum_size = Vector2(0, 500)
 		te.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
 		te.text_changed.connect(func():
 			_gd_docs[idx]["markdown"] = te.text
