@@ -238,6 +238,7 @@ var _activity_status_lbl: Label
 var _activity_thread: Thread = null
 var _activity_push_pending: bool = false
 var _activity_comments_open: Dictionary = {}  # idx -> bool
+var _activity_shown_count: int = 30           # how many items are currently rendered
 
 var _vote_items: Array = []
 var _vote_list: VBoxContainer
@@ -10547,6 +10548,7 @@ func _activity_file() -> String:
 
 func _load_activity() -> void:
 	_activity_items = []
+	_activity_shown_count = 30  # reset pagination on fresh load
 	var path := _activity_file()
 	if not FileAccess.file_exists(path):
 		return
@@ -10650,8 +10652,9 @@ func _refresh_activity_list() -> void:
 
 	var me: String = _current_user.get("username", "")
 	var last_date := ""
+	var render_count := mini(_activity_shown_count, _activity_items.size())
 
-	for idx in range(_activity_items.size()):
+	for idx in range(render_count):
 		var entry: Dictionary = _activity_items[idx]
 		var ts: String = entry.get("timestamp", "")
 		var date := ts.substr(0, 10) if ts.length() >= 10 else ts
@@ -10842,6 +10845,32 @@ func _refresh_activity_list() -> void:
 			comments_box.add_child(add_row)
 
 		_activity_list.add_child(entry_box)
+
+	# ── Load more ─────────────────────────────────────────────────────────────
+	if _activity_items.size() > render_count:
+		var remaining := _activity_items.size() - render_count
+		var more_btn := Button.new()
+		more_btn.text = "⬇ Load %d more" % mini(30, remaining)
+		more_btn.flat = false
+		more_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		more_btn.add_theme_color_override("font_color", Color(0.5, 0.75, 1.0))
+		more_btn.pressed.connect(func():
+			_activity_shown_count += 30
+			_refresh_activity_list()
+		)
+		_activity_list.add_child(more_btn)
+	elif _activity_shown_count > 30:
+		# All items shown — offer a "collapse" link
+		var collapse_btn := Button.new()
+		collapse_btn.text = "↑ Show less"
+		collapse_btn.flat = true
+		collapse_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		collapse_btn.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		collapse_btn.pressed.connect(func():
+			_activity_shown_count = 30
+			_refresh_activity_list()
+		)
+		_activity_list.add_child(collapse_btn)
 
 func _activity_toggle_reaction(idx: int, emoji: String) -> void:
 	if idx < 0 or idx >= _activity_items.size():
