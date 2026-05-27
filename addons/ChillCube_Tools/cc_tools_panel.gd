@@ -1298,6 +1298,7 @@ func _refresh_dep_details() -> void:
 
 func _show_addon_meta_dialog(addon_path: String, current: Dictionary) -> void:
 	var dlg := AcceptDialog.new()
+	dlg.exclusive = false
 	dlg.title = "Edit Addon Metadata"
 	dlg.ok_button_text = "Save & Commit"
 	dlg.min_size = Vector2i(420, 0)
@@ -2511,6 +2512,7 @@ func _feedback_task_card(task: Dictionary, me: String) -> Control:
 
 func _feedback_open_response_dialog(task: Dictionary) -> void:
 	var dialog := AcceptDialog.new()
+	dialog.exclusive = false
 	dialog.title = "Feedback for: " + (task.get("file", "") as String).get_file()
 	dialog.ok_button_text = "Submit"
 	var vb := VBoxContainer.new()
@@ -4935,6 +4937,7 @@ func _build_schedule_tab(tabs: TabContainer) -> void:
 
 	# ── Edit dialog ───────────────────────────────────────────────────────────
 	_schedule_edit_dialog = AcceptDialog.new()
+	_schedule_edit_dialog.exclusive = false
 	_schedule_edit_dialog.title = "Edit Event"
 	_schedule_edit_dialog.size = Vector2i(440, 240)
 	var edit_vbox := VBoxContainer.new()
@@ -5468,6 +5471,7 @@ func _forum_add_post_card(parent: VBoxContainer, post: Dictionary, is_op: bool) 
 
 func _forum_prompt_new_thread() -> void:
 	var dialog := AcceptDialog.new()
+	dialog.exclusive = false
 	dialog.title = "New Thread"
 	dialog.size = Vector2i(480, 240)
 	var vbox := VBoxContainer.new()
@@ -5736,6 +5740,7 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 
 	# Move/rename dialog
 	_vault_move_dialog = AcceptDialog.new()
+	_vault_move_dialog.exclusive = false
 	_vault_move_dialog.title = "Rename / Move File"
 	_vault_move_dialog.size = Vector2i(420, 120)
 	var move_vbox := VBoxContainer.new()
@@ -5753,6 +5758,7 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 
 	# Delete confirm dialog
 	_vault_delete_dialog = ConfirmationDialog.new()
+	_vault_delete_dialog.exclusive = false
 	_vault_delete_dialog.title = "Archive File"
 	_vault_delete_dialog.dialog_text = "Move this file to the archive?"
 	_vault_delete_dialog.confirmed.connect(_vault_do_archive)
@@ -5760,6 +5766,7 @@ func _build_vault_tab(tabs: TabContainer) -> void:
 
 	# New folder dialog
 	_vault_newdir_dialog = AcceptDialog.new()
+	_vault_newdir_dialog.exclusive = false
 	_vault_newdir_dialog.title = "New Folder"
 	_vault_newdir_dialog.size = Vector2i(360, 110)
 	var dir_vbox := VBoxContainer.new()
@@ -6512,6 +6519,7 @@ func _save_asset_meta() -> void:
 
 func _asset_meta_edit(rel_path: String) -> void:
 	var dialog := AcceptDialog.new()
+	dialog.exclusive = false
 	dialog.title = "File Info: " + rel_path.get_file()
 	dialog.size = Vector2i(400, 130)
 	var vbox := VBoxContainer.new()
@@ -6577,6 +6585,7 @@ func _asset_meta_bulk_edit(paths: Array) -> void:
 		if meta.get("notes", "") != first_notes:
 			first_notes = MIXED
 	var dialog := AcceptDialog.new()
+	dialog.exclusive = false
 	dialog.title = "Bulk Edit (%d files)" % paths.size()
 	dialog.size = Vector2i(440, 140)
 	var vbox := VBoxContainer.new()
@@ -6832,6 +6841,7 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 
 	# ── Dialogs ───────────────────────────────────────────────────────────────
 	_docs_new_dialog = AcceptDialog.new()
+	_docs_new_dialog.exclusive = false
 	_docs_new_dialog.title = "New Document"
 	_docs_new_dialog.size = Vector2i(420, 110)
 	var new_vbox := VBoxContainer.new()
@@ -6852,6 +6862,7 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	add_child(_docs_new_dialog)
 
 	_docs_newdir_dialog = AcceptDialog.new()
+	_docs_newdir_dialog.exclusive = false
 	_docs_newdir_dialog.title = "New Folder"
 	_docs_newdir_dialog.size = Vector2i(380, 110)
 	var dir_vbox := VBoxContainer.new()
@@ -6872,12 +6883,14 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	add_child(_docs_newdir_dialog)
 
 	_docs_delete_dialog = ConfirmationDialog.new()
+	_docs_delete_dialog.exclusive = false
 	_docs_delete_dialog.title = "Archive Document"
 	_docs_delete_dialog.dialog_text = "Move this document to the archive?\nIt will be read-only and cannot be edited."
 	_docs_delete_dialog.confirmed.connect(_docs_do_delete)
 	add_child(_docs_delete_dialog)
 
 	_docs_move_dialog = AcceptDialog.new()
+	_docs_move_dialog.exclusive = false
 	_docs_move_dialog.title = "Move / Rename Document"
 	_docs_move_dialog.size = Vector2i(440, 180)
 	var move_vbox := VBoxContainer.new()
@@ -6908,6 +6921,7 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	add_child(_docs_move_dialog)
 
 	_docs_perm_dialog = AcceptDialog.new()
+	_docs_perm_dialog.exclusive = false
 	_docs_perm_dialog.title = "Document Permissions"
 	_docs_perm_dialog.size = Vector2i(400, 420)
 	var perm_vbox := VBoxContainer.new()
@@ -6973,6 +6987,7 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	add_child(_docs_perm_dialog)
 
 	_docs_review_dialog = AcceptDialog.new()
+	_docs_review_dialog.exclusive = false
 	_docs_review_dialog.title = "Suggested Edits"
 	_docs_review_dialog.size = Vector2i(620, 520)
 	var rev_vbox := VBoxContainer.new()
@@ -7011,6 +7026,7 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	add_child(_docs_review_dialog)
 
 	_docs_diff_dialog = AcceptDialog.new()
+	_docs_diff_dialog.exclusive = false
 	_docs_diff_dialog.title = "Side-by-Side Diff"
 	_docs_diff_dialog.size = Vector2i(960, 640)
 	var diff_root := VBoxContainer.new()
@@ -8780,6 +8796,7 @@ func _show_perm_error_dialog(addons_dir: String) -> void:
 		info_text = "Git couldn't write to .git/objects — likely caused by a previous sudo git run.\n\nRun this command in a terminal, then close this dialog to retry:"
 
 	_perm_fix_dialog = AcceptDialog.new()
+	_perm_fix_dialog.exclusive = false
 	_perm_fix_dialog.title = "Git Permission Error"
 	_perm_fix_dialog.ok_button_text = "Close & Retry"
 	_perm_fix_dialog.confirmed.connect(_start_push)
@@ -9539,6 +9556,7 @@ func _activity_toggle_reaction(idx: int, emoji: String) -> void:
 
 func _activity_show_reaction_picker(idx: int) -> void:
 	var dialog := AcceptDialog.new()
+	dialog.exclusive = false
 	dialog.title = "React"
 	dialog.size = Vector2i(280, 80)
 	var vbox := VBoxContainer.new()
@@ -11224,6 +11242,7 @@ func _build_elections_tab(tabs: TabContainer) -> void:
 
 	# ── Settings dialog ───────────────────────────────────────────────────────
 	_election_settings_dialog = AcceptDialog.new()
+	_election_settings_dialog.exclusive = false
 	_election_settings_dialog.title = "Election Settings"
 	_election_settings_dialog.size = Vector2i(520, 440)
 	add_child(_election_settings_dialog)
@@ -11541,6 +11560,7 @@ func _election_prompt_create_role() -> void:
 			if is_instance_valid(_election_status_lbl): _election_status_lbl.text = "")
 		return
 	var dlg := AcceptDialog.new()
+	dlg.exclusive = false
 	dlg.title = "New Role"
 	dlg.size = Vector2i(380, 110)
 	var vb := VBoxContainer.new()
