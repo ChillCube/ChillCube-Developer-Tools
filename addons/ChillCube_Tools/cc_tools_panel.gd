@@ -3457,6 +3457,17 @@ func _refresh_todo() -> void:
 			if not pressed:
 				return
 			var done_text: String = _todo_items[cap_i].get("text", "")
+			if _todo_items[cap_i].get("repeat", false):
+				# Reschedule instead of removing
+				var every: int = _todo_items[cap_i].get("repeat_every", 1)
+				var unit: String = _todo_items[cap_i].get("repeat_unit", "days")
+				var next_unix := _todo_today_unix() + every * _todo_unit_secs(unit)
+				_todo_items[cap_i]["last_completed"] = _todo_unix_to_str(_todo_today_unix())
+				_todo_items[cap_i]["next_due"] = _todo_unix_to_str(next_unix)
+				_save_todo()
+				_log_activity("task_completed", 'Recurring task done: "%s" — next due %s' % [done_text, _todo_items[cap_i]["next_due"]])
+				_refresh_todo()
+				return
 			_todo_items.remove_at(cap_i)
 			if _todo_editing_idx == cap_i:
 				_todo_editing_idx = -1
@@ -3490,9 +3501,36 @@ func _refresh_todo() -> void:
 			assign_edit.text = item.get("assigned_to", "")
 			assign_row.add_child(assign_edit)
 			fields.add_child(assign_row)
+			# ── Repeat row ──
+			var repeat_row := HBoxContainer.new()
+			repeat_row.add_theme_constant_override("separation", 4)
+			var repeat_chk := CheckBox.new()
+			repeat_chk.text = "Repeat every"
+			repeat_chk.button_pressed = item.get("repeat", false)
+			repeat_chk.add_theme_font_size_override("font_size", 11)
+			repeat_row.add_child(repeat_chk)
+			var repeat_spin := SpinBox.new()
+			repeat_spin.min_value = 1
+			repeat_spin.max_value = 365
+			repeat_spin.value = item.get("repeat_every", 1)
+			repeat_spin.custom_minimum_size = Vector2(60, 0)
+			repeat_spin.add_theme_font_size_override("font_size", 11)
+			repeat_row.add_child(repeat_spin)
+			var repeat_unit_btn := OptionButton.new()
+			repeat_unit_btn.add_item("days")
+			repeat_unit_btn.add_item("weeks")
+			repeat_unit_btn.add_item("months")
+			var unit_map := {"days": 0, "weeks": 1, "months": 2}
+			repeat_unit_btn.selected = unit_map.get(item.get("repeat_unit", "days"), 0)
+			repeat_unit_btn.add_theme_font_size_override("font_size", 11)
+			repeat_row.add_child(repeat_unit_btn)
+			fields.add_child(repeat_row)
 			row.add_child(fields)
 			var cap_edit := edit
 			var cap_assign := assign_edit
+			var cap_repeat_chk := repeat_chk
+			var cap_repeat_spin := repeat_spin
+			var cap_repeat_unit := repeat_unit_btn
 			var confirm_btn := Button.new()
 			confirm_btn.text = "✓"
 			confirm_btn.pressed.connect(func():
@@ -3502,6 +3540,18 @@ func _refresh_todo() -> void:
 					_todo_items[cap_i].erase("assigned_to")
 				else:
 					_todo_items[cap_i]["assigned_to"] = assignee
+				var units := ["days", "weeks", "months"]
+				_todo_items[cap_i]["repeat"] = cap_repeat_chk.button_pressed
+				_todo_items[cap_i]["repeat_every"] = int(cap_repeat_spin.value)
+				_todo_items[cap_i]["repeat_unit"] = units[cap_repeat_unit.selected]
+				if cap_repeat_chk.button_pressed and _todo_items[cap_i].get("next_due", "").is_empty():
+					# Set first due date to today if not already scheduled
+					_todo_items[cap_i]["next_due"] = _todo_unix_to_str(_todo_today_unix())
+				elif not cap_repeat_chk.button_pressed:
+					_todo_items[cap_i].erase("repeat_every")
+					_todo_items[cap_i].erase("repeat_unit")
+					_todo_items[cap_i].erase("next_due")
+					_todo_items[cap_i].erase("last_completed")
 				_save_todo()
 				_todo_editing_idx = -1
 				_refresh_todo()
@@ -3527,6 +3577,26 @@ func _refresh_todo() -> void:
 				a_lbl.add_theme_color_override("font_color", Color(0.4, 0.7, 1.0))
 				a_lbl.tooltip_text = "Assigned to " + assignee
 				row.add_child(a_lbl)
+			if item.get("repeat", false):
+				var due_lbl := Label.new()
+				due_lbl.add_theme_font_size_override("font_size", 11)
+				var next_due: String = item.get("next_due", "")
+				var today := _todo_today_unix()
+				var due_unix := _todo_str_to_unix(next_due)
+				var days_diff := int((due_unix - today) / 86400.0)
+				if next_due.is_empty() or days_diff <= 0:
+					due_lbl.text = "⟳ due today" if days_diff == 0 else "⟳ overdue"
+					due_lbl.add_theme_color_override("font_color", Color(1.0, 0.45, 0.3) if days_diff < 0 else Color(1.0, 0.85, 0.2))
+				elif days_diff == 1:
+					due_lbl.text = "⟳ tomorrow"
+					due_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+				else:
+					var every: int = item.get("repeat_every", 1)
+					var unit: String = item.get("repeat_unit", "days")
+					due_lbl.text = "⟳ in %d days" % days_diff
+					due_lbl.tooltip_text = "Repeats every %d %s" % [every, unit]
+					due_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+				row.add_child(due_lbl)
 			var edit_btn := Button.new()
 			edit_btn.text = "✏"
 			edit_btn.pressed.connect(func():
@@ -3585,6 +3655,30 @@ func _refresh_todo() -> void:
 		)
 		row.add_child(rm_btn)
 		_todo_list.add_child(row)
+
+func _todo_unit_secs(unit: String) -> int:
+	match unit:
+		"weeks":  return 7 * 86400
+		"months": return 30 * 86400
+		_:        return 86400
+
+func _todo_today_unix() -> int:
+	var d := Time.get_date_dict_from_system()
+	return int(Time.get_unix_time_from_datetime_dict(
+		{"year": d["year"], "month": d["month"], "day": d["day"],
+		 "hour": 0, "minute": 0, "second": 0}))
+
+func _todo_unix_to_str(unix: int) -> String:
+	var d := Time.get_datetime_dict_from_unix_time(unix)
+	return "%04d-%02d-%02d" % [d["year"], d["month"], d["day"]]
+
+func _todo_str_to_unix(s: String) -> int:
+	if s.is_empty(): return 0
+	var p := s.split("-")
+	if p.size() < 3: return 0
+	return int(Time.get_unix_time_from_datetime_dict(
+		{"year": int(p[0]), "month": int(p[1]), "day": int(p[2]),
+		 "hour": 0, "minute": 0, "second": 0}))
 
 func _todo_add() -> void:
 	if not is_instance_valid(_todo_input):
