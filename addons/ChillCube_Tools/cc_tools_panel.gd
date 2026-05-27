@@ -109,6 +109,7 @@ var _vault_cache: String = ""
 var _vault_file_dialog: EditorFileDialog
 var _sync_timer: Timer = null
 var _sync_thread: Thread = null
+var _push_debounce_timer: Timer = null  # fires once after quiet period, then pushes
 var _vault_files: Array[String] = []
 var _vault_sel_files: Array[String] = []
 var _vault_sel_count_lbl: Label
@@ -899,6 +900,12 @@ func _exit_tree() -> void:
 		_plan_thread.wait_to_finish()
 	if _sync_timer and is_instance_valid(_sync_timer):
 		_sync_timer.stop()
+	if is_instance_valid(_push_debounce_timer):
+		_push_debounce_timer.stop()
+		# Flush any pending changes synchronously before the plugin unloads
+		if _activity_push_pending or (is_instance_valid(_push_debounce_timer) and not _push_debounce_timer.is_stopped()):
+			if not (_activity_thread and _activity_thread.is_started()):
+				Ops.cc_data_push(_cc_data_bundle(), Callable())
 	if _sync_thread and _sync_thread.is_started():
 		_sync_thread.wait_to_finish()
 	if _vault_thread and _vault_thread.is_started():
@@ -6542,7 +6549,7 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 func _start_sync_timer() -> void:
 	if not is_instance_valid(_sync_timer):
 		_sync_timer = Timer.new()
-		_sync_timer.wait_time = 120.0  # background pull every 2 minutes
+		_sync_timer.wait_time = 300.0  # background pull every 5 minutes
 		_sync_timer.autostart = false
 		_sync_timer.one_shot = false
 		_sync_timer.timeout.connect(_on_sync_timer)
@@ -10524,8 +10531,29 @@ func _log_activity(type: String, text: String) -> void:
 	_refresh_activity_list()
 	_activity_auto_push()
 
+## Schedule a push after a quiet period. All rapid successive changes collapse
+## into a single push that fires PUSH_DEBOUNCE_SEC seconds after the last one.
+## This is the ONLY place a push thread is started — never call _do_push() directly.
+const PUSH_DEBOUNCE_SEC := 8.0
+
 func _activity_auto_push() -> void:
+	# Ensure the debounce timer exists
+	if not is_instance_valid(_push_debounce_timer):
+		_push_debounce_timer = Timer.new()
+		_push_debounce_timer.one_shot = true
+		_push_debounce_timer.wait_time = PUSH_DEBOUNCE_SEC
+		_push_debounce_timer.timeout.connect(_do_push)
+		add_child(_push_debounce_timer)
+	# Reset the timer — if it was already running, this postpones the push
+	_push_debounce_timer.stop()
+	_push_debounce_timer.start()
+	# Show a subtle "pending" indicator so the user knows a sync is queued
+	if is_instance_valid(_activity_status_lbl):
+		_activity_status_lbl.text = "…"
+
+func _do_push() -> void:
 	if _activity_thread and _activity_thread.is_started():
+		# A push is already in flight — reschedule for after it finishes
 		_activity_push_pending = true
 		return
 	_activity_push_pending = false
@@ -10554,7 +10582,7 @@ func _activity_on_pushed(pushed: bool) -> void:
 					_activity_status_lbl.text = ""
 			)
 	if _activity_push_pending:
-		_activity_auto_push()
+		_do_push()
 
 const _REACTION_EMOJIS := ["👍", "❤", "😄", "🔥", "🎉", "👀", "🤔", "👎"]
 
@@ -12830,7 +12858,11 @@ func _election_refresh() -> void:
 
 	var role_scores: Dictionary = ((_election_data.get("scores", {}) as Dictionary).get(role, {}) as Dictionary)
 	var appointer_role := _election_role_appointer(role)
-	var i_can_appoint: bool = (not appointer_role.is_empty() and _election_is_holder(appointer_role, me)) or _election_is_leader()
+	# Appoint/remove buttons only appear on appointed roles (not score-based).
+	# Visible to: holders of the appointer role, OR the leader (who can always appoint).
+	var i_can_appoint: bool = not appointer_role.is_empty() and (
+		_election_is_holder(appointer_role, me) or _election_is_leader()
+	)
 	var max_h := _election_role_max_holders(role)
 	var current_holders: Array = ((_election_data.get("holders", {}) as Dictionary).get(role, []) as Array)
 	var holder_count := current_holders.size()
@@ -13349,23 +13381,25 @@ func _election_configure_role() -> void:
 	mh_lbl.text = "Max holders:"
 	mh_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
 	vb.add_child(mh_lbl)
-	var mh_row := HBoxContainer.new()
-	var mh_opt := OptionButton.new()
-	mh_opt.add_item("1  (single holder — score election)")
-	mh_opt.add_item("2  holders")
-	mh_opt.add_item("3  holders")
-	mh_opt.add_item("5  holders")
-	mh_opt.add_item("∞  unlimited (star threshold)")
-	var mh_val_map := [1, 2, 3, 5, -1]
 	var cur_mh: int = int(role_data.get("max_holders", 1))
-	var cur_mh_idx := 0
-	for i: int in range(mh_val_map.size()):
-		if mh_val_map[i] == cur_mh:
-			cur_mh_idx = i
-			break
-	mh_opt.select(cur_mh_idx)
-	mh_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	mh_row.add_child(mh_opt)
+	var mh_row := HBoxContainer.new()
+	mh_row.add_theme_constant_override("separation", 8)
+	var mh_spin := SpinBox.new()
+	mh_spin.min_value = 1
+	mh_spin.max_value = 999
+	mh_spin.step = 1
+	mh_spin.value = max(1, cur_mh)  # -1 (unlimited) shows as 1 in spin, checkbox handles it
+	mh_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mh_spin.editable = cur_mh != -1
+	mh_row.add_child(mh_spin)
+	var mh_inf_chk := CheckBox.new()
+	mh_inf_chk.text = "Unlimited"
+	mh_inf_chk.tooltip_text = "Anyone who meets the star threshold earns this role automatically"
+	mh_inf_chk.button_pressed = cur_mh == -1
+	mh_inf_chk.toggled.connect(func(on: bool):
+		mh_spin.editable = not on
+	)
+	mh_row.add_child(mh_inf_chk)
 	vb.add_child(mh_row)
 
 	# ── Star threshold (only for unlimited) ──────────────────────────────────
@@ -13383,8 +13417,8 @@ func _election_configure_role() -> void:
 	st_spin.value = float(role_data.get("star_threshold", 3.5))
 	st_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	st_section.add_child(st_spin)
-	mh_opt.item_selected.connect(func(idx: int):
-		st_section.visible = mh_val_map[idx] == -1
+	mh_inf_chk.toggled.connect(func(on: bool):
+		st_section.visible = on
 	)
 
 	vb.add_child(HSeparator.new())
@@ -13415,7 +13449,7 @@ func _election_configure_role() -> void:
 	dlg.confirmed.connect(func():
 		var roles_dict: Dictionary = _election_data.get("roles", {}) as Dictionary
 		var rd: Dictionary = roles_dict.get(role, {}) as Dictionary
-		rd["max_holders"] = mh_val_map[mh_opt.selected]
+		rd["max_holders"] = -1 if mh_inf_chk.button_pressed else int(mh_spin.value)
 		rd["star_threshold"] = st_spin.value
 		var ap_idx := ap_opt.selected
 		if ap_idx == 0:
