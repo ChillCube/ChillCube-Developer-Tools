@@ -3751,6 +3751,7 @@ func _refresh_todo() -> void:
 			edit.placeholder_text = "Task text… use #tag for hashtags"
 			fields.add_child(edit)
 			var assign_row := HBoxContainer.new()
+			assign_row.visible = _perm_has("todo.assign")
 			var assign_lbl := Label.new()
 			assign_lbl.text = "Assign:"
 			assign_lbl.add_theme_font_size_override("font_size", 11)
@@ -4085,6 +4086,8 @@ func _build_votes_tab(tabs: TabContainer) -> void:
 	var new_btn := Button.new()
 	new_btn.text = "+ New Vote"
 	new_btn.pressed.connect(func():
+		if not _perm_gate("vote.create", _vote_status_lbl):
+			return
 		if is_instance_valid(_vote_create_box):
 			_vote_create_box.visible = not _vote_create_box.visible
 	)
@@ -7053,6 +7056,8 @@ func _vault_do_move() -> void:
 	)
 
 func _vault_do_mkdir() -> void:
+	if not _perm_gate("vault.mkdir"):
+		return
 	var name := _vault_newdir_input.text.strip_edges().lstrip("/")
 	if name.is_empty():
 		return
@@ -7077,6 +7082,11 @@ func _vault_confirm_delete(rel_path: String) -> void:
 	_vault_delete_dialog.popup_centered()
 
 func _vault_do_archive() -> void:
+	if not _perm_gate("vault.delete"):
+		return
+	if not _perm_has_vault_folder(_vault_current_dir):
+		OS.alert("⛔ You don't have delete access to this folder.", "Permission denied")
+		return
 	if _vault_pending_delete.is_empty():
 		return
 	if _vault_thread and _vault_thread.is_started():
@@ -9888,6 +9898,8 @@ func _refresh_addons() -> void:
 			var captured_folder := folder
 			var captured_rm_name: String = cfg.get("name", folder)
 			rm_btn.pressed.connect(func():
+				if not _perm_gate("addon.delete"):
+					return
 				_installed_log.text = ""
 				_run_op(rm_btn, _installed_log, func():
 					Ops.remove_addon(
@@ -11804,46 +11816,47 @@ func _on_pending_loaded(all_users: Array, approver: String, fetch_errors: Array)
 			lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			lbl.add_theme_color_override("font_color", Color(0.9, 0.7, 0.3))
 			row.add_child(lbl)
-			var approve_btn := Button.new()
-			approve_btn.text = "✔ Approve"
-			var cap_name := uname
-			var cap_approver := approver
-			approve_btn.pressed.connect(func():
-				approve_btn.disabled = true
-				if _login_thread and _login_thread.is_started():
-					return
-				_login_thread = Thread.new()
-				_login_thread.start(func():
-					var msgs: Array = []
-					Ops.auth_approve(cap_approver, cap_name,
-						func(m: String): msgs.append(m))
-					call_deferred("_log_activity", "account_approved",
-						"%s approved account for %s" % [cap_approver, cap_name])
-					call_deferred("_refresh_pending_list")
-					call_deferred("_on_approve_done")
-					call_deferred("_set_admin_status", "\n".join(msgs))
+			if _perm_has("team.approve"):
+				var approve_btn := Button.new()
+				approve_btn.text = "✔ Approve"
+				var cap_name := uname
+				var cap_approver := approver
+				approve_btn.pressed.connect(func():
+					approve_btn.disabled = true
+					if _login_thread and _login_thread.is_started():
+						return
+					_login_thread = Thread.new()
+					_login_thread.start(func():
+						var msgs: Array = []
+						Ops.auth_approve(cap_approver, cap_name,
+							func(m: String): msgs.append(m))
+						call_deferred("_log_activity", "account_approved",
+							"%s approved account for %s" % [cap_approver, cap_name])
+						call_deferred("_refresh_pending_list")
+						call_deferred("_on_approve_done")
+						call_deferred("_set_admin_status", "\n".join(msgs))
+					)
 				)
-			)
-			row.add_child(approve_btn)
-			var remove_btn := Button.new()
-			remove_btn.text = "✖ Reject"
-			remove_btn.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
-			var cap_name2 := uname
-			var cap_approver2 := approver
-			remove_btn.pressed.connect(func():
-				remove_btn.disabled = true
-				if _login_thread and _login_thread.is_started():
-					return
-				_login_thread = Thread.new()
-				_login_thread.start(func():
-					Ops.auth_remove(cap_approver2, cap_name2, Callable())
-					call_deferred("_log_activity", "account_rejected",
-						"%s rejected account for %s" % [cap_approver2, cap_name2])
-					call_deferred("_refresh_pending_list")
-					call_deferred("_on_approve_done")
+				row.add_child(approve_btn)
+				var remove_btn := Button.new()
+				remove_btn.text = "✖ Reject"
+				remove_btn.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+				var cap_name2 := uname
+				var cap_approver2 := approver
+				remove_btn.pressed.connect(func():
+					remove_btn.disabled = true
+					if _login_thread and _login_thread.is_started():
+						return
+					_login_thread = Thread.new()
+					_login_thread.start(func():
+						Ops.auth_remove(cap_approver2, cap_name2, Callable())
+						call_deferred("_log_activity", "account_rejected",
+							"%s rejected account for %s" % [cap_approver2, cap_name2])
+						call_deferred("_refresh_pending_list")
+						call_deferred("_on_approve_done")
+					)
 				)
-			)
-			row.add_child(remove_btn)
+				row.add_child(remove_btn)
 			_pending_list.add_child(row)
 
 	# ── Approved members section ─────────────────────────────────────────────
@@ -11892,25 +11905,26 @@ func _on_pending_loaded(all_users: Array, approver: String, fetch_errors: Array)
 				)
 			)
 			row.add_child(role_btn)
-			var remove_btn2 := Button.new()
-			remove_btn2.text = "Remove"
-			remove_btn2.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
-			var cap_name4 := uname
-			var cap_approver4 := approver
-			remove_btn2.pressed.connect(func():
-				remove_btn2.disabled = true
-				if _login_thread and _login_thread.is_started():
-					return
-				_login_thread = Thread.new()
-				_login_thread.start(func():
-					Ops.auth_remove(cap_approver4, cap_name4, Callable())
-					call_deferred("_log_activity", "account_removed",
-						"%s removed account for %s" % [cap_approver4, cap_name4])
-					call_deferred("_refresh_pending_list")
-					call_deferred("_on_approve_done")
+			if _perm_has("team.remove"):
+				var remove_btn2 := Button.new()
+				remove_btn2.text = "Remove"
+				remove_btn2.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+				var cap_name4 := uname
+				var cap_approver4 := approver
+				remove_btn2.pressed.connect(func():
+					remove_btn2.disabled = true
+					if _login_thread and _login_thread.is_started():
+						return
+					_login_thread = Thread.new()
+					_login_thread.start(func():
+						Ops.auth_remove(cap_approver4, cap_name4, Callable())
+						call_deferred("_log_activity", "account_removed",
+							"%s removed account for %s" % [cap_approver4, cap_name4])
+						call_deferred("_refresh_pending_list")
+						call_deferred("_on_approve_done")
+					)
 				)
-			)
-			row.add_child(remove_btn2)
+				row.add_child(remove_btn2)
 			_pending_list.add_child(row)
 
 	# Bootstrap: sole member with no leader can claim leadership
@@ -14712,12 +14726,14 @@ func _gd_show_detail(idx: int) -> void:
 
 	var me: String = _current_user.get("username", "")
 	var is_author: bool = me == doc.get("author", "") or doc.get("author", "") == ""
+	# Also require gdd.edit permission (leader always passes)
+	var can_edit_gdd: bool = is_author and _perm_has("gdd.edit")
 
-	# Non-authors can never be in edit mode
-	if not is_author:
+	# Non-authors or users without gdd.edit can never be in edit mode
+	if not can_edit_gdd:
 		_gd_editing = false
 
-	if is_author:
+	if can_edit_gdd:
 		var edit_btn := Button.new()
 		edit_btn.text = "✏ Edit" if not _gd_editing else "👁 View"
 		edit_btn.pressed.connect(func():
