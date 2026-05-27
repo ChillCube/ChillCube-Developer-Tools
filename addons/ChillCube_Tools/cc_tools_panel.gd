@@ -175,6 +175,7 @@ var _docs_perm_original: Dictionary = {}  # snapshot of permissions when dialog 
 var _docs_suggestions: Array = []
 var _docs_suggest_btn: Button
 var _docs_review_btn: Button
+var _docs_requests_btn: Button          # NEW: shows pending new-doc/new-gdd requests
 var _docs_suggest_submit_btn: Button
 var _docs_in_suggest_mode: bool = false
 var _docs_review_dialog: AcceptDialog
@@ -3979,6 +3980,8 @@ func _todo_str_to_unix(s: String) -> int:
 		 "hour": 0, "minute": 0, "second": 0}))
 
 func _todo_add() -> void:
+	if not _perm_gate("todo.create"):
+		return
 	if not is_instance_valid(_todo_input):
 		return
 	var text := _todo_input.text.strip_edges()
@@ -4173,6 +4176,37 @@ func _save_votes() -> void:
 		fw.store_string(JSON.stringify(_vote_items, "\t") + "\n")
 		fw.close()
 
+## Called whenever a vote closes (by majority or deadline).
+## Applies side-effects for special vote types.
+func _apply_vote_effects(vote: Dictionary) -> void:
+	var vtype: String = vote.get("type", "")
+	var result: String = vote.get("result", "")
+	match vtype:
+		"change_permission":
+			# Only apply if the vote passed (result == "yes")
+			if result != "yes":
+				return
+			var perm_key: String = vote.get("perm_key", "")
+			var new_allowed_by: String = vote.get("new_allowed_by", "")
+			var new_allowed_roles: Array = vote.get("new_allowed_roles", [])
+			var new_change_by: String = vote.get("new_change_by", "")
+			var new_change_roles: Array = vote.get("new_change_roles", [])
+			if perm_key.is_empty():
+				return
+			var current := _perm_get(perm_key)
+			if not new_allowed_by.is_empty():
+				current["allowed_by"] = new_allowed_by
+				current["allowed_roles"] = new_allowed_roles
+			if not new_change_by.is_empty():
+				current["change_by"] = new_change_by
+				current["change_roles"] = new_change_roles
+			_role_permissions[perm_key] = current
+			_save_role_permissions()
+			_apply_tab_permissions()
+			_perm_apply_buttons()
+			if is_instance_valid(_perm_list):
+				_perm_refresh_list()
+
 func _vote_is_expired(vote: Dictionary) -> bool:
 	var dl: String = vote.get("deadline", "")
 	if dl.is_empty():
@@ -4265,6 +4299,7 @@ func _on_vote_member_count(vote_idx: int, member_count: int) -> void:
 			vote["close_reason"] = "majority"
 			_vote_items[vote_idx] = vote
 			_save_votes()
+			_apply_vote_effects(vote)
 			_log_activity("vote_closed",
 				'Vote "%s" closed by majority — result: %s (%d/%d voted)' % [
 				vote.get("title", ""), vote.get("result", ""), cast_count, member_count])
@@ -4298,6 +4333,7 @@ func _refresh_vote_list() -> void:
 			_vote_items[i] = vote
 			is_closed = true
 			_save_votes()
+			_apply_vote_effects(vote)
 			_log_activity("vote_closed",
 				'Vote "%s" closed — deadline reached. Result: %s' % [
 				title, vote.get("result", "")])
@@ -6710,6 +6746,13 @@ func _vault_file_icon(filename: String) -> String:
 	return "📎"
 
 func _vault_open_picker() -> void:
+	if not _perm_gate("vault.upload"):
+		return
+	# Per-folder check
+	var cur_rel: String = _vault_current_dir
+	if not _perm_has_vault_folder(cur_rel):
+		OS.alert("⛔ You don't have upload access to this folder.", "Permission denied")
+		return
 	_vault_file_dialog.popup_centered_ratio(0.7)
 
 func _vault_upload_batch(files: Array) -> void:
@@ -7264,6 +7307,9 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	_docs_new_doc_btn.text = "📄+"
 	_docs_new_doc_btn.tooltip_text = "New document"
 	_docs_new_doc_btn.pressed.connect(func():
+		if not _perm_has("docs.create"):
+			_docs_propose_new_doc()
+			return
 		var pre := (_docs_current_dir + "/") if not _docs_current_dir.is_empty() else ""
 		_docs_new_input.text = pre
 		_docs_new_dialog.popup_centered()
@@ -7378,6 +7424,11 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	_docs_review_btn.tooltip_text = "Review suggestions"
 	_docs_review_btn.visible = false
 	_docs_review_btn.pressed.connect(_docs_open_review_dialog)
+	_docs_requests_btn = Button.new()
+	_docs_requests_btn.text = "📋 Requests"
+	_docs_requests_btn.tooltip_text = "Review pending new document / GDD creation requests"
+	_docs_requests_btn.visible = false
+	_docs_requests_btn.pressed.connect(_docs_open_requests_dialog)
 	doc_header.add_child(_docs_title_lbl)
 	doc_header.add_child(_docs_edit_btn)
 	doc_header.add_child(_docs_suggest_btn)
@@ -7387,6 +7438,7 @@ func _build_docs_tab(tabs: TabContainer) -> void:
 	doc_header.add_child(_docs_suggest_submit_btn)
 	doc_header.add_child(_docs_cancel_btn)
 	doc_header.add_child(_docs_review_btn)
+	doc_header.add_child(_docs_requests_btn)
 	doc_header.add_child(_docs_perm_btn)
 	_docs_view_panel.add_child(doc_header)
 	_docs_view_panel.add_child(HSeparator.new())
@@ -8370,6 +8422,119 @@ func _docs_perm_save() -> void:
 	if _docs_sel_path == _docs_perm_path and not _docs_editor.visible:
 		_docs_show_view_buttons(_docs_sel_path)
 
+# ─── Docs / GDD create proposal ──────────────────────────────────────────────
+
+## Opens a "Propose New Document" dialog for users without docs.create permission.
+## Submits a suggestion with type "new_doc_request" that editors can approve.
+func _docs_propose_new_doc() -> void:
+	var me: String = _current_user.get("username", "")
+	if me.is_empty():
+		return
+	var dlg := AcceptDialog.new()
+	dlg.exclusive = false
+	dlg.title = "Propose New Document"
+	dlg.size = Vector2i(440, 170)
+	var vb := VBoxContainer.new()
+	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	dlg.add_child(vb)
+	var hint := Label.new()
+	hint.text = "You don't have permission to create documents directly.\nFill in the details below — editors with docs.create will review it."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(hint)
+	vb.add_child(HSeparator.new())
+	var name_lbl := Label.new()
+	name_lbl.text = "Proposed document name / path:"
+	vb.add_child(name_lbl)
+	var name_input := LineEdit.new()
+	name_input.placeholder_text = "e.g. guides/Getting Started"
+	name_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vb.add_child(name_input)
+	var content_lbl := Label.new()
+	content_lbl.text = "Initial content (optional):"
+	vb.add_child(content_lbl)
+	var content_input := TextEdit.new()
+	content_input.placeholder_text = "Write a draft or leave blank…"
+	content_input.custom_minimum_size = Vector2(0, 60)
+	content_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vb.add_child(content_input)
+	add_child(dlg)
+	dlg.confirmed.connect(func():
+		var proposed_path := name_input.text.strip_edges()
+		if proposed_path.is_empty():
+			dlg.queue_free()
+			return
+		if not proposed_path.ends_with(".md"):
+			proposed_path += ".md"
+		var sugg: Dictionary = {
+			"id": str(int(Time.get_unix_time_from_system())) + "_" + me,
+			"type": "new_doc_request",
+			"doc_path": proposed_path,
+			"author": me,
+			"timestamp": Time.get_datetime_string_from_system(),
+			"content": content_input.text,
+			"status": "pending"
+		}
+		_docs_suggestions.append(sugg)
+		_save_doc_suggestions()
+		_log_activity("doc_suggestion", '"%s" proposed new document: "%s"' % [me, proposed_path])
+		if is_instance_valid(_docs_status_lbl):
+			_docs_status_lbl.text = "✅ Proposal submitted for review"
+			get_tree().create_timer(3.0).timeout.connect(func():
+				if is_instance_valid(_docs_status_lbl): _docs_status_lbl.text = "")
+		dlg.queue_free()
+	)
+	dlg.popup_centered()
+
+## Opens a "Propose New GDD" dialog for users without gdd.create permission.
+func _gd_propose_new_doc() -> void:
+	var me: String = _current_user.get("username", "")
+	if me.is_empty():
+		return
+	var dlg := AcceptDialog.new()
+	dlg.exclusive = false
+	dlg.title = "Propose New Design Doc"
+	dlg.size = Vector2i(440, 150)
+	var vb := VBoxContainer.new()
+	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	dlg.add_child(vb)
+	var hint := Label.new()
+	hint.text = "You don't have permission to create GDD entries directly.\nSubmit a proposal — editors with gdd.create permission will review it."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(hint)
+	vb.add_child(HSeparator.new())
+	var name_lbl := Label.new()
+	name_lbl.text = "Proposed GDD title:"
+	vb.add_child(name_lbl)
+	var name_input := LineEdit.new()
+	name_input.placeholder_text = "e.g. Combat System"
+	name_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vb.add_child(name_input)
+	add_child(dlg)
+	dlg.confirmed.connect(func():
+		var proposed_title := name_input.text.strip_edges()
+		if proposed_title.is_empty():
+			dlg.queue_free()
+			return
+		var sugg: Dictionary = {
+			"id": str(int(Time.get_unix_time_from_system())) + "_" + me,
+			"type": "new_gdd_request",
+			"doc_path": "gdd/" + proposed_title.replace(" ", "_") + ".json",
+			"author": me,
+			"timestamp": Time.get_datetime_string_from_system(),
+			"content": proposed_title,
+			"status": "pending"
+		}
+		_docs_suggestions.append(sugg)
+		_save_doc_suggestions()
+		_log_activity("doc_suggestion", '"%s" proposed new GDD: "%s"' % [me, proposed_title])
+		if is_instance_valid(_docs_status_lbl):
+			_docs_status_lbl.text = "✅ GDD proposal submitted for review"
+			get_tree().create_timer(3.0).timeout.connect(func():
+				if is_instance_valid(_docs_status_lbl): _docs_status_lbl.text = "")
+		dlg.queue_free()
+	)
+	dlg.popup_centered()
+
 # ─── Docs suggestions ────────────────────────────────────────────────────────
 
 func _docs_sugg_file() -> String:
@@ -8592,6 +8757,16 @@ func _docs_show_view_buttons(full_path: String) -> void:
 			func(c: Dictionary) -> bool: return not c.get("resolved", false)
 		).size()
 		_docs_comment_btn.text = ("💬 %d" % cmt_count) if cmt_count > 0 else "💬"
+	# Requests button — visible to users with docs.create or gdd.create permission when there are pending requests
+	if is_instance_valid(_docs_requests_btn):
+		var can_approve_requests: bool = _perm_has("docs.create") or _perm_has("gdd.create")
+		var pending_reqs: int = _docs_suggestions.filter(func(s: Dictionary) -> bool:
+			return s.get("status", "") == "pending" and (
+				s.get("type", "") == "new_doc_request" or s.get("type", "") == "new_gdd_request")
+		).size()
+		_docs_requests_btn.visible = can_approve_requests and pending_reqs > 0
+		if _docs_requests_btn.visible:
+			_docs_requests_btn.text = "📋 Requests (%d)" % pending_reqs
 
 func _docs_enter_suggest() -> void:
 	_docs_in_suggest_mode = true
@@ -8642,6 +8817,90 @@ func _docs_open_review_dialog() -> void:
 	_docs_review_build(_docs_sel_path)
 	_docs_review_view.text = ""
 	_docs_review_dialog.popup_centered()
+
+## Shows a dialog listing all pending new-doc / new-GDD creation requests.
+func _docs_open_requests_dialog() -> void:
+	var dlg := AcceptDialog.new()
+	dlg.exclusive = false
+	dlg.title = "Pending Creation Requests"
+	dlg.size = Vector2i(540, 480)
+	var root := VBoxContainer.new()
+	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	dlg.add_child(root)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list)
+	root.add_child(scroll)
+	add_child(dlg)
+	# Populate
+	var me: String = _current_user.get("username", "")
+	var found := false
+	for i in range(_docs_suggestions.size()):
+		var s: Dictionary = _docs_suggestions[i]
+		var stype: String = s.get("type", "")
+		if stype not in ["new_doc_request", "new_gdd_request"]:
+			continue
+		if s.get("status", "") != "pending":
+			continue
+		found = true
+		var cap_i := i
+		var card := PanelContainer.new()
+		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var cvb := VBoxContainer.new()
+		card.add_child(cvb)
+		# Header
+		var hrow := HBoxContainer.new()
+		var type_icon: String = "📄" if stype == "new_doc_request" else "🎮"
+		var info := Label.new()
+		info.text = "%s  %s → %s  —  %s" % [type_icon, s.get("author", "?"), s.get("doc_path", "?"), s.get("timestamp", "")]
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		hrow.add_child(info)
+		cvb.add_child(hrow)
+		# Initial content preview
+		var content_preview: String = (s.get("content", "") as String).left(120)
+		if not content_preview.strip_edges().is_empty():
+			var prev_lbl := Label.new()
+			prev_lbl.text = content_preview + ("…" if (s.get("content", "") as String).length() > 120 else "")
+			prev_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			prev_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+			cvb.add_child(prev_lbl)
+		# Action buttons (only if user can approve)
+		var can_approve: bool = (stype == "new_doc_request" and _perm_has("docs.create")) or \
+			(stype == "new_gdd_request" and _perm_has("gdd.create"))
+		if can_approve:
+			var act_row := HBoxContainer.new()
+			act_row.alignment = BoxContainer.ALIGNMENT_END
+			var approve_btn := Button.new()
+			approve_btn.text = "✅ Approve"
+			approve_btn.pressed.connect(func():
+				_docs_review_approve(cap_i)
+				dlg.hide()
+				dlg.queue_free()
+				_docs_show_view_buttons(_docs_sel_path)
+			)
+			var reject_btn := Button.new()
+			reject_btn.text = "❌ Reject"
+			reject_btn.pressed.connect(func():
+				_docs_review_reject(cap_i)
+				dlg.hide()
+				dlg.queue_free()
+				_docs_show_view_buttons(_docs_sel_path)
+			)
+			act_row.add_child(approve_btn)
+			act_row.add_child(reject_btn)
+			cvb.add_child(act_row)
+		list.add_child(card)
+		list.add_child(HSeparator.new())
+	if not found:
+		var no_lbl := Label.new()
+		no_lbl.text = "No pending creation requests."
+		no_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		list.add_child(no_lbl)
+	dlg.popup_centered()
 
 func _docs_review_build(full_path: String) -> void:
 	for c in _docs_review_list.get_children():
@@ -8805,6 +9064,53 @@ func _docs_review_approve(idx: int) -> void:
 			Ops.vault_refresh(cache, Callable())
 			call_deferred("_docs_on_moved", doc_path, dest_path)
 		)
+		return
+	# New-doc request: create the document via vault upload
+	if sugg.get("type", "") == "new_doc_request":
+		var doc_path: String = sugg["doc_path"]
+		if not doc_path.ends_with(".md"):
+			doc_path += ".md"
+		var init_content: String = sugg.get("content", "# " + doc_path.get_file().get_basename() + "\n\n")
+		if init_content.strip_edges().is_empty():
+			init_content = "# " + doc_path.get_file().get_basename() + "\n\n"
+		var tmp_dir := OS.get_temp_dir() + "/cc_docs_save"
+		DirAccess.make_dir_recursive_absolute(tmp_dir)
+		var tmp_file := tmp_dir + "/" + doc_path.get_file()
+		var fw2 := FileAccess.open(tmp_file, FileAccess.WRITE)
+		if fw2:
+			fw2.store_string(init_content)
+			fw2.close()
+		var cache2 := _vault_cache
+		var cap_doc_path := doc_path
+		var cap_content2 := init_content
+		var me2: String = _current_user.get("username", "?")
+		_log_activity("doc_suggestion", '"%s" approved new document: "%s"' % [me2, doc_path.get_file()])
+		_docs_status_lbl.text = "Creating document…"
+		_docs_thread = Thread.new()
+		_docs_thread.start(func():
+			Ops.vault_upload_file(tmp_file, cap_doc_path.get_base_dir(), Callable())
+			Ops.vault_refresh(cache2, Callable())
+			call_deferred("_docs_on_suggestion_applied", cap_doc_path, cap_content2)
+		)
+		return
+	# New-GDD request: create a blank GDD entry
+	if sugg.get("type", "") == "new_gdd_request":
+		var proposed_title: String = sugg.get("content", "New Design Doc")
+		var doc := {
+			"title": proposed_title if not proposed_title.is_empty() else "New Design Doc",
+			"author": sugg.get("author", ""),
+			"genres": [],
+			"fields": {},
+			"edit_mode": "guide"
+		}
+		_gd_docs.append(doc)
+		_gd_save_docs()
+		_gd_rebuild_list()
+		var me3: String = _current_user.get("username", "?")
+		_log_activity("doc_suggestion", '"%s" approved new GDD: "%s"' % [me3, proposed_title])
+		_docs_status_lbl.text = "✅ GDD entry created"
+		get_tree().create_timer(3.0).timeout.connect(func():
+			if is_instance_valid(_docs_status_lbl): _docs_status_lbl.text = "")
 		return
 	# Permission-change suggestion: apply new_permissions, no vault upload needed
 	if sugg.get("type", "") == "permission_change":
@@ -9601,6 +9907,8 @@ func _refresh_addons() -> void:
 # ─── Operation launchers ─────────────────────────────────────────────────────
 
 func _start_create() -> void:
+	if not _perm_gate("addon.create"):
+		return
 	var name := _create_name.text.strip_edges()
 	if name.is_empty():
 		_append_log(_create_log, "❌ Name is required.")
@@ -9625,6 +9933,8 @@ func _start_create() -> void:
 	)
 
 func _start_clone() -> void:
+	if not _perm_gate("addon.clone"):
+		return
 	var url := _clone_url.text.strip_edges()
 	if url.is_empty():
 		_append_log(_create_log, "❌ URL is required.")
@@ -9672,6 +9982,8 @@ func _finish_update_plugin(result: int) -> void:
 		_show_perm_error_dialog(plugin_dir + "/.git/objects")
 
 func _start_push() -> void:
+	if not _perm_gate("addon.push"):
+		return
 	_installed_log.text = ""
 	var self_folder: String = (get_script() as Script).resource_path.get_base_dir().get_file()
 	_run_op(_push_btn, _installed_log, func():
@@ -11135,6 +11447,8 @@ func _on_login_done(user: Dictionary, btn: Button) -> void:
 	if is_instance_valid(_login_overlay):
 		_login_overlay.visible = false
 	_refresh_account_tab()
+	_apply_tab_permissions()
+	_perm_apply_buttons()
 
 func _on_reg_done(btn: Button) -> void:
 	if _login_thread:
@@ -11175,6 +11489,8 @@ func _session_restore() -> void:
 	if is_instance_valid(_login_overlay):
 		_login_overlay.visible = false
 	_refresh_account_tab()
+	_apply_tab_permissions()
+	_perm_apply_buttons()
 
 func _session_logout() -> void:
 	_current_user = {}
@@ -12650,11 +12966,7 @@ func _election_toggle_candidate() -> void:
 	_election_refresh()
 
 func _election_prompt_create_role() -> void:
-	if not _election_is_leader():
-		if is_instance_valid(_election_status_lbl):
-			_election_status_lbl.text = "⚠ Only the Leader can create roles"
-		get_tree().create_timer(2.5).timeout.connect(func():
-			if is_instance_valid(_election_status_lbl): _election_status_lbl.text = "")
+	if not _perm_gate("election.create_role", _election_status_lbl):
 		return
 	var dlg := AcceptDialog.new()
 	dlg.exclusive = false
@@ -12704,11 +13016,7 @@ func _election_create_role(name: String) -> void:
 	_log_activity("election_role", '"%s" created role: "%s"' % [_current_user.get("username", "?"), name])
 
 func _election_delete_selected_role() -> void:
-	if not _election_is_leader():
-		if is_instance_valid(_election_status_lbl):
-			_election_status_lbl.text = "⚠ Only the Leader can delete roles"
-		get_tree().create_timer(2.5).timeout.connect(func():
-			if is_instance_valid(_election_status_lbl): _election_status_lbl.text = "")
+	if not _perm_gate("election.delete_role", _election_status_lbl):
 		return
 	var role := _election_sel_role
 	if role.is_empty():
@@ -13006,11 +13314,7 @@ func _election_show_settings() -> void:
 	_election_settings_dialog.popup_centered()
 
 func _election_configure_role() -> void:
-	if not _election_is_leader():
-		if is_instance_valid(_election_status_lbl):
-			_election_status_lbl.text = "⚠ Only the Leader can configure roles"
-			get_tree().create_timer(2.5).timeout.connect(func():
-				if is_instance_valid(_election_status_lbl): _election_status_lbl.text = "")
+	if not _perm_gate("election.configure_role", _election_status_lbl):
 		return
 	var role := _election_sel_role
 	if role.is_empty():
@@ -13263,6 +13567,45 @@ func _perm_has_vault_folder(vault_rel_path: String) -> bool:
 				if _election_is_holder(rn, me): return true
 			return false
 	return true
+
+## Show a toast-style status message when a permission check fails.
+func _perm_gate(key: String, status_lbl: Label = null) -> bool:
+	if _perm_has(key):
+		return true
+	var def: Dictionary = {}
+	for d: Dictionary in PERM_DEFS:
+		if d.get("key") == key:
+			def = d
+			break
+	var msg := "⛔ No permission: %s" % def.get("display", key)
+	if is_instance_valid(status_lbl):
+		status_lbl.text = msg
+		get_tree().create_timer(3.0).timeout.connect(func():
+			if is_instance_valid(status_lbl): status_lbl.text = "")
+	else:
+		OS.alert(msg, "Permission denied")
+	return false
+
+## Disable/enable action buttons based on current user's permissions.
+## Called after login and after permission changes.
+func _perm_apply_buttons() -> void:
+	# Addon buttons (stored as member vars)
+	if is_instance_valid(_create_btn):
+		_create_btn.disabled = not _perm_has("addon.create")
+	if is_instance_valid(_push_btn):
+		_push_btn.disabled = not _perm_has("addon.push")
+	if is_instance_valid(_clone_btn):
+		_clone_btn.disabled = not _perm_has("addon.clone")
+	if is_instance_valid(_update_plugin_btn):
+		var can_upd: bool = _perm_has("addon.update_plugin")
+		# only override disabled if not already disabled for another reason (e.g. mid-run)
+		if can_upd:
+			pass  # don't force-enable: the update flow manages its own state
+		else:
+			_update_plugin_btn.disabled = true
+	# Docs new-doc button
+	if is_instance_valid(_docs_new_doc_btn):
+		_docs_new_doc_btn.visible = _perm_has("docs.create") or _perm_has("docs.create")
 
 func _apply_tab_permissions() -> void:
 	if not is_instance_valid(_outer_tabs):
@@ -13770,20 +14113,33 @@ func _perm_open_access_dialog(title: String, cur: Dictionary, on_save: Callable)
 	dlg.canceled.connect(func(): dlg.queue_free())
 	dlg.popup_centered()
 
+## Open a dialog to configure the desired change, then submit a vote to approve it.
 func _perm_propose_vote(key: String) -> void:
 	var def_display := key
 	for def: Dictionary in PERM_DEFS:
 		if def.get("key", "") == key:
 			def_display = def.get("display", key)
 			break
-	_election_submit_pending_vote({
-		"type": "change_permission",
-		"perm_key": key,
-		"title": "Change permission: " + def_display,
-		"description": "Proposes updating the \"%s\" permission rule. Vote to approve the change." % def_display
-	})
-	if is_instance_valid(_perm_status_lbl):
-		_perm_status_lbl.text = "⚡ Vote proposed — see Votes tab"
+	var current := _perm_get(key)
+	# Ask user to specify desired new settings
+	_perm_open_access_dialog("Propose: who should be allowed?", current.duplicate(true), func(new_perm: Dictionary):
+		_perm_open_access_dialog("Propose: who can change this permission?",
+			{"allowed_by": new_perm.get("change_by", "leader"), "allowed_roles": new_perm.get("change_roles", [])},
+			func(change_perm: Dictionary):
+				_election_submit_pending_vote({
+					"type": "change_permission",
+					"perm_key": key,
+					"title": "Change permission: " + def_display,
+					"description": "Proposes updating the \"%s\" permission rule. Vote to approve the change." % def_display,
+					"new_allowed_by": new_perm.get("allowed_by", "anyone"),
+					"new_allowed_roles": new_perm.get("allowed_roles", []),
+					"new_change_by": change_perm.get("allowed_by", "leader"),
+					"new_change_roles": change_perm.get("allowed_roles", [])
+				})
+				if is_instance_valid(_perm_status_lbl):
+					_perm_status_lbl.text = "⚡ Vote proposed — see Votes tab"
+		)
+	)
 
 # ─── Bundles tab ──────────────────────────────────────────────────────────────
 
@@ -14699,6 +15055,10 @@ func _gd_show_detail(idx: int) -> void:
 				_gd_detail.add_child(chips_row)
 
 func _gd_new_doc() -> void:
+	if not _perm_has("gdd.create"):
+		# Non-permitted users: submit a proposal
+		_gd_propose_new_doc()
+		return
 	var doc := {
 		"title": "New Design Doc",
 		"author": _current_user.get("username", ""),
