@@ -9898,7 +9898,7 @@ func _build_login_overlay() -> Control:
 	var tok_lbl := Label.new(); tok_lbl.text = "GitHub Token"
 	var tok_field := LineEdit.new()
 	tok_field.secret = true; tok_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	tok_field.placeholder_text = "ghp_…"
+	tok_field.placeholder_text = "optional if gh CLI is configured"
 	tok_field.text = _current_user.get("github_token", "")
 	lg.add_child(un_lbl); lg.add_child(un_field)
 	lg.add_child(pw_lbl); lg.add_child(pw_field)
@@ -9942,7 +9942,7 @@ func _build_login_overlay() -> Control:
 	var rtok_lbl := Label.new(); rtok_lbl.text = "GitHub Token"
 	var rtok_field := LineEdit.new()
 	rtok_field.secret = true; rtok_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	rtok_field.placeholder_text = "ghp_…"
+	rtok_field.placeholder_text = "optional if gh CLI is configured"
 	rg.add_child(run_lbl); rg.add_child(run_field)
 	rg.add_child(rgh_lbl); rg.add_child(rgh_field)
 	rg.add_child(rpw_lbl); rg.add_child(rpw_field)
@@ -9965,10 +9965,11 @@ func _build_login_overlay() -> Control:
 		var u := un_field.text.strip_edges()
 		var p := pw_field.text
 		var tok := tok_field.text.strip_edges()
-		if u.is_empty() or p.is_empty() or tok.is_empty():
-			_login_status_lbl.text = "Enter username, password, and GitHub token."
+		if u.is_empty() or p.is_empty():
+			_login_status_lbl.text = "Enter username and password."
 			return
-		Ops.set_token(tok)
+		if not tok.is_empty():
+			Ops.set_token(tok)
 		login_btn.disabled = true
 		_login_status_lbl.text = "🔄 Connecting..."
 		_login_thread = Thread.new()
@@ -10004,13 +10005,14 @@ func _build_login_overlay() -> Control:
 		var p := rpw_field.text
 		var p2 := rpw2_field.text
 		var tok := rtok_field.text.strip_edges()
-		if u.is_empty() or gh.is_empty() or p.is_empty() or tok.is_empty():
-			_reg_status_lbl.text = "Fill in all fields."
+		if u.is_empty() or gh.is_empty() or p.is_empty():
+			_reg_status_lbl.text = "Fill in username, GitHub user, and password."
 			return
 		if p != p2:
 			_reg_status_lbl.text = "Passwords do not match."
 			return
-		Ops.set_token(tok)
+		if not tok.is_empty():
+			Ops.set_token(tok)
 		reg_btn.disabled = true
 		_reg_status_lbl.text = "🔄 Registering..."
 		_login_thread = Thread.new()

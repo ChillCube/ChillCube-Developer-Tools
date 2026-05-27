@@ -1788,8 +1788,27 @@ static func cc_data_read(cache_dir: String, fname: String) -> String:
 const VAULT_REPO := "ChillCube/vault"
 static var _gh_token: String = ""
 static func set_token(token: String) -> void: _gh_token = token
+
+# Returns the best available token: manually entered > gh CLI > empty (rely on git credential helper)
+static func _resolve_token() -> String:
+	if not _gh_token.is_empty():
+		return _gh_token
+	# Try gh CLI
+	var out: Array = []
+	if OS.execute("gh", ["auth", "token"], out) == 0 and not out.is_empty():
+		var t := (out[0] as String).strip_edges()
+		if not t.is_empty():
+			return t
+	return ""
+
+static func _gh_url(repo: String) -> String:
+	var tok := _resolve_token()
+	if tok.is_empty():
+		return "https://github.com/ChillCube/" + repo + ".git"
+	return "https://oauth2:" + tok + "@github.com/ChillCube/" + repo + ".git"
+
 static func _vault_url() -> String:
-	return "https://oauth2:" + _gh_token + "@github.com/ChillCube/vault.git"
+	return _gh_url("vault")
 const FEEDBACK_DIR := "_cc_feedback"
 
 # ─── FEEDBACK ────────────────────────────────────────────────────────────────
@@ -2195,7 +2214,7 @@ static func extract_api(addon_path: String) -> Array:
 # ─── AUTH ─────────────────────────────────────────────────────────────────────
 
 static func _auth_url() -> String:
-	return "https://oauth2:" + _gh_token + "@github.com/ChillCube/cc-auth.git"
+	return _gh_url("cc-auth")
 
 static func auth_hash(password: String) -> String:
 	var ctx := HashingContext.new()
