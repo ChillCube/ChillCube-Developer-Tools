@@ -301,8 +301,10 @@ var _login_thread: Thread = null
 var _thread: Thread = null
 
 # ─── Optimisation: tab refs + dirty flags + misc thread + terminal cache ──────
+var _outer_tabs: TabContainer = null
 var _team_inner_tabs: TabContainer = null
 var _planning_inner_tabs: TabContainer = null
+var _resources_inner_tabs: TabContainer = null
 var _activity_needs_refresh: bool = false
 var _vote_list_needs_refresh: bool = false
 var _todo_needs_refresh: bool = false
@@ -335,6 +337,52 @@ var _election_settings_dialog: AcceptDialog
 var _election_settings_inner: VBoxContainer
 var _election_help_rtl: RichTextLabel = null
 var _election_roles_summary: VBoxContainer = null
+
+# ─── Role-based permissions ───────────────────────────────────────────────────
+var _role_permissions: Dictionary = {}        # perm_key -> {allowed_by, allowed_roles, change_by, ...}
+var _vault_folder_perms: Dictionary = {}      # vault_rel_path -> {allowed_by, allowed_roles}
+var _perm_sel_category: String = ""
+var _perm_list: VBoxContainer = null
+var _perm_status_lbl: Label = null
+
+# Permission definitions — { key, display, desc, category, default_allowed, default_change }
+const PERM_DEFS: Array = [
+	# Tab access
+	{"key": "tab.addons",    "display": "View Addons tab",          "desc": "Access to the Addons tab (code, workspace, bundles, push).",        "category": "Tab Access", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "tab.planning",  "display": "View Planning tab",        "desc": "Access to the Planning tab (to-do, bugs, feedback).",                "category": "Tab Access", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "tab.team",      "display": "View Team tab",            "desc": "Access to the Team tab (votes, forum, elections, schedule).",         "category": "Tab Access", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "tab.resources", "display": "View Resources tab",       "desc": "Access to the Resources tab (vault, docs, game design).",             "category": "Tab Access", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "tab.vault",     "display": "View Vault sub-tab",       "desc": "Access to the Vault within Resources.",                              "category": "Tab Access", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "tab.docs",      "display": "View Docs sub-tab",        "desc": "Access to Docs within Resources.",                                   "category": "Tab Access", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "tab.gdd",       "display": "View Game Design sub-tab", "desc": "Access to Game Design Documents within Resources.",                  "category": "Tab Access", "default_allowed": "anyone", "default_change": "leader"},
+	# Addon actions
+	{"key": "addon.create",        "display": "Create addons",         "desc": "Can create new addons and publish them to GitHub.",             "category": "Addons", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "addon.push",          "display": "Push addon changes",    "desc": "Can push committed changes in any addon.",                     "category": "Addons", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "addon.clone",         "display": "Clone/install addons",  "desc": "Can clone or install addons from GitHub.",                     "category": "Addons", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "addon.delete",        "display": "Remove addons",         "desc": "Can delete/uninstall addons from the project.",                "category": "Addons", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "addon.update_plugin", "display": "Update ChillCube Tools","desc": "Can update the plugin itself via the Update button.",          "category": "Addons", "default_allowed": "leader", "default_change": "leader"},
+	# Docs & GDD
+	{"key": "docs.create",    "display": "Create documents",    "desc": "Can create new documents directly. Others must submit a proposal for approval.", "category": "Docs & GDD", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "docs.comment",   "display": "Comment on documents","desc": "Can post comments on documents.",                                   "category": "Docs & GDD", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "gdd.create",     "display": "Create GDD entries",  "desc": "Can create new Game Design Documents directly. Others must submit for approval.", "category": "Docs & GDD", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "gdd.edit",       "display": "Edit GDD entries",    "desc": "Can edit existing Game Design Documents.",                         "category": "Docs & GDD", "default_allowed": "anyone", "default_change": "leader"},
+	# Vault & Assets
+	{"key": "vault.upload",  "display": "Upload vault files",   "desc": "Can upload files to the shared vault.",                           "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "vault.delete",  "display": "Delete vault files",   "desc": "Can delete files from the shared vault.",                         "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "vault.mkdir",   "display": "Create vault folders", "desc": "Can create new folders in the shared vault.",                     "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
+	# Planning
+	{"key": "todo.create",   "display": "Create to-do items",   "desc": "Can add new items to the shared to-do list.",                     "category": "Planning", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "todo.assign",   "display": "Assign tasks",         "desc": "Can assign to-do items to other users or roles.",                 "category": "Planning", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "vote.create",   "display": "Create team votes",    "desc": "Can propose new votes in the Votes tab.",                         "category": "Planning", "default_allowed": "anyone", "default_change": "leader"},
+	# Team management
+	{"key": "team.approve",    "display": "Approve accounts",   "desc": "Can approve or reject pending account registrations.",             "category": "Team",  "default_allowed": "leader", "default_change": "leader"},
+	{"key": "team.remove",     "display": "Remove members",     "desc": "Can remove team members from the project.",                       "category": "Team",  "default_allowed": "leader", "default_change": "leader"},
+	{"key": "team.add_collab", "display": "Add collaborators",  "desc": "Can add GitHub users as vault/auth repo collaborators.",           "category": "Team",  "default_allowed": "leader", "default_change": "leader"},
+	# Elections
+	{"key": "election.create_role",    "display": "Create roles",       "desc": "Can create new election roles.",                          "category": "Elections", "default_allowed": "leader", "default_change": "leader"},
+	{"key": "election.delete_role",    "display": "Delete roles",       "desc": "Can delete election roles.",                              "category": "Elections", "default_allowed": "leader", "default_change": "leader"},
+	{"key": "election.configure_role", "display": "Configure roles",    "desc": "Can set max holders, star threshold, and appointer.",     "category": "Elections", "default_allowed": "leader", "default_change": "leader"},
+]
 
 var _graph_canvas: GraphCanvas
 var _graph_thread: Thread = null
@@ -800,12 +848,14 @@ func _ready() -> void:
 	var tabs := TabContainer.new()
 	tabs.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(tabs)
+	_outer_tabs = tabs
 
 	_build_dashboard_tab(tabs)
 	_build_addons_supertab(tabs)
 	_build_planning_tab(tabs)
 	_build_team_supertab(tabs)
 	_build_resources_supertab(tabs)
+	_build_permissions_tab(tabs)
 	_build_account_tab(tabs)
 	_build_admin_tab(tabs)
 
@@ -830,6 +880,7 @@ func _ready() -> void:
 	_load_doc_comments()
 	_load_elections()
 	_load_forum_last_seen()
+	_load_role_permissions()
 
 	_login_overlay = _build_login_overlay()
 	_login_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -3960,7 +4011,8 @@ func _cc_data_bundle() -> Dictionary:
 		"doc_permissions.json": JSON.stringify(_docs_permissions, "\t") + "\n",
 		"doc_suggestions.json": JSON.stringify(_docs_suggestions, "\t") + "\n",
 		"doc_comments.json": JSON.stringify(_docs_comments, "\t") + "\n",
-		"elections.json": JSON.stringify(_election_data, "\t") + "\n"
+		"elections.json": JSON.stringify(_election_data, "\t") + "\n",
+		"role_permissions.json": JSON.stringify({"perms": _role_permissions, "vault_folders": _vault_folder_perms}, "\t") + "\n"
 	}
 
 func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
@@ -6398,6 +6450,19 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 			if is_instance_valid(_docs_comment_panel) and _docs_comment_panel.visible:
 				_docs_refresh_comments()
 			_docs_show_view_buttons(_docs_sel_path)
+
+	if "role_permissions.json" in data:
+		var parsed: Variant = JSON.parse_string(data["role_permissions.json"])
+		if parsed is Dictionary:
+			var p: Dictionary = parsed as Dictionary
+			if "perms" in p and p["perms"] is Dictionary:
+				_role_permissions = p["perms"] as Dictionary
+			if "vault_folders" in p and p["vault_folders"] is Dictionary:
+				_vault_folder_perms = p["vault_folders"] as Dictionary
+			_save_role_permissions()
+			if is_instance_valid(_perm_list):
+				_perm_refresh_list()
+			_apply_tab_permissions()
 
 	if "asset_meta.json" in data:
 		var parsed: Variant = JSON.parse_string(data["asset_meta.json"])
@@ -13092,6 +13157,634 @@ func _election_remove_holder(role: String, username: String) -> void:
 	_election_rebuild_role_opt()
 	_election_refresh()
 
+# ─── Role permissions — load / save / check ──────────────────────────────────
+
+func _perm_file() -> String:
+	return ProjectSettings.globalize_path("user://cc_role_permissions.json")
+
+func _load_role_permissions() -> void:
+	_role_permissions = {}
+	_vault_folder_perms = {}
+	var path := _perm_file()
+	if not FileAccess.file_exists(path):
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if not f:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if parsed is Dictionary:
+		var d: Dictionary = parsed as Dictionary
+		if "perms" in d and d["perms"] is Dictionary:
+			_role_permissions = d["perms"] as Dictionary
+		if "vault_folders" in d and d["vault_folders"] is Dictionary:
+			_vault_folder_perms = d["vault_folders"] as Dictionary
+
+func _save_role_permissions() -> void:
+	var fw := FileAccess.open(_perm_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify({"perms": _role_permissions, "vault_folders": _vault_folder_perms}, "\t") + "\n")
+		fw.close()
+	_activity_auto_push()
+
+func _perm_get(key: String) -> Dictionary:
+	if _role_permissions.has(key):
+		return _role_permissions[key] as Dictionary
+	# Return default from PERM_DEFS
+	for def: Dictionary in PERM_DEFS:
+		if def.get("key", "") == key:
+			return {
+				"allowed_by": def.get("default_allowed", "anyone"),
+				"allowed_roles": [],
+				"change_by": def.get("default_change", "leader"),
+				"change_roles": [],
+				"change_vote_threshold": "2/3"
+			}
+	return {"allowed_by": "anyone", "allowed_roles": [], "change_by": "leader", "change_roles": [], "change_vote_threshold": "2/3"}
+
+func _perm_has(key: String) -> bool:
+	# Leader always has everything
+	if _election_is_leader():
+		return true
+	var perm := _perm_get(key)
+	var allowed_by: String = perm.get("allowed_by", "anyone")
+	var me: String = _current_user.get("username", "")
+	match allowed_by:
+		"anyone": return true
+		"leader": return false   # already checked above
+		"role":
+			var allowed_roles: Array = perm.get("allowed_roles", [])
+			if allowed_roles.is_empty():
+				return true   # no roles set = no restriction
+			for rn: String in allowed_roles:
+				if _election_is_holder(rn, me):
+					return true
+			return false
+	return true
+
+func _perm_can_change(key: String) -> bool:
+	if _election_is_leader():
+		return true
+	var perm := _perm_get(key)
+	var change_by: String = perm.get("change_by", "leader")
+	var me: String = _current_user.get("username", "")
+	match change_by:
+		"leader": return false
+		"anyone": return true
+		"role":
+			var change_roles: Array = perm.get("change_roles", [])
+			for rn: String in change_roles:
+				if _election_is_holder(rn, me):
+					return true
+			return false
+		"vote": return false   # changing requires a vote, not direct edit
+	return false
+
+func _perm_has_vault_folder(vault_rel_path: String) -> bool:
+	if _election_is_leader():
+		return true
+	# Find the most-specific matching folder rule
+	var longest_match := ""
+	for folder: String in _vault_folder_perms:
+		if vault_rel_path.begins_with(folder) and folder.length() > longest_match.length():
+			longest_match = folder
+	if longest_match.is_empty():
+		return true   # no folder rule = open
+	var fperm: Dictionary = _vault_folder_perms[longest_match] as Dictionary
+	var allowed_by: String = fperm.get("allowed_by", "anyone")
+	var me: String = _current_user.get("username", "")
+	match allowed_by:
+		"anyone": return true
+		"leader": return false
+		"role":
+			var roles: Array = fperm.get("allowed_roles", [])
+			if roles.is_empty(): return true
+			for rn: String in roles:
+				if _election_is_holder(rn, me): return true
+			return false
+	return true
+
+func _apply_tab_permissions() -> void:
+	if not is_instance_valid(_outer_tabs):
+		return
+	# Top-level tab titles → permission keys
+	var tab_perm_map := {
+		"Addons": "tab.addons",
+		"Planning": "tab.planning",
+		"Team": "tab.team",
+		"Resources": "tab.resources"
+	}
+	for i in range(_outer_tabs.get_tab_count()):
+		var title := _outer_tabs.get_tab_title(i)
+		if title in tab_perm_map:
+			var allowed: bool = _perm_has(tab_perm_map[title])
+			_outer_tabs.set_tab_hidden(i, not allowed)
+	# Resources inner tabs
+	if is_instance_valid(_resources_inner_tabs):
+		var res_perm_map := {
+			"Vault": "tab.vault",
+			"Docs": "tab.docs",
+			"Game Design": "tab.gdd"
+		}
+		for i in range(_resources_inner_tabs.get_tab_count()):
+			var title := _resources_inner_tabs.get_tab_title(i)
+			if title in res_perm_map:
+				var allowed: bool = _perm_has(res_perm_map[title])
+				_resources_inner_tabs.set_tab_hidden(i, not allowed)
+
+func _perm_allowed_summary(key: String) -> String:
+	var perm := _perm_get(key)
+	var by: String = perm.get("allowed_by", "anyone")
+	match by:
+		"anyone": return "🌐 Anyone"
+		"leader": return "👑 Leader only"
+		"role":
+			var roles: Array = perm.get("allowed_roles", [])
+			if roles.is_empty(): return "🌐 Anyone"
+			return "🏅 " + ", ".join(PackedStringArray(roles))
+	return "?"
+
+func _perm_change_summary(key: String) -> String:
+	var perm := _perm_get(key)
+	var by: String = perm.get("change_by", "leader")
+	match by:
+		"leader": return "👑 Leader"
+		"anyone": return "🌐 Anyone"
+		"role":
+			var roles: Array = perm.get("change_roles", [])
+			if roles.is_empty(): return "🌐 Anyone"
+			return "🏅 " + ", ".join(PackedStringArray(roles))
+		"vote":
+			return "🗳 Vote (%s)" % perm.get("change_vote_threshold", "2/3")
+	return "?"
+
+# ─── Permissions tab ──────────────────────────────────────────────────────────
+
+func _build_permissions_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Permissions", tabs)
+
+	# Hide for non-leaders initially — shown after login if leader or has role permission
+	for i in range(tabs.get_tab_count()):
+		if tabs.get_tab_title(i) == "Permissions":
+			tabs.set_tab_hidden(i, true)
+			break
+
+	var intro := Label.new()
+	intro.text = "Configure which roles have which permissions, and who can change each rule."
+	intro.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	intro.add_theme_font_size_override("font_size", 11)
+	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	root.add_child(intro)
+
+	_perm_status_lbl = Label.new()
+	_perm_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.85, 0.5))
+	root.add_child(_perm_status_lbl)
+
+	var split := HBoxContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.add_theme_constant_override("separation", 8)
+	root.add_child(split)
+
+	# ── Left: category list ───────────────────────────────────────────────────
+	var left := VBoxContainer.new()
+	left.custom_minimum_size = Vector2(140, 0)
+	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.add_child(left)
+
+	var cat_lbl := Label.new()
+	cat_lbl.text = "Category"
+	cat_lbl.add_theme_font_size_override("font_size", 11)
+	cat_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+	left.add_child(cat_lbl)
+	left.add_child(HSeparator.new())
+
+	# Collect unique categories
+	var categories: Array[String] = []
+	for def: Dictionary in PERM_DEFS:
+		var cat: String = def.get("category", "Other")
+		if cat not in categories:
+			categories.append(cat)
+	categories.append("Vault Folders")
+
+	var cat_scroll := ScrollContainer.new()
+	cat_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var cat_vb := VBoxContainer.new()
+	cat_vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cat_vb.add_theme_constant_override("separation", 2)
+	cat_scroll.add_child(cat_vb)
+	left.add_child(cat_scroll)
+
+	for cat: String in categories:
+		var cap_cat := cat
+		var btn := Button.new()
+		btn.text = cat
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.flat = true
+		btn.pressed.connect(func():
+			_perm_sel_category = cap_cat
+			_perm_refresh_list()
+		)
+		cat_vb.add_child(btn)
+
+	split.add_child(VSeparator.new())
+
+	# ── Right: permission list ────────────────────────────────────────────────
+	var right_scroll := ScrollContainer.new()
+	right_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_perm_list = VBoxContainer.new()
+	_perm_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_perm_list.add_theme_constant_override("separation", 6)
+	right_scroll.add_child(_perm_list)
+	split.add_child(right_scroll)
+
+	# Select first category
+	if not categories.is_empty():
+		_perm_sel_category = categories[0]
+		# Defer to let the node tree settle
+		call_deferred("_perm_refresh_list")
+
+func _perm_refresh_list() -> void:
+	if not is_instance_valid(_perm_list):
+		return
+	for c in _perm_list.get_children():
+		c.queue_free()
+
+	if _perm_sel_category == "Vault Folders":
+		_perm_build_vault_folder_section()
+		return
+
+	var me_can_see: bool = _election_is_leader() or not _current_user.is_empty()
+	if not me_can_see:
+		var lbl := Label.new()
+		lbl.text = "Log in to view permissions."
+		lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_perm_list.add_child(lbl)
+		return
+
+	var any_shown := false
+	for def: Dictionary in PERM_DEFS:
+		if def.get("category", "") != _perm_sel_category:
+			continue
+		any_shown = true
+		var key: String = def.get("key", "")
+		var display: String = def.get("display", key)
+		var desc_text: String = def.get("desc", "")
+
+		var panel := PanelContainer.new()
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var vb := VBoxContainer.new()
+		vb.add_theme_constant_override("separation", 3)
+		panel.add_child(vb)
+
+		# Title row
+		var title_row := HBoxContainer.new()
+		var title_lbl := Label.new()
+		title_lbl.text = display
+		title_lbl.add_theme_font_size_override("font_size", 12)
+		title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		title_row.add_child(title_lbl)
+
+		if _perm_can_change(key):
+			var edit_btn := Button.new()
+			edit_btn.text = "✏ Edit"
+			edit_btn.flat = false
+			var cap_key := key
+			var cap_def := def
+			edit_btn.pressed.connect(func(): _perm_open_edit_dialog(cap_key, cap_def))
+			title_row.add_child(edit_btn)
+		elif _perm_get(key).get("change_by", "leader") == "vote":
+			var vote_btn := Button.new()
+			vote_btn.text = "🗳 Propose Change"
+			vote_btn.flat = false
+			var cap_key := key
+			vote_btn.pressed.connect(func(): _perm_propose_vote(cap_key))
+			title_row.add_child(vote_btn)
+
+		vb.add_child(title_row)
+
+		# Description
+		if not desc_text.is_empty():
+			var dl := Label.new()
+			dl.text = desc_text
+			dl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+			dl.add_theme_font_size_override("font_size", 11)
+			dl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			vb.add_child(dl)
+
+		# Access + change badges
+		var badge_row := HBoxContainer.new()
+		var access_badge := _perm_badge("Access: " + _perm_allowed_summary(key), Color(0.3, 0.55, 0.85))
+		badge_row.add_child(access_badge)
+		var change_badge := _perm_badge("Change rule: " + _perm_change_summary(key), Color(0.55, 0.4, 0.75))
+		badge_row.add_child(change_badge)
+		vb.add_child(badge_row)
+
+		_perm_list.add_child(panel)
+
+	if not any_shown:
+		var lbl := Label.new()
+		lbl.text = "No permissions in this category."
+		lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+		_perm_list.add_child(lbl)
+
+func _perm_badge(text: String, col: Color) -> Label:
+	var lbl := Label.new()
+	lbl.text = "  " + text + "  "
+	lbl.add_theme_font_size_override("font_size", 10)
+	lbl.add_theme_color_override("font_color", col)
+	return lbl
+
+func _perm_build_vault_folder_section() -> void:
+	var heading := Label.new()
+	heading.text = "Vault Folder Permissions"
+	heading.add_theme_font_size_override("font_size", 13)
+	_perm_list.add_child(heading)
+
+	var hint := Label.new()
+	hint.text = "Restrict which roles can upload/delete files in specific vault folders. More-specific paths take priority. Leave blank to allow everyone."
+	hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+	hint.add_theme_font_size_override("font_size", 11)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_perm_list.add_child(hint)
+	_perm_list.add_child(HSeparator.new())
+
+	for folder: String in _vault_folder_perms:
+		var cap_folder := folder
+		var fperm: Dictionary = _vault_folder_perms[folder] as Dictionary
+		var panel := PanelContainer.new()
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var row := HBoxContainer.new()
+		panel.add_child(row)
+		var flbl := Label.new()
+		flbl.text = "📁 " + folder
+		flbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(flbl)
+		var badge := _perm_badge(_perm_folder_summary(fperm), Color(0.3, 0.55, 0.85))
+		row.add_child(badge)
+		if _election_is_leader():
+			var edit_btn := Button.new()
+			edit_btn.text = "✏"
+			edit_btn.flat = true
+			edit_btn.pressed.connect(func(): _perm_open_folder_dialog(cap_folder))
+			row.add_child(edit_btn)
+			var del_btn := Button.new()
+			del_btn.text = "🗑"
+			del_btn.flat = true
+			del_btn.pressed.connect(func():
+				_vault_folder_perms.erase(cap_folder)
+				_save_role_permissions()
+				_perm_refresh_list()
+			)
+			row.add_child(del_btn)
+		_perm_list.add_child(panel)
+
+	if _election_is_leader():
+		var add_row := HBoxContainer.new()
+		var add_input := LineEdit.new()
+		add_input.placeholder_text = "folder/path (e.g. textures/)"
+		add_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		add_row.add_child(add_input)
+		var add_btn := Button.new()
+		add_btn.text = "+ Add Rule"
+		add_btn.pressed.connect(func():
+			var p := add_input.text.strip_edges()
+			if p.is_empty(): return
+			if not p.ends_with("/"): p += "/"
+			_vault_folder_perms[p] = {"allowed_by": "anyone", "allowed_roles": []}
+			_save_role_permissions()
+			_perm_refresh_list()
+		)
+		add_row.add_child(add_btn)
+		_perm_list.add_child(add_row)
+
+func _perm_folder_summary(fperm: Dictionary) -> String:
+	var by: String = fperm.get("allowed_by", "anyone")
+	match by:
+		"anyone": return "🌐 Anyone"
+		"leader": return "👑 Leader only"
+		"role":
+			var roles: Array = fperm.get("allowed_roles", [])
+			if roles.is_empty(): return "🌐 Anyone"
+			return "🏅 " + ", ".join(PackedStringArray(roles))
+	return "?"
+
+func _perm_open_folder_dialog(folder: String) -> void:
+	var fperm: Dictionary = (_vault_folder_perms.get(folder, {"allowed_by": "anyone", "allowed_roles": []}) as Dictionary).duplicate(true)
+	_perm_open_access_dialog(
+		"Folder: " + folder,
+		fperm,
+		func(new_perm: Dictionary):
+			_vault_folder_perms[folder] = new_perm
+			_save_role_permissions()
+			_perm_refresh_list()
+	)
+
+func _perm_open_edit_dialog(key: String, def: Dictionary) -> void:
+	var cur := _perm_get(key).duplicate(true)
+	var display: String = def.get("display", key)
+
+	var dlg := AcceptDialog.new()
+	dlg.exclusive = false
+	dlg.title = "Edit permission: " + display
+	dlg.size = Vector2i(440, 420)
+	var vb := VBoxContainer.new()
+	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vb.add_theme_constant_override("separation", 8)
+	dlg.add_child(vb)
+
+	# ── Who has access? ──────────────────────────────────────────────────────
+	var access_lbl := Label.new()
+	access_lbl.text = "Who has this permission?"
+	access_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	vb.add_child(access_lbl)
+	var access_opt := OptionButton.new()
+	access_opt.add_item("🌐 Anyone")
+	access_opt.add_item("🏅 Specific roles")
+	access_opt.add_item("👑 Leader only")
+	var allowed_by: String = cur.get("allowed_by", "anyone")
+	access_opt.select({"anyone": 0, "role": 1, "leader": 2}.get(allowed_by, 0))
+	vb.add_child(access_opt)
+
+	# Role checkboxes for access
+	var access_roles_vb := VBoxContainer.new()
+	access_roles_vb.visible = allowed_by == "role"
+	access_roles_vb.add_theme_constant_override("separation", 2)
+	vb.add_child(access_roles_vb)
+	var access_role_checks: Dictionary = {}
+	var allowed_roles: Array = cur.get("allowed_roles", [])
+	for rn: String in _election_sorted_roles():
+		var chk := CheckBox.new()
+		chk.text = rn
+		chk.button_pressed = rn in allowed_roles
+		chk.add_theme_font_size_override("font_size", 11)
+		access_roles_vb.add_child(chk)
+		access_role_checks[rn] = chk
+	access_opt.item_selected.connect(func(idx: int):
+		access_roles_vb.visible = idx == 1
+	)
+
+	vb.add_child(HSeparator.new())
+
+	# ── Who can change this rule? ────────────────────────────────────────────
+	var change_lbl := Label.new()
+	change_lbl.text = "Who can change this rule?"
+	change_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	vb.add_child(change_lbl)
+	var change_opt := OptionButton.new()
+	change_opt.add_item("👑 Leader only")
+	change_opt.add_item("🏅 Specific roles")
+	change_opt.add_item("🗳 Team vote")
+	change_opt.add_item("🌐 Anyone")
+	var change_by: String = cur.get("change_by", "leader")
+	change_opt.select({"leader": 0, "role": 1, "vote": 2, "anyone": 3}.get(change_by, 0))
+	vb.add_child(change_opt)
+
+	var change_roles_vb := VBoxContainer.new()
+	change_roles_vb.visible = change_by == "role"
+	change_roles_vb.add_theme_constant_override("separation", 2)
+	vb.add_child(change_roles_vb)
+	var change_role_checks: Dictionary = {}
+	var change_roles: Array = cur.get("change_roles", [])
+	for rn: String in _election_sorted_roles():
+		var chk := CheckBox.new()
+		chk.text = rn
+		chk.button_pressed = rn in change_roles
+		chk.add_theme_font_size_override("font_size", 11)
+		change_roles_vb.add_child(chk)
+		change_role_checks[rn] = chk
+
+	var vote_thresh_vb := VBoxContainer.new()
+	vote_thresh_vb.visible = change_by == "vote"
+	var vote_thresh_lbl := Label.new()
+	vote_thresh_lbl.text = "Vote threshold:"
+	vote_thresh_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	vote_thresh_vb.add_child(vote_thresh_lbl)
+	var vote_thresh_opt := OptionButton.new()
+	vote_thresh_opt.add_item("1/2  (simple majority)")
+	vote_thresh_opt.add_item("2/3  (supermajority)")
+	vote_thresh_opt.add_item("3/4  (strong consensus)")
+	var thresh_map := {"1/2": 0, "2/3": 1, "3/4": 2}
+	vote_thresh_opt.select(thresh_map.get(cur.get("change_vote_threshold", "2/3"), 1))
+	vote_thresh_vb.add_child(vote_thresh_opt)
+	vb.add_child(vote_thresh_vb)
+
+	change_opt.item_selected.connect(func(idx: int):
+		change_roles_vb.visible = idx == 1
+		vote_thresh_vb.visible = idx == 2
+	)
+
+	add_child(dlg)
+	dlg.confirmed.connect(func():
+		var new_perm: Dictionary = {}
+		var ai := access_opt.selected
+		new_perm["allowed_by"] = (["anyone", "role", "leader"])[clamp(ai, 0, 2)]
+		if new_perm["allowed_by"] == "role":
+			var rls: Array = []
+			for rn2: String in access_role_checks:
+				if (access_role_checks[rn2] as CheckBox).button_pressed:
+					rls.append(rn2)
+			new_perm["allowed_roles"] = rls
+		else:
+			new_perm["allowed_roles"] = []
+		var ci := change_opt.selected
+		new_perm["change_by"] = (["leader", "role", "vote", "anyone"])[clamp(ci, 0, 3)]
+		if new_perm["change_by"] == "role":
+			var rls2: Array = []
+			for rn2: String in change_role_checks:
+				if (change_role_checks[rn2] as CheckBox).button_pressed:
+					rls2.append(rn2)
+			new_perm["change_roles"] = rls2
+		else:
+			new_perm["change_roles"] = []
+		var thresh_list := ["1/2", "2/3", "3/4"]
+		new_perm["change_vote_threshold"] = thresh_list[clamp(vote_thresh_opt.selected, 0, 2)]
+		_role_permissions[key] = new_perm
+		_save_role_permissions()
+		_perm_refresh_list()
+		_apply_tab_permissions()
+		if is_instance_valid(_perm_status_lbl):
+			_perm_status_lbl.text = "✅ Saved"
+			get_tree().create_timer(2.5).timeout.connect(func():
+				if is_instance_valid(_perm_status_lbl): _perm_status_lbl.text = "")
+		_log_activity("perm_changed", '"%s" updated permission: %s' % [_current_user.get("username", "?"), key])
+		dlg.queue_free()
+	)
+	dlg.canceled.connect(func(): dlg.queue_free())
+	dlg.popup_centered()
+
+func _perm_open_access_dialog(title: String, cur: Dictionary, on_save: Callable) -> void:
+	var dlg := AcceptDialog.new()
+	dlg.exclusive = false
+	dlg.title = title
+	dlg.size = Vector2i(380, 280)
+	var vb := VBoxContainer.new()
+	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vb.add_theme_constant_override("separation", 6)
+	dlg.add_child(vb)
+
+	var lbl := Label.new()
+	lbl.text = "Who can access this?"
+	lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	vb.add_child(lbl)
+	var opt := OptionButton.new()
+	opt.add_item("🌐 Anyone")
+	opt.add_item("🏅 Specific roles")
+	opt.add_item("👑 Leader only")
+	var allowed_by: String = cur.get("allowed_by", "anyone")
+	opt.select({"anyone": 0, "role": 1, "leader": 2}.get(allowed_by, 0))
+	vb.add_child(opt)
+
+	var roles_vb := VBoxContainer.new()
+	roles_vb.visible = allowed_by == "role"
+	roles_vb.add_theme_constant_override("separation", 2)
+	vb.add_child(roles_vb)
+	var role_checks: Dictionary = {}
+	var existing_roles: Array = cur.get("allowed_roles", [])
+	for rn: String in _election_sorted_roles():
+		var chk := CheckBox.new()
+		chk.text = rn
+		chk.button_pressed = rn in existing_roles
+		chk.add_theme_font_size_override("font_size", 11)
+		roles_vb.add_child(chk)
+		role_checks[rn] = chk
+	opt.item_selected.connect(func(idx: int): roles_vb.visible = idx == 1)
+
+	add_child(dlg)
+	dlg.confirmed.connect(func():
+		var new_perm := cur.duplicate(true)
+		var ai := opt.selected
+		new_perm["allowed_by"] = (["anyone", "role", "leader"])[clamp(ai, 0, 2)]
+		if new_perm["allowed_by"] == "role":
+			var rls: Array = []
+			for rn2: String in role_checks:
+				if (role_checks[rn2] as CheckBox).button_pressed:
+					rls.append(rn2)
+			new_perm["allowed_roles"] = rls
+		else:
+			new_perm["allowed_roles"] = []
+		on_save.call(new_perm)
+		dlg.queue_free()
+	)
+	dlg.canceled.connect(func(): dlg.queue_free())
+	dlg.popup_centered()
+
+func _perm_propose_vote(key: String) -> void:
+	var def_display := key
+	for def: Dictionary in PERM_DEFS:
+		if def.get("key", "") == key:
+			def_display = def.get("display", key)
+			break
+	_election_submit_pending_vote({
+		"type": "change_permission",
+		"perm_key": key,
+		"title": "Change permission: " + def_display,
+		"description": "Proposes updating the \"%s\" permission rule. Vote to approve the change." % def_display
+	})
+	if is_instance_valid(_perm_status_lbl):
+		_perm_status_lbl.text = "⚡ Vote proposed — see Votes tab"
+
 # ─── Bundles tab ──────────────────────────────────────────────────────────────
 
 func _build_bundles_tab(tabs: TabContainer) -> void:
@@ -13459,6 +14152,7 @@ func _build_resources_supertab(tabs: TabContainer) -> void:
 	inner_tabs.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	inner_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	root.add_child(inner_tabs)
+	_resources_inner_tabs = inner_tabs
 	_build_vault_tab(inner_tabs)
 	_build_docs_tab(inner_tabs)
 	_build_game_design_tab(inner_tabs)
