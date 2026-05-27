@@ -285,6 +285,7 @@ var _login_status_lbl: Label
 var _reg_status_lbl: Label
 var _account_status_lbl: Label
 var _pending_list: VBoxContainer
+var _admin_tab_root: Control = null
 var _login_thread: Thread = null
 
 var _thread: Thread = null
@@ -778,6 +779,7 @@ func _ready() -> void:
 	_build_team_supertab(tabs)
 	_build_resources_supertab(tabs)
 	_build_account_tab(tabs)
+	_build_admin_tab(tabs)
 
 	tabs.tab_changed.connect(func(idx: int):
 		if tabs.get_tab_title(idx) == "Dashboard":
@@ -9816,6 +9818,45 @@ func _refresh_contracts_list() -> void:
 
 # ─── Login overlay ────────────────────────────────────────────────────────────
 
+func _build_admin_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Admin", tabs)
+	_admin_tab_root = root
+
+	# Hide until we know the user is a leader
+	for i in range(tabs.get_tab_count()):
+		if tabs.get_tab_title(i) == "Admin":
+			tabs.set_tab_hidden(i, true)
+			break
+
+	# ── Pending approvals ─────────────────────────────────────────────────────
+	var pending_heading := Label.new()
+	pending_heading.text = "⏳ Pending Accounts"
+	pending_heading.add_theme_font_size_override("font_size", 14)
+	root.add_child(pending_heading)
+
+	var hint := Label.new()
+	hint.text = "New members who have registered and are waiting for approval."
+	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	hint.add_theme_font_size_override("font_size", 11)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	root.add_child(hint)
+
+	var toolbar := HBoxContainer.new()
+	var refresh_btn := Button.new()
+	refresh_btn.text = "↺ Refresh"
+	refresh_btn.pressed.connect(_refresh_pending_list)
+	toolbar.add_child(refresh_btn)
+	root.add_child(toolbar)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_pending_list = VBoxContainer.new()
+	_pending_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_pending_list.add_theme_constant_override("separation", 4)
+	scroll.add_child(_pending_list)
+	root.add_child(scroll)
+
 func _build_login_overlay() -> Control:
 	var overlay := ColorRect.new()
 	overlay.color = Color(0.08, 0.08, 0.08, 0.97)
@@ -10212,32 +10253,7 @@ func _build_account_tab(tabs: TabContainer) -> void:
 		)
 	)
 
-	# Pending approvals (shown only for leader after login — refreshed dynamically)
-	root.add_child(HSeparator.new())
-	var ap_heading := Label.new()
-	ap_heading.name = "ApprovalHeading"
-	ap_heading.text = "Account Management"
-	ap_heading.add_theme_font_size_override("font_size", 13)
-	ap_heading.visible = false
-	root.add_child(ap_heading)
-
-	var ap_toolbar := HBoxContainer.new()
-	ap_toolbar.name = "ApprovalBar"
-	ap_toolbar.visible = false
-	var ap_refresh := Button.new()
-	ap_refresh.text = "↺ Refresh"
-	ap_refresh.pressed.connect(_refresh_pending_list)
-	ap_toolbar.add_child(ap_refresh)
-	root.add_child(ap_toolbar)
-
-	var ap_scroll := ScrollContainer.new()
-	ap_scroll.name = "ApprovalScroll"
-	ap_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	ap_scroll.visible = false
-	_pending_list = VBoxContainer.new()
-	_pending_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	ap_scroll.add_child(_pending_list)
-	root.add_child(ap_scroll)
+	# Admin controls are in the dedicated Admin tab (leaders only)
 
 func _set_account_status(msg: String) -> void:
 	if is_instance_valid(_account_status_lbl):
@@ -10264,7 +10280,7 @@ func _on_change_name_done(btn: Button, field: LineEdit, new_name: String) -> voi
 		_refresh_account_tab()
 
 func _refresh_account_tab() -> void:
-	# Update info label and show/hide leader section
+	# Update info label
 	var tabs: TabContainer = get_child(1) if get_child_count() > 1 else null
 	if not is_instance_valid(tabs):
 		return
@@ -10276,13 +10292,15 @@ func _refresh_account_tab() -> void:
 				var uname: String = _current_user.get("username", "")
 				var role: String = _current_user.get("role", "member")
 				info.text = "👤 %s  (%s)" % [uname, role]
-			var is_leader: bool = _election_is_leader()
-			for child in root.get_children():
-				if child.name in ["ApprovalHeading", "ApprovalBar", "ApprovalScroll"]:
-					child.visible = is_leader
-			if is_leader:
-				_refresh_pending_list()
 			break
+	# Show/hide Admin tab
+	var is_leader: bool = _election_is_leader()
+	for i in range(tabs.get_tab_count()):
+		if tabs.get_tab_title(i) == "Admin":
+			tabs.set_tab_hidden(i, not is_leader)
+			break
+	if is_leader:
+		_refresh_pending_list()
 
 func _refresh_pending_list() -> void:
 	if not is_instance_valid(_pending_list):
