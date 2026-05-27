@@ -308,6 +308,8 @@ var _election_candidate_btn: Button
 var _election_pending_lbl: Label
 var _election_settings_dialog: AcceptDialog
 var _election_settings_inner: VBoxContainer
+var _election_help_rtl: RichTextLabel = null
+var _election_roles_summary: VBoxContainer = null
 
 var _graph_canvas: GraphCanvas
 var _graph_thread: Thread = null
@@ -5872,6 +5874,8 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 			_election_data = parsed
 			_election_rebuild_role_opt()
 			_refresh_vote_list()
+			_election_refresh_help()
+			_election_refresh_roles_summary()
 
 	if "doc_permissions.json" in data:
 		var parsed: Variant = JSON.parse_string(data["doc_permissions.json"])
@@ -10980,6 +10984,20 @@ func _election_update_lock_flags() -> void:
 func _build_elections_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Elections", tabs)
 
+	# ── Outer split: left (main) + right (how it works) ──────────────────────
+	var outer := HBoxContainer.new()
+	outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.add_theme_constant_override("separation", 10)
+	root.add_child(outer)
+
+	# ── Left column ───────────────────────────────────────────────────────────
+	var left := VBoxContainer.new()
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	left.add_theme_constant_override("separation", 4)
+	outer.add_child(left)
+
 	var toolbar := HBoxContainer.new()
 	toolbar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_election_role_opt = OptionButton.new()
@@ -11006,13 +11024,13 @@ func _build_elections_tab(tabs: TabContainer) -> void:
 	settings_btn.tooltip_text = "Election settings"
 	settings_btn.pressed.connect(_election_show_settings)
 	toolbar.add_child(settings_btn)
-	root.add_child(toolbar)
+	left.add_child(toolbar)
 
 	_election_status_lbl = Label.new()
 	_election_status_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
-	root.add_child(_election_status_lbl)
+	left.add_child(_election_status_lbl)
 
-	root.add_child(HSeparator.new())
+	left.add_child(HSeparator.new())
 
 	# Description
 	var desc_box := HBoxContainer.new()
@@ -11028,14 +11046,14 @@ func _build_elections_tab(tabs: TabContainer) -> void:
 	_election_edit_desc_btn.visible = false
 	_election_edit_desc_btn.pressed.connect(_election_start_edit_desc)
 	desc_box.add_child(_election_edit_desc_btn)
-	root.add_child(desc_box)
+	left.add_child(desc_box)
 
 	_election_desc_edit = TextEdit.new()
 	_election_desc_edit.placeholder_text = "Describe this role…"
 	_election_desc_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_election_desc_edit.custom_minimum_size = Vector2(0, 60)
 	_election_desc_edit.visible = false
-	root.add_child(_election_desc_edit)
+	left.add_child(_election_desc_edit)
 
 	var desc_btn_row := HBoxContainer.new()
 	_election_save_desc_btn = Button.new()
@@ -11048,17 +11066,30 @@ func _build_elections_tab(tabs: TabContainer) -> void:
 	_election_cancel_desc_btn.visible = false
 	_election_cancel_desc_btn.pressed.connect(_election_cancel_desc)
 	desc_btn_row.add_child(_election_cancel_desc_btn)
-	root.add_child(desc_btn_row)
+	left.add_child(desc_btn_row)
 
-	root.add_child(HSeparator.new())
+	left.add_child(HSeparator.new())
 
 	_election_candidate_btn = Button.new()
 	_election_candidate_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_election_candidate_btn.visible = false
 	_election_candidate_btn.pressed.connect(_election_toggle_candidate)
-	root.add_child(_election_candidate_btn)
+	left.add_child(_election_candidate_btn)
 
-	root.add_child(HSeparator.new())
+	left.add_child(HSeparator.new())
+
+	# Role holders summary
+	var roles_lbl := Label.new()
+	roles_lbl.text = "Current Holders"
+	roles_lbl.add_theme_font_size_override("font_size", 11)
+	roles_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+	left.add_child(roles_lbl)
+	_election_roles_summary = VBoxContainer.new()
+	_election_roles_summary.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_election_roles_summary.add_theme_constant_override("separation", 2)
+	left.add_child(_election_roles_summary)
+
+	left.add_child(HSeparator.new())
 
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -11067,14 +11098,45 @@ func _build_elections_tab(tabs: TabContainer) -> void:
 	_election_member_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_election_member_list.add_theme_constant_override("separation", 6)
 	scroll.add_child(_election_member_list)
-	root.add_child(scroll)
+	left.add_child(scroll)
 
 	_election_pending_lbl = Label.new()
 	_election_pending_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_election_pending_lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
 	_election_pending_lbl.visible = false
-	root.add_child(_election_pending_lbl)
+	left.add_child(_election_pending_lbl)
 
+	# ── Right column: how elections work ─────────────────────────────────────
+	var vsep := VSeparator.new()
+	vsep.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.add_child(vsep)
+
+	var right := VBoxContainer.new()
+	right.custom_minimum_size = Vector2(200, 0)
+	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	right.add_theme_constant_override("separation", 4)
+	outer.add_child(right)
+
+	var help_heading := Label.new()
+	help_heading.text = "ℹ How It Works"
+	help_heading.add_theme_font_size_override("font_size", 12)
+	help_heading.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	right.add_child(help_heading)
+	right.add_child(HSeparator.new())
+
+	var help_scroll := ScrollContainer.new()
+	help_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	help_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_election_help_rtl = RichTextLabel.new()
+	_election_help_rtl.bbcode_enabled = true
+	_election_help_rtl.fit_content = false
+	_election_help_rtl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_election_help_rtl.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_election_help_rtl.scroll_active = false
+	help_scroll.add_child(_election_help_rtl)
+	right.add_child(help_scroll)
+
+	# ── Settings dialog ───────────────────────────────────────────────────────
 	_election_settings_dialog = AcceptDialog.new()
 	_election_settings_dialog.title = "Election Settings"
 	_election_settings_dialog.size = Vector2i(520, 440)
@@ -11084,6 +11146,7 @@ func _build_elections_tab(tabs: TabContainer) -> void:
 	_election_settings_dialog.add_child(_election_settings_inner)
 
 	_election_rebuild_role_opt()
+	_election_refresh_help()
 
 func _election_rebuild_role_opt() -> void:
 	if not is_instance_valid(_election_role_opt):
@@ -11103,6 +11166,86 @@ func _election_rebuild_role_opt() -> void:
 	else:
 		_election_sel_role = ""
 	_election_refresh()
+	_election_refresh_help()
+	_election_refresh_roles_summary()
+
+func _election_refresh_roles_summary() -> void:
+	if not is_instance_valid(_election_roles_summary):
+		return
+	for c in _election_roles_summary.get_children():
+		c.queue_free()
+	var holders_dict: Dictionary = _election_data.get("holders", {}) as Dictionary
+	var roles := _election_sorted_roles()
+	if roles.is_empty():
+		var none_lbl := Label.new()
+		none_lbl.text = "  No roles defined."
+		none_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+		none_lbl.add_theme_font_size_override("font_size", 11)
+		_election_roles_summary.add_child(none_lbl)
+		return
+	for role: String in roles:
+		var holders: Array = (holders_dict.get(role, []) as Array)
+		var row := HBoxContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var role_lbl := Label.new()
+		role_lbl.text = role
+		role_lbl.add_theme_font_size_override("font_size", 11)
+		role_lbl.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
+		role_lbl.custom_minimum_size = Vector2(90, 0)
+		row.add_child(role_lbl)
+		var holder_lbl := Label.new()
+		if holders.is_empty():
+			holder_lbl.text = "— vacant"
+			holder_lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
+		else:
+			holder_lbl.text = ", ".join(PackedStringArray(holders))
+			holder_lbl.add_theme_color_override("font_color", Color(0.55, 0.85, 0.55))
+		holder_lbl.add_theme_font_size_override("font_size", 11)
+		holder_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(holder_lbl)
+		_election_roles_summary.add_child(row)
+
+func _election_refresh_help() -> void:
+	if not is_instance_valid(_election_help_rtl):
+		return
+	var frac: float = float(_election_setting("min_voter_fraction", 0.333))
+	var frac_pct: String = str(int(round(frac * 100))) + "%"
+	var weeks_replace: int = int(_election_setting("weeks_to_replace", 4))
+	var weeks_announce: int = int(_election_setting("weeks_to_announce", 2))
+	var weeks_first: int = int(_election_setting("first_holder_weeks", 1))
+	var change_thresh: String = str(_election_setting("change_threshold", "2/3"))
+	var lock_months: int = int(_election_setting("role_lock_months", 1))
+	var total: int = _election_total_members()
+	var quorum: int = int(ceil(float(total) * frac))
+
+	var t := ""
+	var dim := "#888888"
+	var acc := "#7ec8e3"
+	var warn := "#e8c87a"
+
+	t += "[color=%s]Scoring[/color]\n" % acc
+	t += "Rate candidates [b]1–5[/b]. A score is counted once [b]%s[/b] of the team has voted" % frac_pct
+	if total > 0:
+		t += " ([b]%d / %d[/b] members)" % [quorum, total]
+	t += ".\n\n"
+
+	t += "[color=%s]First holder[/color]\n" % acc
+	t += "If only one candidate has enough votes, they are assigned after [b]%d week%s[/b].\n\n" % [weeks_first, "s" if weeks_first != 1 else ""]
+
+	t += "[color=%s]Role changes[/color]\n" % acc
+	t += "A challenger must lead the current holder for [b]%d consecutive week%s[/b]. " % [weeks_replace, "s" if weeks_replace != 1 else ""]
+	t += "The change is announced [b]%d week%s[/b] before it takes effect.\n\n" % [weeks_announce, "s" if weeks_announce != 1 else ""]
+
+	t += "[color=%s]Role lock[/color]\n" % acc
+	t += "Roles held for [b]%d+ month%s[/b] require a vote to modify their description or reassign.\n\n" % [lock_months, "s" if lock_months != 1 else ""]
+
+	t += "[color=%s]Settings changes[/color]\n" % acc
+	t += "Any change to these settings requires a [b]%s majority[/b] vote to pass.\n\n" % change_thresh
+
+	t += "[color=%s]Proposing a vote[/color]\n" % acc
+	t += "Open [b]⚙[/b] to propose a settings change. Votes appear in the [b]Votes[/b] tab." % []
+
+	_election_help_rtl.text = t
 
 func _election_refresh() -> void:
 	if not is_instance_valid(_election_member_list):
@@ -11528,6 +11671,8 @@ func _election_process_approved(pv: Dictionary) -> void:
 	if is_instance_valid(_election_status_lbl):
 		_election_status_lbl.text = "✅ Vote passed — action applied"
 	_election_rebuild_role_opt()
+	_election_refresh_help()
+	_election_refresh_roles_summary()
 
 func _election_show_settings() -> void:
 	if not is_instance_valid(_election_settings_dialog) or not is_instance_valid(_election_settings_inner):
