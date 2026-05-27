@@ -2241,6 +2241,7 @@ static func _auth_clone(log: Callable) -> String:
 	return tmp
 
 static func auth_verify(username: String, password: String, log: Callable) -> Dictionary:
+	if not log.is_valid(): log = func(_m): pass
 	log.call("🔄 Connecting...")
 	var tmp := _auth_clone(log)
 	if tmp.is_empty():
@@ -2259,6 +2260,7 @@ static func auth_verify(username: String, password: String, log: Callable) -> Di
 	return {}
 
 static func auth_register(username: String, github_username: String, password: String, log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
 	log.call("🔄 Connecting...")
 	var tmp := _auth_clone(log)
 	if tmp.is_empty():
@@ -2282,6 +2284,7 @@ static func auth_register(username: String, github_username: String, password: S
 	return ok
 
 static func auth_change_password(username: String, old_pw: String, new_pw: String, log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
 	log.call("🔄 Connecting...")
 	var tmp := _auth_clone(log)
 	if tmp.is_empty():
@@ -2312,6 +2315,7 @@ static func auth_change_password(username: String, old_pw: String, new_pw: Strin
 	return ok
 
 static func auth_approve(approver: String, target: String, log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
 	var tmp := _auth_clone(log)
 	if tmp.is_empty():
 		return false
@@ -2364,6 +2368,7 @@ static func auth_fetch_all(log: Callable) -> Array:
 	return users
 
 static func auth_remove(approver: String, target: String, log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
 	var tmp := _auth_clone(log)
 	if tmp.is_empty():
 		return false
@@ -2394,6 +2399,7 @@ static func auth_remove(approver: String, target: String, log: Callable) -> bool
 	return ok
 
 static func auth_change_username(username: String, new_name: String, log: Callable) -> String:
+	if not log.is_valid(): log = func(_m): pass
 	log.call("🔄 Connecting...")
 	var tmp := _auth_clone(log)
 	if tmp.is_empty():
@@ -2425,6 +2431,7 @@ static func auth_change_username(username: String, new_name: String, log: Callab
 	return new_name if ok else ""
 
 static func auth_set_role(actor: String, target: String, new_role: String, log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
 	log.call("🔄 Connecting...")
 	var tmp := _auth_clone(log)
 	if tmp.is_empty():
@@ -2470,6 +2477,7 @@ static func auth_set_role(actor: String, target: String, new_role: String, log: 
 	return ok
 
 static func auth_bootstrap(log: Callable) -> bool:
+	if not log.is_valid(): log = func(_m): pass
 	log.call("🌐 Creating ChillCube/cc-auth repo...")
 	_gh(["repo", "create", "ChillCube/cc-auth", "--private",
 		"--description", "ChillCube Tools authentication (private)"], log)
