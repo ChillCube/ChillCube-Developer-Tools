@@ -348,6 +348,7 @@ var _vault_folder_perms: Dictionary = {}      # vault_rel_path -> {allowed_by, a
 var _perm_sel_category: String = ""
 var _perm_list: VBoxContainer = null
 var _perm_status_lbl: Label = null
+var _asset_perm_list: VBoxContainer = null
 
 # Permission definitions — { key, display, desc, category, default_allowed, default_change }
 const PERM_DEFS: Array = [
@@ -374,7 +375,8 @@ const PERM_DEFS: Array = [
 	# Vault & Assets
 	{"key": "vault.upload",  "display": "Upload vault files",   "desc": "Can upload files to the shared vault.",                           "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
 	{"key": "vault.delete",  "display": "Delete vault files",   "desc": "Can delete files from the shared vault.",                         "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
-	{"key": "vault.mkdir",   "display": "Create vault folders", "desc": "Can create new folders in the shared vault.",                     "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "vault.mkdir",        "display": "Create vault folders",       "desc": "Can create new folders in the shared vault.",                                  "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "vault.manage_folder_rules", "display": "Manage asset folder rules", "desc": "Can add, edit, or delete folder-level permission rules in the Assets tab.", "category": "Vault & Assets", "default_allowed": "leader", "default_change": "leader"},
 	# Planning
 	{"key": "todo.create",   "display": "Create to-do items",   "desc": "Can add new items to the shared to-do list.",                     "category": "Planning", "default_allowed": "anyone", "default_change": "leader"},
 	{"key": "todo.assign",   "display": "Assign tasks",         "desc": "Can assign to-do items to other users or roles.",                 "category": "Planning", "default_allowed": "anyone", "default_change": "leader"},
@@ -1006,6 +1008,22 @@ func _refresh_dashboard() -> void:
 				_dashboard_list.add_child(_dashboard_doc_vote_card(entry["sugg"] as Dictionary, entry["idx"] as int))
 		)
 
+	# ── Upcoming events needing RSVP ─────────────────────────────────────────
+	var today_str := Time.get_date_string_from_system()
+	var unrsvped_events: Array = []
+	for ei in range(_schedule_items.size()):
+		var ev: Dictionary = _schedule_items[ei]
+		if (ev.get("date", "") as String) < today_str:
+			continue
+		var rsvp: Dictionary = ev.get("rsvp", {}) as Dictionary
+		if me not in rsvp:
+			unrsvped_events.append({"ev": ev, "idx": ei})
+	if unrsvped_events.size() > 0:
+		_dashboard_section("📅 Events awaiting your RSVP", func():
+			for entry: Dictionary in unrsvped_events:
+				_dashboard_list.add_child(_dashboard_event_rsvp_card(entry["ev"] as Dictionary, entry["idx"] as int))
+		)
+
 	# ── Forum new activity ───────────────────────────────────────────────────
 	var forum_new_threads := 0
 	var forum_new_replies := 0
@@ -1207,6 +1225,62 @@ func _dashboard_todo_card(item: Dictionary, item_idx: int) -> Control:
 	)
 	row.add_child(lbl)
 	row.add_child(done_btn)
+	return card
+
+func _dashboard_event_rsvp_card(ev: Dictionary, ev_idx: int) -> Control:
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 4)
+	card.add_child(vb)
+
+	var header := HBoxContainer.new()
+	var title_lbl := Label.new()
+	title_lbl.text = ev.get("title", "Untitled")
+	title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title_lbl.add_theme_font_size_override("font_size", 13)
+	header.add_child(title_lbl)
+	var dt_str: String = ev.get("date", "")
+	var ev_time: String = ev.get("time", "")
+	if not ev_time.is_empty():
+		dt_str += "  " + ev_time
+	var dt_lbl := Label.new()
+	dt_lbl.text = dt_str
+	dt_lbl.add_theme_color_override("font_color", Color(0.5, 0.75, 1.0))
+	dt_lbl.add_theme_font_size_override("font_size", 11)
+	header.add_child(dt_lbl)
+	vb.add_child(header)
+
+	var desc: String = ev.get("description", "")
+	if not desc.is_empty():
+		var desc_lbl := Label.new()
+		desc_lbl.text = desc
+		desc_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+		desc_lbl.add_theme_font_size_override("font_size", 11)
+		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		vb.add_child(desc_lbl)
+
+	var rsvp_row := HBoxContainer.new()
+	rsvp_row.add_theme_constant_override("separation", 6)
+	var me: String = _current_user.get("username", "")
+	for opt_key: String in ["yes", "no", "maybe"]:
+		var opt_text: String = {"yes": "✅ Can join", "no": "❌ Can't join", "maybe": "🤔 Maybe"}[opt_key]
+		var rbtn := Button.new()
+		rbtn.text = opt_text
+		rbtn.add_theme_font_size_override("font_size", 11)
+		var cap_opt := opt_key
+		rbtn.pressed.connect(func():
+			if ev_idx < _schedule_items.size():
+				if not ("rsvp" in _schedule_items[ev_idx]):
+					_schedule_items[ev_idx]["rsvp"] = {}
+				(_schedule_items[ev_idx]["rsvp"] as Dictionary)[me] = cap_opt
+				_save_schedule()
+				if is_instance_valid(_schedule_list):
+					_refresh_schedule_list()
+				_refresh_dashboard()
+		)
+		rsvp_row.add_child(rbtn)
+	vb.add_child(rsvp_row)
 	return card
 
 func _dashboard_add_feedback(tasks: Array) -> void:
@@ -5967,6 +6041,17 @@ func _forum_prompt_new_thread() -> void:
 func _build_vault_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Assets", tabs)
 
+	var inner_tabs := TabContainer.new()
+	inner_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	inner_tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.add_child(inner_tabs)
+
+	_build_vault_browser_tab(inner_tabs)
+	_build_asset_perms_tab(inner_tabs)
+
+func _build_vault_browser_tab(inner_tabs: TabContainer) -> void:
+	var root := _vbox("Browser", inner_tabs)
+
 	# ── Top bar ───────────────────────────────────────────────────────────────
 	var top := HBoxContainer.new()
 	var repo_lbl := Label.new()
@@ -6521,6 +6606,8 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 			_save_role_permissions()
 			if is_instance_valid(_perm_list):
 				_perm_refresh_list()
+			if is_instance_valid(_asset_perm_list):
+				_asset_perm_refresh()
 			_apply_tab_permissions()
 
 	if "gdd_config.json" in data:
@@ -13947,7 +14034,7 @@ func _build_permissions_tab(tabs: TabContainer) -> void:
 		var cat: String = def.get("category", "Other")
 		if cat not in categories:
 			categories.append(cat)
-	categories.append("Vault Folders")
+	# vault folder rules live in the Assets tab, not here
 
 	var cat_scroll := ScrollContainer.new()
 	cat_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -13994,9 +14081,6 @@ func _perm_refresh_list() -> void:
 	for c in _perm_list.get_children():
 		c.queue_free()
 
-	if _perm_sel_category == "Vault Folders":
-		_perm_build_vault_folder_section()
-		return
 
 	var me_can_see: bool = _election_is_leader() or not _current_user.is_empty()
 	if not me_can_see:
@@ -14080,67 +14164,7 @@ func _perm_badge(text: String, col: Color) -> Label:
 	return lbl
 
 func _perm_build_vault_folder_section() -> void:
-	var heading := Label.new()
-	heading.text = "Vault Folder Permissions"
-	heading.add_theme_font_size_override("font_size", 13)
-	_perm_list.add_child(heading)
-
-	var hint := Label.new()
-	hint.text = "Restrict which roles can upload/delete files in specific vault folders. More-specific paths take priority. Leave blank to allow everyone."
-	hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
-	hint.add_theme_font_size_override("font_size", 11)
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_perm_list.add_child(hint)
-	_perm_list.add_child(HSeparator.new())
-
-	for folder: String in _vault_folder_perms:
-		var cap_folder := folder
-		var fperm: Dictionary = _vault_folder_perms[folder] as Dictionary
-		var panel := PanelContainer.new()
-		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var row := HBoxContainer.new()
-		panel.add_child(row)
-		var flbl := Label.new()
-		flbl.text = "📁 " + folder
-		flbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(flbl)
-		var badge := _perm_badge(_perm_folder_summary(fperm), Color(0.3, 0.55, 0.85))
-		row.add_child(badge)
-		if _election_is_leader():
-			var edit_btn := Button.new()
-			edit_btn.text = "✏"
-			edit_btn.flat = true
-			edit_btn.pressed.connect(func(): _perm_open_folder_dialog(cap_folder))
-			row.add_child(edit_btn)
-			var del_btn := Button.new()
-			del_btn.text = "🗑"
-			del_btn.flat = true
-			del_btn.pressed.connect(func():
-				_vault_folder_perms.erase(cap_folder)
-				_save_role_permissions()
-				_perm_refresh_list()
-			)
-			row.add_child(del_btn)
-		_perm_list.add_child(panel)
-
-	if _election_is_leader():
-		var add_row := HBoxContainer.new()
-		var add_input := LineEdit.new()
-		add_input.placeholder_text = "folder/path (e.g. textures/)"
-		add_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		add_row.add_child(add_input)
-		var add_btn := Button.new()
-		add_btn.text = "+ Add Rule"
-		add_btn.pressed.connect(func():
-			var p := add_input.text.strip_edges()
-			if p.is_empty(): return
-			if not p.ends_with("/"): p += "/"
-			_vault_folder_perms[p] = {"allowed_by": "anyone", "allowed_roles": []}
-			_save_role_permissions()
-			_perm_refresh_list()
-		)
-		add_row.add_child(add_btn)
-		_perm_list.add_child(add_row)
+	pass  # folder rules moved to Assets > Asset Permissions tab
 
 func _perm_folder_summary(fperm: Dictionary) -> String:
 	var by: String = fperm.get("allowed_by", "anyone")
@@ -14161,8 +14185,96 @@ func _perm_open_folder_dialog(folder: String) -> void:
 		func(new_perm: Dictionary):
 			_vault_folder_perms[folder] = new_perm
 			_save_role_permissions()
-			_perm_refresh_list()
+			_asset_perm_refresh()
 	)
+
+func _build_asset_perms_tab(inner_tabs: TabContainer) -> void:
+	var root := _vbox("Asset Permissions", inner_tabs)
+
+	var intro := Label.new()
+	intro.text = "Restrict which roles can upload/delete files in specific asset folders. More-specific paths take priority. Leave blank to allow everyone."
+	intro.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	intro.add_theme_font_size_override("font_size", 11)
+	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	root.add_child(intro)
+	root.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_asset_perm_list = VBoxContainer.new()
+	_asset_perm_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_asset_perm_list.add_theme_constant_override("separation", 6)
+	scroll.add_child(_asset_perm_list)
+	root.add_child(scroll)
+
+	call_deferred("_asset_perm_refresh")
+
+func _asset_perm_refresh() -> void:
+	if not is_instance_valid(_asset_perm_list):
+		return
+	for c in _asset_perm_list.get_children():
+		c.queue_free()
+
+	var can_manage: bool = _perm_has("vault.manage_folder_rules")
+
+	for folder: String in _vault_folder_perms:
+		var cap_folder := folder
+		var fperm: Dictionary = _vault_folder_perms[folder] as Dictionary
+		var panel := PanelContainer.new()
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var row := HBoxContainer.new()
+		panel.add_child(row)
+		var flbl := Label.new()
+		flbl.text = "📁 " + folder
+		flbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(flbl)
+		var badge := _perm_badge(_perm_folder_summary(fperm), Color(0.3, 0.55, 0.85))
+		row.add_child(badge)
+		if can_manage:
+			var edit_btn := Button.new()
+			edit_btn.text = "✏"
+			edit_btn.flat = true
+			edit_btn.pressed.connect(func(): _perm_open_folder_dialog(cap_folder))
+			row.add_child(edit_btn)
+			var del_btn := Button.new()
+			del_btn.text = "🗑"
+			del_btn.flat = true
+			del_btn.pressed.connect(func():
+				_vault_folder_perms.erase(cap_folder)
+				_save_role_permissions()
+				_asset_perm_refresh()
+			)
+			row.add_child(del_btn)
+		_asset_perm_list.add_child(panel)
+
+	if _vault_folder_perms.is_empty():
+		var empty_lbl := Label.new()
+		empty_lbl.text = "No folder rules yet."
+		empty_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+		_asset_perm_list.add_child(empty_lbl)
+
+	if can_manage:
+		_asset_perm_list.add_child(HSeparator.new())
+		var add_row := HBoxContainer.new()
+		var add_input := LineEdit.new()
+		add_input.placeholder_text = "folder/path (e.g. textures/)"
+		add_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		add_row.add_child(add_input)
+		var add_btn := Button.new()
+		add_btn.text = "+ Add Rule"
+		add_btn.pressed.connect(func():
+			if not _perm_has("vault.manage_folder_rules"):
+				return
+			var p := add_input.text.strip_edges()
+			if p.is_empty(): return
+			if not p.ends_with("/"): p += "/"
+			_vault_folder_perms[p] = {"allowed_by": "anyone", "allowed_roles": []}
+			_save_role_permissions()
+			_asset_perm_refresh()
+		)
+		add_row.add_child(add_btn)
+		_asset_perm_list.add_child(add_row)
 
 func _perm_open_edit_dialog(key: String, def: Dictionary) -> void:
 	var cur := _perm_get(key).duplicate(true)
