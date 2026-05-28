@@ -360,7 +360,7 @@ const PERM_DEFS: Array = [
 	{"key": "tab.resources", "display": "View Resources tab",       "desc": "Access to the Resources tab (vault, docs, game design).",             "category": "Tab Access", "default_allowed": "anyone", "default_change": "leader"},
 	{"key": "tab.vault",     "display": "View Vault sub-tab",       "desc": "Access to the Vault within Resources.",                              "category": "Tab Access", "default_allowed": "anyone", "default_change": "leader"},
 	{"key": "tab.docs",      "display": "View Docs sub-tab",        "desc": "Access to Docs within Resources.",                                   "category": "Tab Access", "default_allowed": "anyone", "default_change": "leader"},
-	{"key": "tab.gdd",       "display": "View Game Design sub-tab", "desc": "Access to Game Design Documents within Resources.",                  "category": "Tab Access", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "tab.gdd",       "display": "View Game Ideas sub-tab",  "desc": "Access to Game Ideas within Resources.",                           "category": "Tab Access", "default_allowed": "anyone", "default_change": "leader"},
 	# Addon actions
 	{"key": "addon.create",        "display": "Create addons",         "desc": "Can create new addons and publish them to GitHub.",             "category": "Addons", "default_allowed": "anyone", "default_change": "leader"},
 	{"key": "addon.push",          "display": "Push addon changes",    "desc": "Can push committed changes in any addon.",                     "category": "Addons", "default_allowed": "anyone", "default_change": "leader"},
@@ -4385,6 +4385,34 @@ func _apply_vote_effects(vote: Dictionary) -> void:
 	var vtype: String = vote.get("type", "")
 	var result: String = vote.get("result", "")
 	match vtype:
+		"vault_archive":
+			if result != "yes":
+				return
+			var target: String = vote.get("pending_target", "") as String
+			if target.is_empty() or _vault_cache.is_empty():
+				return
+			var dt := Time.get_datetime_dict_from_system()
+			var dest: String = "_archive/%04d/%02d/%s" % [dt.year, dt.month, target.get_file()]
+			_vault_thread = Thread.new()
+			var cache2 := _vault_cache
+			var cap_target := target
+			_vault_thread.start(func():
+				Ops.vault_move(cache2, cap_target, dest, Callable())
+				call_deferred("_vault_after_manage_named", "asset_deleted", 'Vote-approved archive: "%s"' % cap_target.get_file())
+			)
+		"vault_delete_folder":
+			if result != "yes":
+				return
+			var folder2: String = vote.get("pending_folder", "") as String
+			if folder2.is_empty() or _vault_cache.is_empty():
+				return
+			_vault_thread = Thread.new()
+			var cache3 := _vault_cache
+			var cap_folder2 := folder2
+			_vault_thread.start(func():
+				Ops.vault_delete_folder(cache3, cap_folder2, Callable())
+				call_deferred("_vault_after_manage_named", "folder_deleted", 'Vote-approved delete folder: "%s"' % cap_folder2)
+			)
 		"change_permission":
 			# Only apply if the vote passed (result == "yes")
 			if result != "yes":
@@ -7085,6 +7113,41 @@ func _vault_navigate(rel: String) -> void:
 		)
 		folder_row.add_child(ren_folder_btn)
 
+		# Delete folder button
+		var del_folder_check := _vault_folder_check(cap_folder, "delete_folder")
+		if del_folder_check != "denied":
+			var del_folder_btn := Button.new()
+			del_folder_btn.text = "🗑"
+			del_folder_btn.tooltip_text = "Delete folder" + (" (requires vote)" if del_folder_check == "vote_required" else "")
+			del_folder_btn.flat = true
+			del_folder_btn.custom_minimum_size = Vector2(26, 0)
+			del_folder_btn.pressed.connect(func():
+				var chk2 := _vault_folder_check(cap_folder, "delete_folder")
+				if chk2 == "denied":
+					OS.alert("⛔ You don't have permission to delete this folder.", "Permission denied")
+					return
+				if chk2 == "vote_required":
+					_vault_propose_vote("delete_folder", cap_folder, "")
+					return
+				var confirm := ConfirmationDialog.new()
+				confirm.exclusive = false
+				confirm.dialog_text = 'Delete folder "%s" and all its contents?' % cap_folder
+				confirm.confirmed.connect(func():
+					_vault_status_lbl.text = "Deleting folder…"
+					_vault_thread = Thread.new()
+					var cache2 := _vault_cache
+					_vault_thread.start(func():
+						Ops.vault_delete_folder(cache2, cap_folder, Callable())
+						call_deferred("_vault_after_manage_named", "folder_deleted", 'Deleted folder "%s"' % cap_folder)
+					)
+					confirm.queue_free()
+				)
+				confirm.canceled.connect(func(): confirm.queue_free())
+				add_child(confirm)
+				confirm.popup_centered()
+			)
+			folder_row.add_child(del_folder_btn)
+
 		# Per-folder permission button
 		var folder_key := cap_folder + "/"
 		var has_own_rule: bool = folder_key in _vault_folder_perms
@@ -7227,13 +7290,56 @@ func _vault_file_icon(filename: String) -> String:
 		return "📄"
 	return "📎"
 
+func _vault_propose_vote(op: String, folder: String, target: String) -> void:
+	var me: String = _current_user.get("username", "?")
+	var op_labels: Dictionary = {"upload": "Upload to", "archive": "Archive file in", "delete_folder": "Delete folder"}
+	var op_label: String = op_labels.get(op, op) as String
+	var title: String
+	var vtype: String
+	if op == "archive":
+		title = 'Archive "%s"?' % target.get_file()
+		vtype = "vault_archive"
+	elif op == "delete_folder":
+		title = 'Delete folder "%s"?' % folder
+		vtype = "vault_delete_folder"
+	else:
+		title = '%s "%s"' % [op_label, folder]
+		vtype = "vault_upload_request"
+	var deadline_7d := Time.get_date_string_from_unix_time(int(Time.get_unix_time_from_system()) + 7 * 24 * 3600)
+	var vote: Dictionary = {
+		"id": str(int(Time.get_unix_time_from_system())),
+		"type": vtype,
+		"title": title,
+		"description": "Requested by @%s. Vote yes to approve, no to deny." % me,
+		"created_by": me,
+		"created_at": Time.get_datetime_string_from_system(),
+		"deadline": deadline_7d,
+		"options": ["yes", "no"],
+		"votes": {},
+		"closed": false,
+		"pending_folder": folder,
+		"pending_target": target,
+	}
+	_vote_items.insert(0, vote)
+	_save_votes()
+	_log_activity("vote_created", 'Vote-gated %s request by %s: "%s"' % [op, me, title])
+	_refresh_vote_list()
+	_refresh_dashboard()
+	if is_instance_valid(_vote_status_lbl):
+		_vote_status_lbl.text = "⚡ Vote proposed — see Votes tab"
+		get_tree().create_timer(4.0).timeout.connect(func():
+			if is_instance_valid(_vote_status_lbl): _vote_status_lbl.text = "")
+
 func _vault_open_picker() -> void:
 	if not _perm_gate("vault.upload"):
 		return
-	# Per-folder check
 	var cur_rel: String = _vault_current_dir
-	if not _perm_has_vault_folder(cur_rel):
+	var check := _vault_folder_check(cur_rel, "upload")
+	if check == "denied":
 		OS.alert("⛔ You don't have upload access to this folder.", "Permission denied")
+		return
+	if check == "vote_required":
+		_vault_propose_vote("upload", cur_rel, "")
 		return
 	_vault_file_dialog.popup_centered_ratio(0.7)
 
@@ -7563,8 +7669,13 @@ func _vault_confirm_delete(rel_path: String) -> void:
 func _vault_do_archive() -> void:
 	if not _perm_gate("vault.delete"):
 		return
-	if not _perm_has_vault_folder(_vault_current_dir):
-		OS.alert("⛔ You don't have delete access to this folder.", "Permission denied")
+	var check := _vault_folder_check(_vault_current_dir, "archive")
+	if check == "denied":
+		OS.alert("⛔ You don't have archive access to this folder.", "Permission denied")
+		return
+	if check == "vote_required":
+		_vault_propose_vote("archive", _vault_current_dir, _vault_pending_delete)
+		_vault_pending_delete = ""
 		return
 	if _vault_pending_delete.is_empty():
 		return
@@ -14246,29 +14357,58 @@ func _perm_can_change(key: String) -> bool:
 			return false
 	return false
 
-func _perm_has_vault_folder(vault_rel_path: String) -> bool:
-	if _election_is_leader():
-		return true
-	# Find the most-specific matching folder rule
+## Returns the effective folder rule dict for vault_rel_path (longest-prefix match).
+## Migrates legacy format {"allowed_by", "allowed_roles"} to the new multi-op format.
+func _vault_folder_effective(vault_rel_path: String) -> Dictionary:
+	var check_path := vault_rel_path
+	if not check_path.ends_with("/"):
+		check_path = check_path + "/"
 	var longest_match := ""
 	for folder: String in _vault_folder_perms:
-		if vault_rel_path.begins_with(folder) and folder.length() > longest_match.length():
+		if check_path.begins_with(folder) and folder.length() > longest_match.length():
 			longest_match = folder
 	if longest_match.is_empty():
-		return true   # no folder rule = open
-	var fperm: Dictionary = _vault_folder_perms[longest_match] as Dictionary
-	var allowed_by: String = fperm.get("allowed_by", "anyone")
-	var me: String = _current_user.get("username", "")
-	match allowed_by:
-		"anyone": return true
-		"leader": return false
-		"role":
-			var roles: Array = fperm.get("allowed_roles", [])
-			if roles.is_empty(): return true
-			for rn: String in roles:
-				if _election_is_holder(rn, me): return true
-			return false
-	return true
+		return {}
+	var raw: Dictionary = _vault_folder_perms[longest_match] as Dictionary
+	# Migrate legacy format
+	if "allowed_by" in raw:
+		var by: String = raw.get("allowed_by", "anyone") as String
+		var roles: Array = raw.get("allowed_roles", []) as Array
+		var op := {"by": by, "roles": roles}
+		return {"upload": op, "archive": op, "delete_folder": {"by": "leader", "roles": []}, "change": {"by": "leader", "roles": []}}
+	return raw
+
+## Check if current user can perform op ("upload"|"archive"|"delete_folder"|"change") in path.
+## Returns "ok", "denied", or "vote_required".
+func _vault_folder_check(vault_rel_path: String, op: String) -> String:
+	if _election_is_leader():
+		return "ok"
+	var rule := _vault_folder_effective(vault_rel_path)
+	if rule.is_empty():
+		return "ok"
+	var defaults: Dictionary = {"upload": "anyone", "archive": "anyone", "delete_folder": "leader", "change": "leader"}
+	var operm: Dictionary = rule.get(op, {}) as Dictionary
+	var by: String = (operm.get("by", defaults.get(op, "anyone")) as String)
+	if by == "anyone":
+		return "ok"
+	if by == "vote":
+		return "vote_required"
+	if by == "leader":
+		return "denied"
+	if by == "role":
+		var roles: Array = operm.get("roles", []) as Array
+		if roles.is_empty():
+			return "ok"
+		var me: String = _current_user.get("username", "")
+		for rn: String in roles:
+			if _election_is_holder(rn, me):
+				return "ok"
+		return "denied"
+	return "ok"
+
+## Legacy shim — kept so call sites outside upload/archive still compile.
+func _perm_has_vault_folder(vault_rel_path: String) -> bool:
+	return _vault_folder_check(vault_rel_path, "upload") == "ok"
 
 ## Show a toast-style status message when a permission check fails.
 func _perm_gate(key: String, status_lbl: Label = null) -> bool:
@@ -14329,7 +14469,7 @@ func _apply_tab_permissions() -> void:
 		var res_perm_map := {
 			"Vault": "tab.vault",
 			"Docs": "tab.docs",
-			"Game Design": "tab.gdd"
+			"Game Ideas": "tab.gdd"
 		}
 		for i in range(_resources_inner_tabs.get_tab_count()):
 			var title := _resources_inner_tabs.get_tab_title(i)
@@ -14536,54 +14676,73 @@ func _perm_build_vault_folder_section() -> void:
 	pass  # folder rules moved to Assets > Asset Permissions tab
 
 func _perm_folder_summary(fperm: Dictionary) -> String:
-	var by: String = fperm.get("allowed_by", "anyone")
-	match by:
-		"anyone": return "🌐 Anyone"
-		"leader": return "👑 Leader only"
-		"role":
-			var roles: Array = fperm.get("allowed_roles", [])
-			if roles.is_empty(): return "🌐 Anyone"
-			return "🏅 " + ", ".join(PackedStringArray(roles))
-	return "?"
+	if "allowed_by" in fperm:
+		var by: String = fperm.get("allowed_by", "anyone") as String
+		match by:
+			"anyone": return "🌐 Anyone"
+			"leader": return "👑 Leader only"
+			"role":
+				var roles: Array = fperm.get("allowed_roles", []) as Array
+				if roles.is_empty(): return "🌐 Anyone"
+				return "🏅 " + ", ".join(PackedStringArray(roles))
+		return "?"
+	var parts: Array[String] = []
+	for op_key: String in ["upload", "archive", "delete_folder"]:
+		var operm: Dictionary = fperm.get(op_key, {}) as Dictionary
+		var by: String = operm.get("by", "anyone") as String
+		var short := {"upload": "⬆", "archive": "📦", "delete_folder": "🗑"}[op_key]
+		match by:
+			"anyone":       parts.append(short + " all")
+			"leader":       parts.append(short + " leader")
+			"vote":         parts.append(short + " vote")
+			"role":
+				var roles: Array = operm.get("roles", []) as Array
+				parts.append(short + " " + (", ".join(PackedStringArray(roles)) if not roles.is_empty() else "all"))
+	return "  ".join(parts) if not parts.is_empty() else "🌐 Anyone"
 
 func _vault_folder_perm_dialog(folder_key: String) -> void:
 	var has_own: bool = folder_key in _vault_folder_perms
 	var display_name := folder_key.rstrip("/")
+	var all_roles := _election_sorted_roles()
 
-	var dlg := AcceptDialog.new()
-	dlg.exclusive = false
-	dlg.title = "Permissions: " + (display_name if not display_name.is_empty() else "/")
-	dlg.size = Vector2i(400, 320)
-	var vb := VBoxContainer.new()
-	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	vb.add_theme_constant_override("separation", 8)
-	dlg.add_child(vb)
+	# Resolve current working permissions, migrating legacy format
+	var working_perm: Dictionary = {}
+	if has_own:
+		working_perm = _vault_folder_effective(folder_key.rstrip("/")).duplicate(true)
+	else:
+		var inherited := _vault_folder_effective(folder_key.rstrip("/"))
+		if not inherited.is_empty():
+			working_perm = inherited.duplicate(true)
 
-	# Inheritance info
+	# Inheritance info label
 	var inherited_from := ""
-	var inherited_perm: Dictionary = {}
 	if not has_own:
 		var longest := ""
 		for fk: String in _vault_folder_perms:
 			if folder_key.begins_with(fk) and fk.length() > longest.length():
 				longest = fk
-		if not longest.is_empty():
-			inherited_from = longest
-			inherited_perm = _vault_folder_perms[longest] as Dictionary
+		inherited_from = longest
 
-	var info_lbl := Label.new()
-	if has_own:
-		info_lbl.text = "This folder has its own permission rule."
-		info_lbl.add_theme_color_override("font_color", Color(0.4, 0.75, 1.0))
-	elif not inherited_from.is_empty():
-		info_lbl.text = "Inheriting from: " + inherited_from + "\n(" + _perm_folder_summary(inherited_perm) + ")"
-		info_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-	else:
-		info_lbl.text = "No rule — anyone can access. Set an override below."
-		info_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-	info_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	vb.add_child(info_lbl)
-	vb.add_child(HSeparator.new())
+	var dlg := AcceptDialog.new()
+	dlg.exclusive = false
+	dlg.title = "Folder permissions: " + (display_name if not display_name.is_empty() else "/")
+	dlg.size = Vector2i(480, 560)
+
+	var outer_scroll := ScrollContainer.new()
+	outer_scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	outer_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var vb := VBoxContainer.new()
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vb.add_theme_constant_override("separation", 10)
+	outer_scroll.add_child(vb)
+	dlg.add_child(outer_scroll)
+
+	if not inherited_from.is_empty() and not has_own:
+		var info_lbl := Label.new()
+		info_lbl.text = "Inheriting from: " + inherited_from
+		info_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+		info_lbl.add_theme_font_size_override("font_size", 11)
+		vb.add_child(info_lbl)
 
 	if not _perm_has("vault.manage_folder_rules"):
 		var lock_lbl := Label.new()
@@ -14596,61 +14755,99 @@ func _vault_folder_perm_dialog(folder_key: String) -> void:
 		dlg.confirmed.connect(func(): dlg.queue_free())
 		return
 
-	# Edit access section (reuses _perm_open_access_dialog logic inline)
-	var working_perm: Dictionary
-	if has_own:
-		working_perm = (_vault_folder_perms[folder_key] as Dictionary).duplicate(true)
-	elif not inherited_perm.is_empty():
-		working_perm = inherited_perm.duplicate(true)
-	else:
-		working_perm = {"allowed_by": "anyone", "allowed_roles": []}
+	# ── Per-operation section builder ─────────────────────────────────────────
+	# ops: [id, label, default_by, include_vote]
+	var ops: Array = [
+		["upload",        "⬆ Upload",       "anyone", true],
+		["archive",       "📦 Archive files", "anyone", true],
+		["delete_folder", "🗑 Delete folder", "leader", true],
+		["change",        "🔧 Change rules",  "leader", true],
+	]
+	# op_id -> {mode_btns: {by: Button}, role_checks: {role: CheckBox}}
+	var op_state: Dictionary = {}
 
-	var set_lbl := Label.new()
-	set_lbl.text = "Set override for this folder:"
-	set_lbl.add_theme_font_size_override("font_size", 12)
-	vb.add_child(set_lbl)
+	for op_info: Array in ops:
+		var op_id: String   = op_info[0] as String
+		var op_label: String = op_info[1] as String
+		var op_default: String = op_info[2] as String
 
-	var mode_hb := HBoxContainer.new()
-	var any_btn := Button.new()
-	any_btn.text = "Anyone"
-	any_btn.toggle_mode = true
-	var leader_btn := Button.new()
-	leader_btn.text = "Leader only"
-	leader_btn.toggle_mode = true
-	var role_btn2 := Button.new()
-	role_btn2.text = "Specific roles"
-	role_btn2.toggle_mode = true
+		var operm: Dictionary = (working_perm.get(op_id, {}) as Dictionary)
+		var cur_by: String = operm.get("by", op_default) as String
+		var cur_roles: Array = operm.get("roles", []) as Array
 
-	var cur_mode: String = working_perm.get("allowed_by", "anyone") as String
-	any_btn.button_pressed = (cur_mode == "anyone")
-	leader_btn.button_pressed = (cur_mode == "leader")
-	role_btn2.button_pressed = (cur_mode == "role")
+		var section := VBoxContainer.new()
+		section.add_theme_constant_override("separation", 4)
 
-	var _deselect_mode := func():
-		any_btn.button_pressed = false
-		leader_btn.button_pressed = false
-		role_btn2.button_pressed = false
-	any_btn.pressed.connect(func(): _deselect_mode.call(); any_btn.button_pressed = true)
-	leader_btn.pressed.connect(func(): _deselect_mode.call(); leader_btn.button_pressed = true)
-	role_btn2.pressed.connect(func(): _deselect_mode.call(); role_btn2.button_pressed = true)
+		var hdr := Label.new()
+		hdr.text = op_label
+		hdr.add_theme_font_size_override("font_size", 12)
+		section.add_child(hdr)
 
-	mode_hb.add_child(any_btn)
-	mode_hb.add_child(leader_btn)
-	mode_hb.add_child(role_btn2)
-	vb.add_child(mode_hb)
+		var mode_row := HBoxContainer.new()
+		mode_row.add_theme_constant_override("separation", 4)
+		var modes: Array[String] = ["anyone", "leader", "role", "vote"]
+		var mode_labels: Dictionary = {"anyone": "Anyone", "leader": "Leader", "role": "Roles…", "vote": "Vote"}
+		var mode_btns: Dictionary = {}
+		for m: String in modes:
+			var mb := Button.new()
+			mb.text = mode_labels[m] as String
+			mb.toggle_mode = true
+			mb.button_pressed = (cur_by == m)
+			mb.add_theme_font_size_override("font_size", 11)
+			mode_btns[m] = mb
+			mode_row.add_child(mb)
+		section.add_child(mode_row)
 
-	var roles_lbl2 := Label.new()
-	roles_lbl2.text = "Roles (one per line, for 'Specific roles' mode):"
-	roles_lbl2.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-	roles_lbl2.add_theme_font_size_override("font_size", 11)
-	vb.add_child(roles_lbl2)
-	var roles_edit2 := TextEdit.new()
-	roles_edit2.custom_minimum_size = Vector2(0, 60)
-	roles_edit2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var cur_roles2: Array = working_perm.get("allowed_roles", []) as Array
-	roles_edit2.text = "\n".join(PackedStringArray(cur_roles2))
-	vb.add_child(roles_edit2)
+		# Wire mutual exclusion
+		for m: String in modes:
+			var cap_m := m
+			(mode_btns[m] as Button).pressed.connect(func():
+				for mm: String in modes:
+					(mode_btns[mm] as Button).button_pressed = (mm == cap_m)
+			)
 
+		# Role checkboxes (only shown when "role" is active)
+		var roles_box := VBoxContainer.new()
+		roles_box.add_theme_constant_override("separation", 2)
+		roles_box.visible = (cur_by == "role")
+		var role_checks: Dictionary = {}
+		if all_roles.is_empty():
+			var no_roles_lbl := Label.new()
+			no_roles_lbl.text = "No roles defined."
+			no_roles_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+			no_roles_lbl.add_theme_font_size_override("font_size", 11)
+			roles_box.add_child(no_roles_lbl)
+		else:
+			for rn: String in all_roles:
+				var chk := CheckBox.new()
+				chk.text = rn
+				chk.button_pressed = (rn in cur_roles)
+				chk.add_theme_font_size_override("font_size", 11)
+				role_checks[rn] = chk
+				roles_box.add_child(chk)
+		section.add_child(roles_box)
+
+		(mode_btns["role"] as Button).toggled.connect(func(on: bool):
+			roles_box.visible = on
+		)
+
+		# Vote hint
+		var vote_hint := Label.new()
+		vote_hint.text = "Actions will require a team vote to proceed."
+		vote_hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+		vote_hint.add_theme_font_size_override("font_size", 10)
+		vote_hint.visible = (cur_by == "vote")
+		vote_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		section.add_child(vote_hint)
+		(mode_btns["vote"] as Button).toggled.connect(func(on: bool):
+			vote_hint.visible = on
+		)
+
+		vb.add_child(section)
+		vb.add_child(HSeparator.new())
+		op_state[op_id] = {"mode_btns": mode_btns, "role_checks": role_checks}
+
+	# Remove override button
 	if has_own:
 		var remove_btn := Button.new()
 		remove_btn.text = "🗑 Remove override (inherit from parent)"
@@ -14667,15 +14864,23 @@ func _vault_folder_perm_dialog(folder_key: String) -> void:
 		if not _perm_has("vault.manage_folder_rules"):
 			dlg.queue_free()
 			return
-		var new_mode := "anyone"
-		if leader_btn.button_pressed: new_mode = "leader"
-		elif role_btn2.button_pressed: new_mode = "role"
-		var new_roles: Array = []
-		for line: String in roles_edit2.text.split("\n"):
-			var r := line.strip_edges()
-			if not r.is_empty():
-				new_roles.append(r)
-		_vault_folder_perms[folder_key] = {"allowed_by": new_mode, "allowed_roles": new_roles}
+		var new_rule: Dictionary = {}
+		for op_id2: String in op_state:
+			var st: Dictionary = op_state[op_id2] as Dictionary
+			var mbs: Dictionary = st["mode_btns"] as Dictionary
+			var chosen_by := "anyone"
+			for m2: String in mbs:
+				if (mbs[m2] as Button).button_pressed:
+					chosen_by = m2
+					break
+			var chosen_roles: Array = []
+			if chosen_by == "role":
+				var rcs: Dictionary = st["role_checks"] as Dictionary
+				for rn2: String in rcs:
+					if (rcs[rn2] as CheckBox).button_pressed:
+						chosen_roles.append(rn2)
+			new_rule[op_id2] = {"by": chosen_by, "roles": chosen_roles}
+		_vault_folder_perms[folder_key] = new_rule
 		_save_role_permissions()
 		_vault_navigate(_vault_current_dir)
 		dlg.queue_free()
@@ -15333,12 +15538,12 @@ func _build_resources_supertab(tabs: TabContainer) -> void:
 # ─── Game Design tab ──────────────────────────────────────────────────────────
 
 func _build_game_design_tab(tabs: TabContainer) -> void:
-	var root := _vbox("Game Design", tabs)
+	var root := _vbox("Game Ideas", tabs)
 
 	# ── toolbar ───────────────────────────────────────────────────────────────
 	var toolbar := HBoxContainer.new()
 	var title_lbl := Label.new()
-	title_lbl.text = "🎮 Game Design Documents"
+	title_lbl.text = "🎮 Game Ideas"
 	title_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 1.0))
 	title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_gd_status_lbl = Label.new()
