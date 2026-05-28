@@ -3852,14 +3852,29 @@ func _refresh_todo() -> void:
 			var has_role_assign: bool = not (item.get("assigned_role", "") as String).is_empty()
 			assign_type_opt.select(1 if has_role_assign else 0)
 			assign_row.add_child(assign_type_opt)
-			# User text input
-			var assign_edit := LineEdit.new()
-			assign_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			assign_edit.placeholder_text = "username"
-			assign_edit.add_theme_font_size_override("font_size", 11)
-			assign_edit.text = item.get("assigned_to", "")
-			assign_edit.visible = not has_role_assign
-			assign_row.add_child(assign_edit)
+			# User dropdown
+			var assign_user_opt := OptionButton.new()
+			assign_user_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			assign_user_opt.add_theme_font_size_override("font_size", 11)
+			assign_user_opt.add_item("— (unassign)")
+			var member_names_todo: Array[String] = []
+			for mu: Dictionary in _election_members:
+				var uname: String = mu.get("username", "") as String
+				if not uname.is_empty():
+					member_names_todo.append(uname)
+					assign_user_opt.add_item(uname)
+			var cur_assigned_to: String = item.get("assigned_to", "") as String
+			var user_sel_idx := 0
+			if not cur_assigned_to.is_empty():
+				var ui := member_names_todo.find(cur_assigned_to)
+				if ui >= 0:
+					user_sel_idx = ui + 1
+				else:
+					assign_user_opt.add_item(cur_assigned_to)
+					user_sel_idx = assign_user_opt.item_count - 1
+			assign_user_opt.select(user_sel_idx)
+			assign_user_opt.visible = not has_role_assign
+			assign_row.add_child(assign_user_opt)
 			# Role dropdown
 			var assign_role_opt := OptionButton.new()
 			assign_role_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -3877,7 +3892,7 @@ func _refresh_todo() -> void:
 			assign_role_opt.visible = has_role_assign
 			assign_row.add_child(assign_role_opt)
 			assign_type_opt.item_selected.connect(func(tidx: int):
-				assign_edit.visible = tidx == 0
+				assign_user_opt.visible = tidx == 0
 				assign_role_opt.visible = tidx == 1
 			)
 			fields.add_child(assign_row)
@@ -3907,7 +3922,8 @@ func _refresh_todo() -> void:
 			fields.add_child(repeat_row)
 			row.add_child(fields)
 			var cap_edit := edit
-			var cap_assign := assign_edit
+			var cap_assign_user := assign_user_opt
+			var cap_member_names := member_names_todo
 			var cap_assign_type := assign_type_opt
 			var cap_assign_role := assign_role_opt
 			var cap_all_roles := all_roles_todo
@@ -3929,11 +3945,11 @@ func _refresh_todo() -> void:
 				else:
 					# User assignment
 					_todo_items[cap_i].erase("assigned_role")
-					var assignee := cap_assign.text.strip_edges().lstrip("@")
-					if assignee.is_empty():
-						_todo_items[cap_i].erase("assigned_to")
+					var ui2 := cap_assign_user.selected - 1  # -1 because item 0 = "unassign"
+					if ui2 >= 0 and ui2 < cap_member_names.size():
+						_todo_items[cap_i]["assigned_to"] = cap_member_names[ui2]
 					else:
-						_todo_items[cap_i]["assigned_to"] = assignee
+						_todo_items[cap_i].erase("assigned_to")
 				var units := ["days", "weeks", "months"]
 				_todo_items[cap_i]["repeat"] = cap_repeat_chk.button_pressed
 				_todo_items[cap_i]["repeat_every"] = int(cap_repeat_spin.value)
