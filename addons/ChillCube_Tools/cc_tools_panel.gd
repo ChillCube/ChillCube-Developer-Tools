@@ -4401,6 +4401,13 @@ func _apply_vote_effects(vote: Dictionary) -> void:
 			_save_vote_settings()
 			if is_instance_valid(_perm_list) and _perm_sel_category == "Vote Settings":
 				_perm_refresh_list()
+		"disable_inactivity_lock":
+			if result != "yes":
+				return
+			_vote_settings["inactivity_change_requires_vote"] = false
+			_save_vote_settings()
+			if is_instance_valid(_perm_list) and _perm_sel_category == "Vote Settings":
+				_perm_refresh_list()
 		"change_permission":
 			# Only apply if the vote passed (result == "yes")
 			if result != "yes":
@@ -4658,26 +4665,62 @@ func _vote_settings_refresh() -> void:
 	_perm_list.add_child(HSeparator.new())
 
 	# ── Require vote to change inactivity ─────────────────────────────────────
+	var req_vb := VBoxContainer.new()
+	req_vb.add_theme_constant_override("separation", 4)
 	var req_row := HBoxContainer.new()
 	var req_lbl := Label.new()
 	req_lbl.text = "Require a vote to change inactivity thresholds"
 	req_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	req_row.add_child(req_lbl)
 	if can_configure:
-		var req_chk := CheckBox.new()
-		req_chk.button_pressed = inact_locked
-		req_chk.pressed.connect(func():
-			_vote_settings["inactivity_change_requires_vote"] = req_chk.button_pressed
-			_save_vote_settings()
-			_vote_settings_refresh()
-		)
-		req_row.add_child(req_chk)
+		if inact_locked:
+			# Already locked — show a disabled checked box and a propose-vote button to disable
+			var req_chk := CheckBox.new()
+			req_chk.button_pressed = true
+			req_chk.disabled = true
+			req_row.add_child(req_chk)
+			var disable_btn := Button.new()
+			disable_btn.text = "🗳 Propose vote to disable"
+			disable_btn.flat = false
+			disable_btn.add_theme_font_size_override("font_size", 11)
+			disable_btn.pressed.connect(func():
+				var vote: Dictionary = {
+					"id": str(int(Time.get_unix_time_from_system())),
+					"title": "Disable vote requirement for inactivity threshold changes",
+					"description": "Proposed by @%s. If approved, inactivity thresholds can be changed directly without a vote." % _current_user.get("username", "?"),
+					"type": "disable_inactivity_lock",
+					"created_by": _current_user.get("username", "?"),
+					"created_at": Time.get_datetime_string_from_system(),
+					"deadline": "",
+					"options": ["yes", "no"],
+					"votes": {},
+					"closed": false
+				}
+				_vote_items.insert(0, vote)
+				_save_votes()
+				_log_activity("vote_created", 'Vote opened: "Disable inactivity threshold lock"')
+				_refresh_vote_list()
+			)
+			req_row.add_child(disable_btn)
+		else:
+			var req_chk := CheckBox.new()
+			req_chk.button_pressed = false
+			req_chk.pressed.connect(func():
+				if req_chk.button_pressed:
+					_vote_settings["inactivity_change_requires_vote"] = true
+					_save_vote_settings()
+					_vote_settings_refresh()
+				else:
+					req_chk.button_pressed = false
+			)
+			req_row.add_child(req_chk)
 	else:
 		var req_val := Label.new()
 		req_val.text = "Yes" if inact_locked else "No"
 		req_val.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
 		req_row.add_child(req_val)
-	_perm_list.add_child(req_row)
+	req_vb.add_child(req_row)
+	_perm_list.add_child(req_vb)
 
 	if not can_configure:
 		var lock_lbl := Label.new()
