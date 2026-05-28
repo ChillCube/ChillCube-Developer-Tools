@@ -243,6 +243,8 @@ var _activity_shown_count: int = 30           # how many items are currently ren
 
 var _vote_items: Array = []
 var _vote_list: VBoxContainer
+var _vote_settings: Dictionary = {}
+var _vote_settings_list: VBoxContainer = null
 var _decision_log_list: VBoxContainer
 var _decisions_status_lbl: Label
 var _decisions_create_box: VBoxContainer
@@ -380,7 +382,8 @@ const PERM_DEFS: Array = [
 	# Planning
 	{"key": "todo.create",   "display": "Create to-do items",   "desc": "Can add new items to the shared to-do list.",                     "category": "Planning", "default_allowed": "anyone", "default_change": "leader"},
 	{"key": "todo.assign",   "display": "Assign tasks",         "desc": "Can assign to-do items to other users or roles.",                 "category": "Planning", "default_allowed": "anyone", "default_change": "leader"},
-	{"key": "vote.create",   "display": "Create team votes",    "desc": "Can propose new votes in the Votes tab.",                         "category": "Planning", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "vote.create",     "display": "Create team votes",      "desc": "Can propose new votes in the Votes tab.",                                          "category": "Planning", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "vote.configure",  "display": "Configure vote rules",   "desc": "Can change who is eligible to vote and the inactivity timeout setting.",            "category": "Planning", "default_allowed": "leader", "default_change": "leader"},
 	# Team management
 	{"key": "team.approve",    "display": "Approve accounts",   "desc": "Can approve or reject pending account registrations.",             "category": "Team",  "default_allowed": "leader", "default_change": "leader"},
 	{"key": "team.remove",     "display": "Remove members",     "desc": "Can remove team members from the project.",                       "category": "Team",  "default_allowed": "leader", "default_change": "leader"},
@@ -888,6 +891,7 @@ func _ready() -> void:
 	_load_forum_last_seen()
 	_load_role_permissions()
 	_gd_load_config()
+	_load_vote_settings()
 
 	_login_overlay = _build_login_overlay()
 	_login_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -4101,7 +4105,8 @@ func _cc_data_bundle() -> Dictionary:
 		"doc_comments.json": JSON.stringify(_docs_comments, "\t") + "\n",
 		"elections.json": JSON.stringify(_election_data, "\t") + "\n",
 		"role_permissions.json": JSON.stringify({"perms": _role_permissions, "vault_folders": _vault_folder_perms}, "\t") + "\n",
-		"gdd_config.json": JSON.stringify({"fields": _gd_custom_fields}, "\t") + "\n"
+		"gdd_config.json": JSON.stringify({"fields": _gd_custom_fields}, "\t") + "\n",
+		"vote_settings.json": JSON.stringify(_vote_settings, "\t") + "\n"
 	}
 
 func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
@@ -4125,6 +4130,7 @@ func _build_team_supertab(tabs: TabContainer) -> void:
 	root.add_child(_team_inner_tabs)
 	_build_activity_tab(_team_inner_tabs)
 	_build_votes_tab(_team_inner_tabs)
+	_build_vote_settings_tab(_team_inner_tabs)
 	_build_decision_log_tab(_team_inner_tabs)
 	_build_schedule_tab(_team_inner_tabs)
 	_build_forum_tab(_team_inner_tabs)
@@ -4273,6 +4279,91 @@ func _save_votes() -> void:
 		fw.store_string(JSON.stringify(_vote_items, "\t") + "\n")
 		fw.close()
 
+func _vote_settings_file() -> String:
+	return ProjectSettings.globalize_path("user://cc_vote_settings.json")
+
+func _load_vote_settings() -> void:
+	_vote_settings = {}
+	var path := _vote_settings_file()
+	if not FileAccess.file_exists(path):
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if not f:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if parsed is Dictionary:
+		_vote_settings = parsed as Dictionary
+
+func _save_vote_settings() -> void:
+	var fw := FileAccess.open(_vote_settings_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify(_vote_settings, "\t") + "\n")
+		fw.close()
+	_activity_auto_push()
+
+func _can_vote_on(vote_type: String) -> bool:
+	var me: String = _current_user.get("username", "")
+	if me.is_empty():
+		return false
+	var elig: Dictionary = _vote_settings.get("voter_eligibility", {}) as Dictionary
+	var cfg: Dictionary = elig.get(vote_type, {}) as Dictionary
+	var mode: String = cfg.get("mode", "anyone") as String
+	if mode != "role":
+		return true
+	var allowed_roles: Array = cfg.get("roles", []) as Array
+	if allowed_roles.is_empty():
+		return true
+	for role: String in allowed_roles:
+		if _election_is_holder(role, me):
+			return true
+	return false
+
+func _vote_active_member_count(all_users: Array) -> int:
+	var inactivity_days: int = int(_vote_settings.get("inactivity_days", 0))
+	if inactivity_days <= 0:
+		var total := 0
+		for u: Dictionary in all_users:
+			if u.get("approved", false):
+				total += 1
+		return total
+	var cutoff_unix: int = int(Time.get_unix_time_from_system()) - inactivity_days * 86400
+	var last_active: Dictionary = {}
+	for item: Dictionary in _activity_items:
+		var uname: String = item.get("user", "") as String
+		if uname.is_empty():
+			continue
+		var ts: String = item.get("timestamp", "") as String
+		if ts.is_empty():
+			continue
+		if not (uname in last_active) or (ts as String) > (last_active[uname] as String):
+			last_active[uname] = ts
+	var count := 0
+	for u: Dictionary in all_users:
+		if not u.get("approved", false):
+			continue
+		var uname: String = u.get("username", "") as String
+		if not (uname in last_active):
+			count += 1
+			continue
+		var last_ts: String = last_active[uname] as String
+		var last_unix: int = int(Time.get_unix_time_from_system())
+		var parts := last_ts.split("T")
+		if parts.size() >= 1:
+			var date_parts := (parts[0] as String).split("-")
+			if date_parts.size() == 3:
+				var time_parts := (parts[1] if parts.size() > 1 else "00:00:00").split(":")
+				var dd: Dictionary = {
+					"year": int(date_parts[0]), "month": int(date_parts[1]), "day": int(date_parts[2]),
+					"hour": int(time_parts[0]) if time_parts.size() > 0 else 0,
+					"minute": int(time_parts[1]) if time_parts.size() > 1 else 0,
+					"second": int(time_parts[2]) if time_parts.size() > 2 else 0
+				}
+				last_unix = int(Time.get_unix_time_from_datetime_dict(dd))
+		if last_unix >= cutoff_unix:
+			count += 1
+	return count
+
 ## Called whenever a vote closes (by majority or deadline).
 ## Applies side-effects for special vote types.
 func _apply_vote_effects(vote: Dictionary) -> void:
@@ -4370,10 +4461,7 @@ func _cast_vote(vote_idx: int, option: String) -> void:
 	_vote_thread = Thread.new()
 	_vote_thread.start(func():
 		var all_users := Ops.auth_fetch_all(Callable())
-		var member_count := 0
-		for u: Dictionary in all_users:
-			if u.get("approved", false):
-				member_count += 1
+		var member_count := _vote_active_member_count(all_users)
 		call_deferred("_on_vote_member_count", cap_idx, member_count)
 	)
 
@@ -4402,6 +4490,215 @@ func _on_vote_member_count(vote_idx: int, member_count: int) -> void:
 				vote.get("title", ""), vote.get("result", ""), cast_count, member_count])
 			_refresh_vote_list()
 
+
+func _build_vote_settings_tab(tabs: TabContainer) -> void:
+	var root := _vbox("Vote Settings", tabs)
+
+	var intro := Label.new()
+	intro.text = "Configure who is eligible to vote on each vote type, and how long a member can be inactive before their vote is no longer needed for quorum."
+	intro.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	intro.add_theme_font_size_override("font_size", 11)
+	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	root.add_child(intro)
+	root.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vote_settings_list = VBoxContainer.new()
+	_vote_settings_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vote_settings_list.add_theme_constant_override("separation", 12)
+	scroll.add_child(_vote_settings_list)
+	root.add_child(scroll)
+
+	call_deferred("_vote_settings_refresh")
+
+func _vote_settings_refresh() -> void:
+	if not is_instance_valid(_vote_settings_list):
+		return
+	for c in _vote_settings_list.get_children():
+		c.queue_free()
+
+	var can_configure: bool = _perm_has("vote.configure")
+
+	# ── Voter eligibility ─────────────────────────────────────────────────────
+	var elig_hdr := Label.new()
+	elig_hdr.text = "Voter Eligibility"
+	elig_hdr.add_theme_font_size_override("font_size", 13)
+	_vote_settings_list.add_child(elig_hdr)
+
+	var elig_hint := Label.new()
+	elig_hint.text = "Set which roles can cast votes for each category. 'Anyone' means all signed-in members."
+	elig_hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+	elig_hint.add_theme_font_size_override("font_size", 11)
+	elig_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_vote_settings_list.add_child(elig_hint)
+
+	var vote_types: Array = [
+		{"id": "general",           "label": "General team votes"},
+		{"id": "change_permission", "label": "Permission change votes"},
+		{"id": "doc_suggestion",    "label": "Doc suggestion votes"},
+	]
+	var elig: Dictionary = _vote_settings.get("voter_eligibility", {}) as Dictionary
+
+	for vt: Dictionary in vote_types:
+		var type_id: String = vt["id"] as String
+		var type_label: String = vt["label"] as String
+		var cfg: Dictionary = (elig.get(type_id, {}) as Dictionary).duplicate(true)
+		var mode: String = cfg.get("mode", "anyone") as String
+		var roles: Array = cfg.get("roles", []) as Array
+
+		var row := PanelContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var vb := VBoxContainer.new()
+		vb.add_theme_constant_override("separation", 4)
+		row.add_child(vb)
+
+		var top := HBoxContainer.new()
+		var lbl := Label.new()
+		lbl.text = type_label
+		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		top.add_child(lbl)
+
+		var badge_text: String = "Anyone" if mode == "anyone" else ("Roles: " + (", ".join(PackedStringArray(roles)) if not roles.is_empty() else "none"))
+		var badge := _perm_badge(badge_text, Color(0.3, 0.6, 0.9))
+		top.add_child(badge)
+
+		if can_configure:
+			var edit_btn := Button.new()
+			edit_btn.text = "✏"
+			edit_btn.flat = true
+			var cap_id := type_id
+			var cap_label := type_label
+			edit_btn.pressed.connect(func(): _vote_elig_open_dialog(cap_id, cap_label))
+			top.add_child(edit_btn)
+		vb.add_child(top)
+		_vote_settings_list.add_child(row)
+
+	_vote_settings_list.add_child(HSeparator.new())
+
+	# ── Inactivity timeout ────────────────────────────────────────────────────
+	var inact_hdr := Label.new()
+	inact_hdr.text = "Inactivity Timeout"
+	inact_hdr.add_theme_font_size_override("font_size", 13)
+	_vote_settings_list.add_child(inact_hdr)
+
+	var inact_hint := Label.new()
+	inact_hint.text = "Members who haven't been active for this many days are excluded from the quorum count. Set to 0 to disable (everyone always counts)."
+	inact_hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+	inact_hint.add_theme_font_size_override("font_size", 11)
+	inact_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_vote_settings_list.add_child(inact_hint)
+
+	var inact_row := HBoxContainer.new()
+	var days_lbl := Label.new()
+	days_lbl.text = "Days before inactive:"
+	days_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inact_row.add_child(days_lbl)
+
+	var current_days: int = int(_vote_settings.get("inactivity_days", 0))
+	if can_configure:
+		var spin := SpinBox.new()
+		spin.min_value = 0
+		spin.max_value = 365
+		spin.step = 1
+		spin.value = current_days
+		spin.suffix = "days (0 = off)"
+		spin.custom_minimum_size = Vector2(180, 0)
+		spin.value_changed.connect(func(v: float):
+			_vote_settings["inactivity_days"] = int(v)
+			_save_vote_settings()
+		)
+		inact_row.add_child(spin)
+	else:
+		var val_lbl := Label.new()
+		val_lbl.text = ("Off" if current_days == 0 else "%d days" % current_days)
+		val_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+		inact_row.add_child(val_lbl)
+	_vote_settings_list.add_child(inact_row)
+
+	if not can_configure:
+		var lock_lbl := Label.new()
+		lock_lbl.text = "You don't have permission to change vote settings."
+		lock_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+		lock_lbl.add_theme_font_size_override("font_size", 11)
+		_vote_settings_list.add_child(lock_lbl)
+
+func _vote_elig_open_dialog(type_id: String, type_label: String) -> void:
+	var elig: Dictionary = _vote_settings.get("voter_eligibility", {}) as Dictionary
+	var cfg: Dictionary = (elig.get(type_id, {}) as Dictionary).duplicate(true)
+
+	var dlg := AcceptDialog.new()
+	dlg.exclusive = false
+	dlg.title = "Voter eligibility: " + type_label
+	dlg.size = Vector2i(380, 280)
+	var vb := VBoxContainer.new()
+	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vb.add_theme_constant_override("separation", 8)
+	dlg.add_child(vb)
+
+	var mode_lbl := Label.new()
+	mode_lbl.text = "Who can vote?"
+	vb.add_child(mode_lbl)
+
+	var anyone_btn := Button.new()
+	anyone_btn.text = "Anyone (all signed-in members)"
+	anyone_btn.toggle_mode = true
+	var role_btn := Button.new()
+	role_btn.text = "Specific roles only"
+	role_btn.toggle_mode = true
+
+	var cur_mode: String = cfg.get("mode", "anyone") as String
+	anyone_btn.button_pressed = (cur_mode == "anyone")
+	role_btn.button_pressed = (cur_mode == "role")
+
+	anyone_btn.pressed.connect(func():
+		anyone_btn.button_pressed = true
+		role_btn.button_pressed = false
+	)
+	role_btn.pressed.connect(func():
+		role_btn.button_pressed = true
+		anyone_btn.button_pressed = false
+	)
+	vb.add_child(anyone_btn)
+	vb.add_child(role_btn)
+
+	vb.add_child(HSeparator.new())
+	var roles_lbl := Label.new()
+	roles_lbl.text = "Eligible roles (one per line, used when 'Specific roles' is selected):"
+	roles_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	roles_lbl.add_theme_font_size_override("font_size", 11)
+	vb.add_child(roles_lbl)
+
+	var roles_edit := TextEdit.new()
+	roles_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	roles_edit.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	roles_edit.custom_minimum_size = Vector2(0, 80)
+	var cur_roles: Array = cfg.get("roles", []) as Array
+	roles_edit.text = "\n".join(PackedStringArray(cur_roles))
+	vb.add_child(roles_edit)
+
+	dlg.confirmed.connect(func():
+		if not _perm_has("vote.configure"):
+			dlg.queue_free()
+			return
+		var new_mode := "anyone" if anyone_btn.button_pressed else "role"
+		var new_roles: Array = []
+		for line: String in roles_edit.text.split("\n"):
+			var r := line.strip_edges()
+			if not r.is_empty():
+				new_roles.append(r)
+		if not ("voter_eligibility" in _vote_settings):
+			_vote_settings["voter_eligibility"] = {}
+		(_vote_settings["voter_eligibility"] as Dictionary)[type_id] = {"mode": new_mode, "roles": new_roles}
+		_save_vote_settings()
+		_vote_settings_refresh()
+		_refresh_vote_list()
+		dlg.queue_free()
+	)
+	dlg.canceled.connect(func(): dlg.queue_free())
+	add_child(dlg)
+	dlg.popup_centered()
 
 func _refresh_vote_list() -> void:
 	if not is_instance_valid(_vote_list):
@@ -4505,14 +4802,22 @@ func _refresh_vote_list() -> void:
 				vl.add_theme_color_override("font_color", Color(0.4, 0.7, 1.0))
 				cvbox.add_child(vl)
 		else:
-			var btn_row := HBoxContainer.new()
-			for opt: String in options:
-				var obtn := Button.new()
-				obtn.text = opt
-				var cap_i := i; var cap_opt := opt
-				obtn.pressed.connect(func(): _cast_vote(cap_i, cap_opt))
-				btn_row.add_child(obtn)
-			cvbox.add_child(btn_row)
+			var vtype: String = vote.get("type", "general") as String
+			if _can_vote_on(vtype):
+				var btn_row := HBoxContainer.new()
+				for opt: String in options:
+					var obtn := Button.new()
+					obtn.text = opt
+					var cap_i := i; var cap_opt := opt
+					obtn.pressed.connect(func(): _cast_vote(cap_i, cap_opt))
+					btn_row.add_child(obtn)
+				cvbox.add_child(btn_row)
+			else:
+				var no_vote_lbl := Label.new()
+				no_vote_lbl.text = "Your role is not eligible to vote on this."
+				no_vote_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+				no_vote_lbl.add_theme_font_size_override("font_size", 11)
+				cvbox.add_child(no_vote_lbl)
 		# Footer row: meta + comment toggle
 		var footer := HBoxContainer.new()
 		var meta := Label.new()
@@ -4720,16 +5025,23 @@ func _refresh_vote_list() -> void:
 		var already_yes: bool = username in yes_list
 		var already_no: bool = username in no_list
 		if not already_yes and not already_no:
-			var btn_row := HBoxContainer.new()
-			var yes_btn := Button.new()
-			yes_btn.text = "👍 For"
-			yes_btn.pressed.connect(func(): _docs_vote_cast(cap_si, true))
-			var no_btn := Button.new()
-			no_btn.text = "👎 Against"
-			no_btn.pressed.connect(func(): _docs_vote_cast(cap_si, false))
-			btn_row.add_child(yes_btn)
-			btn_row.add_child(no_btn)
-			cvbox.add_child(btn_row)
+			if _can_vote_on("doc_suggestion"):
+				var btn_row := HBoxContainer.new()
+				var yes_btn := Button.new()
+				yes_btn.text = "👍 For"
+				yes_btn.pressed.connect(func(): _docs_vote_cast(cap_si, true))
+				var no_btn := Button.new()
+				no_btn.text = "👎 Against"
+				no_btn.pressed.connect(func(): _docs_vote_cast(cap_si, false))
+				btn_row.add_child(yes_btn)
+				btn_row.add_child(no_btn)
+				cvbox.add_child(btn_row)
+			else:
+				var no_vote_lbl := Label.new()
+				no_vote_lbl.text = "Your role is not eligible to vote on this."
+				no_vote_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+				no_vote_lbl.add_theme_font_size_override("font_size", 11)
+				cvbox.add_child(no_vote_lbl)
 		else:
 			var voted_row := HBoxContainer.new()
 			var voted_lbl := Label.new()
@@ -6619,6 +6931,14 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 				_gd_save_config()
 				if _gd_selected >= 0 and is_instance_valid(_gd_detail):
 					_gd_show_detail(_gd_selected)
+
+	if "vote_settings.json" in data:
+		var parsed: Variant = JSON.parse_string(data["vote_settings.json"])
+		if parsed is Dictionary:
+			_vote_settings = parsed as Dictionary
+			_save_vote_settings()
+			if is_instance_valid(_vote_settings_list):
+				_vote_settings_refresh()
 
 	if "asset_meta.json" in data:
 		var parsed: Variant = JSON.parse_string(data["asset_meta.json"])
@@ -9134,14 +9454,21 @@ func _docs_review_build(full_path: String) -> void:
 			var already_yes: bool = me in yes_list
 			var already_no: bool = me in no_list
 			if not already_yes and not already_no:
-				var yes_btn := Button.new()
-				yes_btn.text = "👍 For"
-				yes_btn.pressed.connect(func(): _docs_vote_cast(cap_i, true))
-				var no_btn := Button.new()
-				no_btn.text = "👎 Against"
-				no_btn.pressed.connect(func(): _docs_vote_cast(cap_i, false))
-				vote_row.add_child(yes_btn)
-				vote_row.add_child(no_btn)
+				if _can_vote_on("doc_suggestion"):
+					var yes_btn := Button.new()
+					yes_btn.text = "👍 For"
+					yes_btn.pressed.connect(func(): _docs_vote_cast(cap_i, true))
+					var no_btn := Button.new()
+					no_btn.text = "👎 Against"
+					no_btn.pressed.connect(func(): _docs_vote_cast(cap_i, false))
+					vote_row.add_child(yes_btn)
+					vote_row.add_child(no_btn)
+				else:
+					var ne_lbl := Label.new()
+					ne_lbl.text = "Not eligible to vote"
+					ne_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+					ne_lbl.add_theme_font_size_override("font_size", 11)
+					vote_row.add_child(ne_lbl)
 			else:
 				var voted_lbl := Label.new()
 				voted_lbl.text = "Your vote: " + ("👍" if already_yes else "👎")
