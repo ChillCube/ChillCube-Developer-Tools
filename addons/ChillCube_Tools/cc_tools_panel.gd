@@ -14759,11 +14759,29 @@ func _vault_folder_perm_dialog(folder_key: String) -> void:
 		info_lbl.add_theme_font_size_override("font_size", 11)
 		vb.add_child(info_lbl)
 
-	if not _perm_has("vault.manage_folder_rules"):
+	# Check global permission AND the folder's own "change" rule
+	var change_check := _vault_folder_check(folder_key.rstrip("/"), "change")
+	var can_edit: bool = _perm_has("vault.manage_folder_rules") and change_check == "ok"
+
+	if not can_edit:
 		var lock_lbl := Label.new()
-		lock_lbl.text = "You don't have permission to change folder rules."
+		if change_check == "vote_required":
+			lock_lbl.text = "Changing this folder's rules requires a team vote."
+			var propose_btn := Button.new()
+			propose_btn.text = "⚡ Propose vote to change rules"
+			propose_btn.pressed.connect(func():
+				_vault_propose_vote("change", folder_key.rstrip("/"), "")
+				dlg.queue_free()
+			)
+			vb.add_child(lock_lbl)
+			vb.add_child(propose_btn)
+		elif not _perm_has("vault.manage_folder_rules"):
+			lock_lbl.text = "You don't have permission to change folder rules."
+			vb.add_child(lock_lbl)
+		else:
+			lock_lbl.text = "You don't have access to change this folder's rules."
+			vb.add_child(lock_lbl)
 		lock_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
-		vb.add_child(lock_lbl)
 		dlg.get_ok_button().text = "Close"
 		add_child(dlg)
 		dlg.popup_centered()
@@ -14876,7 +14894,7 @@ func _vault_folder_perm_dialog(folder_key: String) -> void:
 		vb.add_child(remove_btn)
 
 	dlg.confirmed.connect(func():
-		if not _perm_has("vault.manage_folder_rules"):
+		if not _perm_has("vault.manage_folder_rules") or _vault_folder_check(folder_key.rstrip("/"), "change") != "ok":
 			dlg.queue_free()
 			return
 		var new_rule: Dictionary = {}
