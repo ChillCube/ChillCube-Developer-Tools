@@ -4122,7 +4122,9 @@ func _cc_data_bundle() -> Dictionary:
 		"elections.json": JSON.stringify(_election_data, "\t") + "\n",
 		"role_permissions.json": JSON.stringify({"perms": _role_permissions}, "\t") + "\n",
 		"gdd_config.json": JSON.stringify({"fields": _gd_custom_fields}, "\t") + "\n",
-		"vote_settings.json": JSON.stringify(_vote_settings, "\t") + "\n"
+		"vote_settings.json": JSON.stringify(_vote_settings, "\t") + "\n",
+		"game_design.json": JSON.stringify(_gd_docs, "\t") + "\n",
+		"bundles.json": JSON.stringify(_bundles, "\t") + "\n"
 	}
 
 func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
@@ -7125,6 +7127,22 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 			_save_vote_settings()
 			if is_instance_valid(_perm_list) and _perm_sel_category == "Vote Settings":
 				_perm_refresh_list()
+
+	if "game_design.json" in data:
+		var parsed: Variant = JSON.parse_string(data["game_design.json"])
+		if parsed is Array:
+			_gd_docs = parsed as Array
+			_gd_save_docs()
+			_gd_rebuild_list()
+
+	if "bundles.json" in data:
+		var parsed: Variant = JSON.parse_string(data["bundles.json"])
+		if parsed is Array:
+			_bundles = parsed as Array
+			var fw_b := FileAccess.open("user://cc_bundles.json", FileAccess.WRITE)
+			if fw_b:
+				fw_b.store_string(JSON.stringify(_bundles, "\t") + "\n")
+				fw_b.close()
 
 	if "asset_meta.json" in data:
 		var parsed: Variant = JSON.parse_string(data["asset_meta.json"])
@@ -15528,6 +15546,7 @@ func _gd_save_docs() -> void:
 	if f:
 		f.store_string(JSON.stringify(_gd_docs, "\t"))
 		f.close()
+	_activity_auto_push()
 
 func _gd_avg_rating(doc: Dictionary) -> float:
 	var ratings: Array = doc.get("ratings", [])
