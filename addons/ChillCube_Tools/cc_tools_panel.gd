@@ -374,7 +374,7 @@ const PERM_DEFS: Array = [
 	{"key": "gdd.edit_fields",  "display": "Configure GDD fields",     "desc": "Can add, remove, or edit the field definitions used in GDD entries.", "category": "Docs & GDD", "default_allowed": "leader", "default_change": "leader"},
 	# Vault & Assets
 	{"key": "vault.upload",  "display": "Upload vault files",   "desc": "Can upload files to the shared vault.",                           "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
-	{"key": "vault.delete",  "display": "Delete vault files",   "desc": "Can delete files from the shared vault.",                         "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "vault.archive", "display": "Archive vault files",  "desc": "Can archive files and folders from the shared vault.",            "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
 	{"key": "vault.mkdir",        "display": "Create vault folders",       "desc": "Can create new folders in the shared vault.",                                  "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
 	# Planning
 	{"key": "todo.create",   "display": "Create to-do items",   "desc": "Can add new items to the shared to-do list.",                     "category": "Planning", "default_allowed": "anyone", "default_change": "leader"},
@@ -7221,30 +7221,34 @@ func _vault_navigate(rel: String) -> void:
 		)
 		folder_row.add_child(ren_folder_btn)
 
-		# Delete folder button
-		var del_folder_btn := Button.new()
-		del_folder_btn.text = "🗑"
-		del_folder_btn.tooltip_text = "Delete folder and all its contents"
-		del_folder_btn.flat = true
-		del_folder_btn.custom_minimum_size = Vector2(26, 0)
-		del_folder_btn.pressed.connect(func():
+		# Archive folder button
+		var arc_folder_btn := Button.new()
+		arc_folder_btn.text = "📦"
+		arc_folder_btn.tooltip_text = "Archive folder — moves all contents to _archive/YYYY/MM/"
+		arc_folder_btn.flat = true
+		arc_folder_btn.custom_minimum_size = Vector2(26, 0)
+		arc_folder_btn.pressed.connect(func():
+			if not _perm_gate("vault.archive"):
+				return
 			var confirm := ConfirmationDialog.new()
 			confirm.exclusive = false
-			confirm.dialog_text = 'Delete folder "%s" and all its contents?' % cap_folder
+			confirm.dialog_text = 'Archive folder "%s"?\nAll files will be moved to _archive/YYYY/MM/.' % cap_folder
 			confirm.confirmed.connect(func():
-				_vault_status_lbl.text = "Deleting folder…"
+				_vault_status_lbl.text = "Archiving folder…"
 				_vault_thread = Thread.new()
 				var cache2 := _vault_cache
-				var cap_folder_del := cap_folder
+				var cap_folder_arc := cap_folder
 				_vault_thread.start(func():
-					var log_del := func(_m): pass
+					var log_arc := func(msg): call_deferred("_append_log", _vault_log, msg)
+					var dt2 := Time.get_datetime_dict_from_system()
 					var all_files2 := Ops.vault_list_files(cache2)
-					var prefix2 := cap_folder_del.rstrip("/") + "/"
+					var prefix2 := cap_folder_arc.rstrip("/") + "/"
 					for f2: String in all_files2:
 						if f2.begins_with(prefix2):
-							Ops.vault_delete_file(f2, log_del)
-					Ops.vault_refresh(cache2, log_del)
-					call_deferred("_vault_after_manage_named", "folder_deleted", 'Deleted folder "%s"' % cap_folder_del)
+							var dest2: String = "_archive/%04d/%02d/%s" % [dt2.year, dt2.month, f2.get_file()]
+							Ops.vault_move_file(f2, dest2, log_arc)
+					Ops.vault_refresh(cache2, log_arc)
+					call_deferred("_vault_after_manage_named", "asset_deleted", 'Archived folder "%s"' % cap_folder_arc)
 				)
 				confirm.queue_free()
 			)
@@ -7252,7 +7256,7 @@ func _vault_navigate(rel: String) -> void:
 			add_child(confirm)
 			confirm.popup_centered()
 		)
-		folder_row.add_child(del_folder_btn)
+		folder_row.add_child(arc_folder_btn)
 
 		_vault_browser.add_child(folder_row)
 
@@ -7691,7 +7695,7 @@ func _vault_confirm_delete(rel_path: String) -> void:
 	_vault_delete_dialog.popup_centered()
 
 func _vault_do_archive() -> void:
-	if not _perm_gate("vault.delete"):
+	if not _perm_gate("vault.archive"):
 		return
 	if _vault_pending_delete.is_empty():
 		return
