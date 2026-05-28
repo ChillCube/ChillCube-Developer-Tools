@@ -350,7 +350,6 @@ var _vault_folder_perms: Dictionary = {}      # vault_rel_path -> {allowed_by, a
 var _perm_sel_category: String = ""
 var _perm_list: VBoxContainer = null
 var _perm_status_lbl: Label = null
-var _asset_perm_list: VBoxContainer = null
 
 # Permission definitions — { key, display, desc, category, default_allowed, default_change }
 const PERM_DEFS: Array = [
@@ -6351,18 +6350,10 @@ func _forum_prompt_new_thread() -> void:
 	dialog.popup_centered()
 
 func _build_vault_tab(tabs: TabContainer) -> void:
+	_build_vault_browser_tab(tabs)
+
+func _build_vault_browser_tab(tabs: TabContainer) -> void:
 	var root := _vbox("Assets", tabs)
-
-	var inner_tabs := TabContainer.new()
-	inner_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	inner_tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	root.add_child(inner_tabs)
-
-	_build_vault_browser_tab(inner_tabs)
-	_build_asset_perms_tab(inner_tabs)
-
-func _build_vault_browser_tab(inner_tabs: TabContainer) -> void:
-	var root := _vbox("Browser", inner_tabs)
 
 	# ── Top bar ───────────────────────────────────────────────────────────────
 	var top := HBoxContainer.new()
@@ -6918,8 +6909,8 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 			_save_role_permissions()
 			if is_instance_valid(_perm_list):
 				_perm_refresh_list()
-			if is_instance_valid(_asset_perm_list):
-				_asset_perm_refresh()
+			if is_instance_valid(_vault_browser):
+				_vault_navigate(_vault_current_dir)
 			_apply_tab_permissions()
 
 	if "gdd_config.json" in data:
@@ -7077,6 +7068,41 @@ func _vault_navigate(rel: String) -> void:
 			_vault_move_dialog.popup_centered()
 		)
 		folder_row.add_child(ren_folder_btn)
+
+		# Per-folder permission button
+		var folder_key := cap_folder + "/"
+		var has_own_rule: bool = folder_key in _vault_folder_perms
+		var effective_perm: Dictionary = {}
+		var inherited_from := ""
+		if has_own_rule:
+			effective_perm = _vault_folder_perms[folder_key] as Dictionary
+		else:
+			var longest := ""
+			for fk: String in _vault_folder_perms:
+				if folder_key.begins_with(fk) and fk.length() > longest.length():
+					longest = fk
+			if not longest.is_empty():
+				effective_perm = _vault_folder_perms[longest] as Dictionary
+				inherited_from = longest
+		var lock_btn := Button.new()
+		lock_btn.flat = true
+		lock_btn.custom_minimum_size = Vector2(26, 0)
+		if has_own_rule:
+			lock_btn.text = "🔒"
+			lock_btn.add_theme_color_override("font_color", Color(0.4, 0.75, 1.0))
+			lock_btn.tooltip_text = "Permission: " + _perm_folder_summary(effective_perm) + "\nClick to edit or remove"
+		elif not effective_perm.is_empty():
+			lock_btn.text = "🔒"
+			lock_btn.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+			lock_btn.tooltip_text = "Inherited from: " + inherited_from + "\n(" + _perm_folder_summary(effective_perm) + ")\nClick to set an override"
+		else:
+			lock_btn.text = "🔓"
+			lock_btn.add_theme_color_override("font_color", Color(0.35, 0.35, 0.35))
+			lock_btn.tooltip_text = "No restriction (anyone). Click to add a rule."
+		var cap_fkey := folder_key
+		lock_btn.pressed.connect(func(): _vault_folder_perm_dialog(cap_fkey))
+		folder_row.add_child(lock_btn)
+
 		_vault_browser.add_child(folder_row)
 
 	for file: String in files:
@@ -14504,6 +14530,144 @@ func _perm_folder_summary(fperm: Dictionary) -> String:
 			return "🏅 " + ", ".join(PackedStringArray(roles))
 	return "?"
 
+func _vault_folder_perm_dialog(folder_key: String) -> void:
+	var has_own: bool = folder_key in _vault_folder_perms
+	var display_name := folder_key.rstrip("/")
+
+	var dlg := AcceptDialog.new()
+	dlg.exclusive = false
+	dlg.title = "Permissions: " + (display_name if not display_name.is_empty() else "/")
+	dlg.size = Vector2i(400, 320)
+	var vb := VBoxContainer.new()
+	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vb.add_theme_constant_override("separation", 8)
+	dlg.add_child(vb)
+
+	# Inheritance info
+	var inherited_from := ""
+	var inherited_perm: Dictionary = {}
+	if not has_own:
+		var longest := ""
+		for fk: String in _vault_folder_perms:
+			if folder_key.begins_with(fk) and fk.length() > longest.length():
+				longest = fk
+		if not longest.is_empty():
+			inherited_from = longest
+			inherited_perm = _vault_folder_perms[longest] as Dictionary
+
+	var info_lbl := Label.new()
+	if has_own:
+		info_lbl.text = "This folder has its own permission rule."
+		info_lbl.add_theme_color_override("font_color", Color(0.4, 0.75, 1.0))
+	elif not inherited_from.is_empty():
+		info_lbl.text = "Inheriting from: " + inherited_from + "\n(" + _perm_folder_summary(inherited_perm) + ")"
+		info_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	else:
+		info_lbl.text = "No rule — anyone can access. Set an override below."
+		info_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	info_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(info_lbl)
+	vb.add_child(HSeparator.new())
+
+	if not _perm_has("vault.manage_folder_rules"):
+		var lock_lbl := Label.new()
+		lock_lbl.text = "You don't have permission to change folder rules."
+		lock_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+		vb.add_child(lock_lbl)
+		dlg.get_ok_button().text = "Close"
+		add_child(dlg)
+		dlg.popup_centered()
+		dlg.confirmed.connect(func(): dlg.queue_free())
+		return
+
+	# Edit access section (reuses _perm_open_access_dialog logic inline)
+	var working_perm: Dictionary
+	if has_own:
+		working_perm = (_vault_folder_perms[folder_key] as Dictionary).duplicate(true)
+	elif not inherited_perm.is_empty():
+		working_perm = inherited_perm.duplicate(true)
+	else:
+		working_perm = {"allowed_by": "anyone", "allowed_roles": []}
+
+	var set_lbl := Label.new()
+	set_lbl.text = "Set override for this folder:"
+	set_lbl.add_theme_font_size_override("font_size", 12)
+	vb.add_child(set_lbl)
+
+	var mode_hb := HBoxContainer.new()
+	var any_btn := Button.new()
+	any_btn.text = "Anyone"
+	any_btn.toggle_mode = true
+	var leader_btn := Button.new()
+	leader_btn.text = "Leader only"
+	leader_btn.toggle_mode = true
+	var role_btn2 := Button.new()
+	role_btn2.text = "Specific roles"
+	role_btn2.toggle_mode = true
+
+	var cur_mode: String = working_perm.get("allowed_by", "anyone") as String
+	any_btn.button_pressed = (cur_mode == "anyone")
+	leader_btn.button_pressed = (cur_mode == "leader")
+	role_btn2.button_pressed = (cur_mode == "role")
+
+	var _deselect_mode := func():
+		any_btn.button_pressed = false
+		leader_btn.button_pressed = false
+		role_btn2.button_pressed = false
+	any_btn.pressed.connect(func(): _deselect_mode.call(); any_btn.button_pressed = true)
+	leader_btn.pressed.connect(func(): _deselect_mode.call(); leader_btn.button_pressed = true)
+	role_btn2.pressed.connect(func(): _deselect_mode.call(); role_btn2.button_pressed = true)
+
+	mode_hb.add_child(any_btn)
+	mode_hb.add_child(leader_btn)
+	mode_hb.add_child(role_btn2)
+	vb.add_child(mode_hb)
+
+	var roles_lbl2 := Label.new()
+	roles_lbl2.text = "Roles (one per line, for 'Specific roles' mode):"
+	roles_lbl2.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	roles_lbl2.add_theme_font_size_override("font_size", 11)
+	vb.add_child(roles_lbl2)
+	var roles_edit2 := TextEdit.new()
+	roles_edit2.custom_minimum_size = Vector2(0, 60)
+	roles_edit2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var cur_roles2: Array = working_perm.get("allowed_roles", []) as Array
+	roles_edit2.text = "\n".join(PackedStringArray(cur_roles2))
+	vb.add_child(roles_edit2)
+
+	if has_own:
+		var remove_btn := Button.new()
+		remove_btn.text = "🗑 Remove override (inherit from parent)"
+		remove_btn.add_theme_color_override("font_color", Color(0.9, 0.45, 0.45))
+		remove_btn.pressed.connect(func():
+			_vault_folder_perms.erase(folder_key)
+			_save_role_permissions()
+			_vault_navigate(_vault_current_dir)
+			dlg.queue_free()
+		)
+		vb.add_child(remove_btn)
+
+	dlg.confirmed.connect(func():
+		if not _perm_has("vault.manage_folder_rules"):
+			dlg.queue_free()
+			return
+		var new_mode := "anyone"
+		if leader_btn.button_pressed: new_mode = "leader"
+		elif role_btn2.button_pressed: new_mode = "role"
+		var new_roles: Array = []
+		for line: String in roles_edit2.text.split("\n"):
+			var r := line.strip_edges()
+			if not r.is_empty():
+				new_roles.append(r)
+		_vault_folder_perms[folder_key] = {"allowed_by": new_mode, "allowed_roles": new_roles}
+		_save_role_permissions()
+		_vault_navigate(_vault_current_dir)
+		dlg.queue_free()
+	)
+	dlg.canceled.connect(func(): dlg.queue_free())
+	add_child(dlg)
+	dlg.popup_centered()
+
 func _perm_open_folder_dialog(folder: String) -> void:
 	var fperm: Dictionary = (_vault_folder_perms.get(folder, {"allowed_by": "anyone", "allowed_roles": []}) as Dictionary).duplicate(true)
 	_perm_open_access_dialog(
@@ -14512,96 +14676,14 @@ func _perm_open_folder_dialog(folder: String) -> void:
 		func(new_perm: Dictionary):
 			_vault_folder_perms[folder] = new_perm
 			_save_role_permissions()
-			_asset_perm_refresh()
+			_vault_navigate(_vault_current_dir)
 	)
 
-func _build_asset_perms_tab(inner_tabs: TabContainer) -> void:
-	var root := _vbox("Asset Permissions", inner_tabs)
-
-	var intro := Label.new()
-	intro.text = "Restrict which roles can upload/delete files in specific asset folders. More-specific paths take priority. Leave blank to allow everyone."
-	intro.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-	intro.add_theme_font_size_override("font_size", 11)
-	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	root.add_child(intro)
-	root.add_child(HSeparator.new())
-
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_asset_perm_list = VBoxContainer.new()
-	_asset_perm_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_asset_perm_list.add_theme_constant_override("separation", 6)
-	scroll.add_child(_asset_perm_list)
-	root.add_child(scroll)
-
-	call_deferred("_asset_perm_refresh")
+func _build_asset_perms_tab(_unused: TabContainer) -> void:
+	pass  # permissions moved to per-folder buttons in the browser
 
 func _asset_perm_refresh() -> void:
-	if not is_instance_valid(_asset_perm_list):
-		return
-	for c in _asset_perm_list.get_children():
-		c.queue_free()
-
-	var can_manage: bool = _perm_has("vault.manage_folder_rules")
-
-	for folder: String in _vault_folder_perms:
-		var cap_folder := folder
-		var fperm: Dictionary = _vault_folder_perms[folder] as Dictionary
-		var panel := PanelContainer.new()
-		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var row := HBoxContainer.new()
-		panel.add_child(row)
-		var flbl := Label.new()
-		flbl.text = "📁 " + folder
-		flbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(flbl)
-		var badge := _perm_badge(_perm_folder_summary(fperm), Color(0.3, 0.55, 0.85))
-		row.add_child(badge)
-		if can_manage:
-			var edit_btn := Button.new()
-			edit_btn.text = "✏"
-			edit_btn.flat = true
-			edit_btn.pressed.connect(func(): _perm_open_folder_dialog(cap_folder))
-			row.add_child(edit_btn)
-			var del_btn := Button.new()
-			del_btn.text = "🗑"
-			del_btn.flat = true
-			del_btn.pressed.connect(func():
-				_vault_folder_perms.erase(cap_folder)
-				_save_role_permissions()
-				_asset_perm_refresh()
-			)
-			row.add_child(del_btn)
-		_asset_perm_list.add_child(panel)
-
-	if _vault_folder_perms.is_empty():
-		var empty_lbl := Label.new()
-		empty_lbl.text = "No folder rules yet."
-		empty_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
-		_asset_perm_list.add_child(empty_lbl)
-
-	if can_manage:
-		_asset_perm_list.add_child(HSeparator.new())
-		var add_row := HBoxContainer.new()
-		var add_input := LineEdit.new()
-		add_input.placeholder_text = "folder/path (e.g. textures/)"
-		add_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		add_row.add_child(add_input)
-		var add_btn := Button.new()
-		add_btn.text = "+ Add Rule"
-		add_btn.pressed.connect(func():
-			if not _perm_has("vault.manage_folder_rules"):
-				return
-			var p := add_input.text.strip_edges()
-			if p.is_empty(): return
-			if not p.ends_with("/"): p += "/"
-			_vault_folder_perms[p] = {"allowed_by": "anyone", "allowed_roles": []}
-			_save_role_permissions()
-			_asset_perm_refresh()
-		)
-		add_row.add_child(add_btn)
-		_asset_perm_list.add_child(add_row)
+	pass  # permissions refreshed by _vault_navigate
 
 func _perm_open_edit_dialog(key: String, def: Dictionary) -> void:
 	var cur := _perm_get(key).duplicate(true)
