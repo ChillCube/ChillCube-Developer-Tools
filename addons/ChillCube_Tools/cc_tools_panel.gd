@@ -4410,6 +4410,26 @@ func _apply_vote_effects(vote: Dictionary) -> void:
 			_save_vote_settings()
 			if is_instance_valid(_perm_list) and _perm_sel_category == "Vote Settings":
 				_perm_refresh_list()
+		"disable_vote_settings_lock":
+			if result != "yes":
+				return
+			_vote_settings["vote_settings_locked"] = false
+			_save_vote_settings()
+			if is_instance_valid(_perm_list) and _perm_sel_category == "Vote Settings":
+				_perm_refresh_list()
+		"change_voter_eligibility":
+			if result != "yes":
+				return
+			var elig_type: String = vote.get("target_type", "") as String
+			var new_mode: String = vote.get("new_mode", "anyone") as String
+			var new_roles: Array = vote.get("new_roles", []) as Array
+			if not ("voter_eligibility" in _vote_settings):
+				_vote_settings["voter_eligibility"] = {}
+			(_vote_settings["voter_eligibility"] as Dictionary)[elig_type] = {"mode": new_mode, "roles": new_roles}
+			_save_vote_settings()
+			_refresh_vote_list()
+			if is_instance_valid(_perm_list) and _perm_sel_category == "Vote Settings":
+				_perm_refresh_list()
 		"change_permission":
 			# Only apply if the vote passed (result == "yes")
 			if result != "yes":
@@ -4539,6 +4559,66 @@ func _vote_settings_refresh() -> void:
 		c.queue_free()
 
 	var can_configure: bool = _perm_has("vote.configure")
+	var settings_locked: bool = _vote_settings.get("vote_settings_locked", false)
+	var can_edit: bool = can_configure and not settings_locked
+
+	# ── Global vote-settings lock toggle ─────────────────────────────────────
+	var glock_vb := VBoxContainer.new()
+	glock_vb.add_theme_constant_override("separation", 4)
+	var glock_row := HBoxContainer.new()
+	var glock_lbl := Label.new()
+	glock_lbl.text = "Require a vote to change voting settings"
+	glock_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	glock_row.add_child(glock_lbl)
+	if can_configure:
+		if settings_locked:
+			var glock_chk := CheckBox.new()
+			glock_chk.button_pressed = true
+			glock_chk.disabled = true
+			glock_row.add_child(glock_chk)
+			var gdisable_btn := Button.new()
+			gdisable_btn.text = "🗳 Propose vote to disable"
+			gdisable_btn.flat = false
+			gdisable_btn.add_theme_font_size_override("font_size", 11)
+			gdisable_btn.pressed.connect(func():
+				var gvote: Dictionary = {
+					"id": str(int(Time.get_unix_time_from_system())),
+					"title": "Disable vote requirement for voting settings changes",
+					"description": "Proposed by @%s. If approved, voting settings can be changed directly without a vote." % _current_user.get("username", "?"),
+					"type": "disable_vote_settings_lock",
+					"created_by": _current_user.get("username", "?"),
+					"created_at": Time.get_datetime_string_from_system(),
+					"deadline": "",
+					"options": ["yes", "no"],
+					"votes": {},
+					"closed": false
+				}
+				_vote_items.insert(0, gvote)
+				_save_votes()
+				_log_activity("vote_created", 'Vote opened: "Disable voting settings lock"')
+				_refresh_vote_list()
+			)
+			glock_row.add_child(gdisable_btn)
+		else:
+			var glock_chk := CheckBox.new()
+			glock_chk.button_pressed = false
+			glock_chk.pressed.connect(func():
+				if glock_chk.button_pressed:
+					_vote_settings["vote_settings_locked"] = true
+					_save_vote_settings()
+					_vote_settings_refresh()
+				else:
+					glock_chk.button_pressed = false
+			)
+			glock_row.add_child(glock_chk)
+	else:
+		var glock_val := Label.new()
+		glock_val.text = "Yes" if settings_locked else "No"
+		glock_val.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+		glock_row.add_child(glock_val)
+	glock_vb.add_child(glock_row)
+	_perm_list.add_child(glock_vb)
+	_perm_list.add_child(HSeparator.new())
 
 	# ── Voter eligibility ─────────────────────────────────────────────────────
 	var elig_hdr := Label.new()
@@ -4583,7 +4663,7 @@ func _vote_settings_refresh() -> void:
 		var badge := _perm_badge(badge_text, Color(0.3, 0.6, 0.9))
 		top.add_child(badge)
 
-		if can_configure:
+		if can_edit:
 			var edit_btn := Button.new()
 			edit_btn.text = "✏"
 			edit_btn.flat = true
@@ -4591,6 +4671,16 @@ func _vote_settings_refresh() -> void:
 			var cap_label := type_label
 			edit_btn.pressed.connect(func(): _vote_elig_open_dialog(cap_id, cap_label))
 			top.add_child(edit_btn)
+		elif can_configure and settings_locked:
+			var prop_elig_btn := Button.new()
+			prop_elig_btn.text = "🗳 Propose Change"
+			prop_elig_btn.flat = false
+			prop_elig_btn.add_theme_font_size_override("font_size", 11)
+			var cap_id2 := type_id
+			var cap_label2 := type_label
+			var cap_cfg := cfg.duplicate(true)
+			prop_elig_btn.pressed.connect(func(): _vote_propose_eligibility_change(cap_id2, cap_label2, cap_cfg))
+			top.add_child(prop_elig_btn)
 		vb.add_child(top)
 		_perm_list.add_child(row)
 
@@ -4627,7 +4717,7 @@ func _vote_settings_refresh() -> void:
 		ilbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		irow.add_child(ilbl)
 
-		if inact_locked:
+		if inact_locked or settings_locked:
 			var days_badge := Label.new()
 			days_badge.text = ("Off" if cur_days == 0 else "%d days" % cur_days)
 			days_badge.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
@@ -4641,7 +4731,7 @@ func _vote_settings_refresh() -> void:
 				var cap_days := cur_days
 				prop_btn.pressed.connect(func(): _vote_propose_inactivity_change(cap_iid, cap_ilbl, cap_days))
 				irow.add_child(prop_btn)
-		elif can_configure:
+		elif can_edit:
 			var spin2 := SpinBox.new()
 			spin2.min_value = 0
 			spin2.max_value = 365
@@ -4800,6 +4890,97 @@ func _vote_elig_open_dialog(type_id: String, type_label: String) -> void:
 		(_vote_settings["voter_eligibility"] as Dictionary)[type_id] = {"mode": new_mode, "roles": new_roles}
 		_save_vote_settings()
 		_vote_settings_refresh()
+		_refresh_vote_list()
+		dlg.queue_free()
+	)
+	dlg.canceled.connect(func(): dlg.queue_free())
+	add_child(dlg)
+	dlg.popup_centered()
+
+func _vote_propose_eligibility_change(type_id: String, type_label: String, cur_cfg: Dictionary) -> void:
+	var dlg := AcceptDialog.new()
+	dlg.exclusive = false
+	dlg.title = "Propose eligibility change: " + type_label
+	dlg.size = Vector2i(380, 300)
+	var vb := VBoxContainer.new()
+	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vb.add_theme_constant_override("separation", 8)
+	dlg.add_child(vb)
+
+	var hint := Label.new()
+	hint.text = "Propose a voter eligibility change for %s. A vote will open for the team to approve it." % type_label
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	hint.add_theme_font_size_override("font_size", 11)
+	vb.add_child(hint)
+
+	var mode_lbl := Label.new()
+	mode_lbl.text = "Who can vote?"
+	vb.add_child(mode_lbl)
+
+	var anyone_btn := Button.new()
+	anyone_btn.text = "Anyone (all signed-in members)"
+	anyone_btn.toggle_mode = true
+	var role_btn := Button.new()
+	role_btn.text = "Specific roles only"
+	role_btn.toggle_mode = true
+	var cur_mode: String = cur_cfg.get("mode", "anyone") as String
+	anyone_btn.button_pressed = (cur_mode == "anyone")
+	role_btn.button_pressed = (cur_mode == "role")
+	anyone_btn.pressed.connect(func():
+		anyone_btn.button_pressed = true
+		role_btn.button_pressed = false
+	)
+	role_btn.pressed.connect(func():
+		role_btn.button_pressed = true
+		anyone_btn.button_pressed = false
+	)
+	vb.add_child(anyone_btn)
+	vb.add_child(role_btn)
+
+	vb.add_child(HSeparator.new())
+	var roles_lbl := Label.new()
+	roles_lbl.text = "Eligible roles (one per line, used when 'Specific roles' is selected):"
+	roles_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	roles_lbl.add_theme_font_size_override("font_size", 11)
+	vb.add_child(roles_lbl)
+	var roles_edit := TextEdit.new()
+	roles_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	roles_edit.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	roles_edit.custom_minimum_size = Vector2(0, 60)
+	var cur_roles: Array = cur_cfg.get("roles", []) as Array
+	roles_edit.text = "\n".join(PackedStringArray(cur_roles))
+	vb.add_child(roles_edit)
+
+	dlg.confirmed.connect(func():
+		var new_mode := "anyone" if anyone_btn.button_pressed else "role"
+		var new_roles: Array = []
+		for line: String in roles_edit.text.split("\n"):
+			var r := line.strip_edges()
+			if not r.is_empty():
+				new_roles.append(r)
+		var vote_title: String = "Change voter eligibility: %s → %s" % [
+			type_label,
+			("Anyone" if new_mode == "anyone" else ("Roles: " + ", ".join(PackedStringArray(new_roles)) if not new_roles.is_empty() else "none"))
+		]
+		var vote: Dictionary = {
+			"id": str(int(Time.get_unix_time_from_system())),
+			"title": vote_title,
+			"description": "Proposed by @%s. Approve to apply the new eligibility for '%s' votes." % [_current_user.get("username", "?"), type_label],
+			"type": "change_voter_eligibility",
+			"target_type": type_id,
+			"new_mode": new_mode,
+			"new_roles": new_roles,
+			"created_by": _current_user.get("username", "?"),
+			"created_at": Time.get_datetime_string_from_system(),
+			"deadline": "",
+			"options": ["yes", "no"],
+			"votes": {},
+			"closed": false
+		}
+		_vote_items.insert(0, vote)
+		_save_votes()
+		_log_activity("vote_created", 'Vote opened: "%s"' % vote_title)
 		_refresh_vote_list()
 		dlg.queue_free()
 	)
