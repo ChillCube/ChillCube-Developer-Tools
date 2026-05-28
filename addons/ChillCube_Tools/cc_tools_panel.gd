@@ -244,7 +244,6 @@ var _activity_shown_count: int = 30           # how many items are currently ren
 var _vote_items: Array = []
 var _vote_list: VBoxContainer
 var _vote_settings: Dictionary = {}
-var _vote_settings_list: VBoxContainer = null
 var _decision_log_list: VBoxContainer
 var _decisions_status_lbl: Label
 var _decisions_create_box: VBoxContainer
@@ -264,6 +263,7 @@ var _schedule_edit_dialog: AcceptDialog
 var _schedule_edit_idx: int = -1
 var _schedule_edit_title: LineEdit
 var _schedule_edit_date: LineEdit
+var _schedule_edit_end_date: LineEdit
 var _schedule_edit_time: LineEdit
 var _schedule_edit_desc: TextEdit
 
@@ -346,7 +346,6 @@ var _election_roles_summary: VBoxContainer = null
 
 # ─── Role-based permissions ───────────────────────────────────────────────────
 var _role_permissions: Dictionary = {}        # perm_key -> {allowed_by, allowed_roles, change_by, ...}
-var _vault_folder_perms: Dictionary = {}      # vault_rel_path -> {allowed_by, allowed_roles}
 var _perm_sel_category: String = ""
 var _perm_list: VBoxContainer = null
 var _perm_status_lbl: Label = null
@@ -377,7 +376,6 @@ const PERM_DEFS: Array = [
 	{"key": "vault.upload",  "display": "Upload vault files",   "desc": "Can upload files to the shared vault.",                           "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
 	{"key": "vault.delete",  "display": "Delete vault files",   "desc": "Can delete files from the shared vault.",                         "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
 	{"key": "vault.mkdir",        "display": "Create vault folders",       "desc": "Can create new folders in the shared vault.",                                  "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
-	{"key": "vault.manage_folder_rules", "display": "Manage asset folder rules", "desc": "Can add, edit, or delete folder-level permission rules in the Assets tab.", "category": "Vault & Assets", "default_allowed": "leader", "default_change": "leader"},
 	# Planning
 	{"key": "todo.create",   "display": "Create to-do items",   "desc": "Can add new items to the shared to-do list.",                     "category": "Planning", "default_allowed": "anyone", "default_change": "leader"},
 	{"key": "todo.assign",   "display": "Assign tasks",         "desc": "Can assign to-do items to other users or roles.",                 "category": "Planning", "default_allowed": "anyone", "default_change": "leader"},
@@ -1016,7 +1014,10 @@ func _refresh_dashboard() -> void:
 	var unrsvped_events: Array = []
 	for ei in range(_schedule_items.size()):
 		var ev: Dictionary = _schedule_items[ei]
-		if (ev.get("date", "") as String) < today_str:
+		var ev_start_d: String = ev.get("date", "") as String
+		var ev_end_d: String = ev.get("end_date", "") as String
+		var ev_active: bool = (ev_end_d.is_empty() and ev_start_d >= today_str) or (not ev_end_d.is_empty() and ev_end_d >= today_str)
+		if not ev_active:
 			continue
 		var rsvp: Dictionary = ev.get("rsvp", {}) as Dictionary
 		if me not in rsvp:
@@ -4119,7 +4120,7 @@ func _cc_data_bundle() -> Dictionary:
 		"doc_suggestions.json": JSON.stringify(_docs_suggestions, "\t") + "\n",
 		"doc_comments.json": JSON.stringify(_docs_comments, "\t") + "\n",
 		"elections.json": JSON.stringify(_election_data, "\t") + "\n",
-		"role_permissions.json": JSON.stringify({"perms": _role_permissions, "vault_folders": _vault_folder_perms}, "\t") + "\n",
+		"role_permissions.json": JSON.stringify({"perms": _role_permissions}, "\t") + "\n",
 		"gdd_config.json": JSON.stringify({"fields": _gd_custom_fields}, "\t") + "\n",
 		"vote_settings.json": JSON.stringify(_vote_settings, "\t") + "\n"
 	}
@@ -4145,7 +4146,6 @@ func _build_team_supertab(tabs: TabContainer) -> void:
 	root.add_child(_team_inner_tabs)
 	_build_activity_tab(_team_inner_tabs)
 	_build_votes_tab(_team_inner_tabs)
-	_build_vote_settings_tab(_team_inner_tabs)
 	_build_decision_log_tab(_team_inner_tabs)
 	_build_schedule_tab(_team_inner_tabs)
 	_build_forum_tab(_team_inner_tabs)
@@ -4334,8 +4334,13 @@ func _can_vote_on(vote_type: String) -> bool:
 			return true
 	return false
 
-func _vote_active_member_count(all_users: Array) -> int:
-	var inactivity_days: int = int(_vote_settings.get("inactivity_days", 0))
+func _vote_active_member_count(all_users: Array, vote_type: String = "general") -> int:
+	var inact_per: Dictionary = _vote_settings.get("inactivity_per_type", {}) as Dictionary
+	var inactivity_days: int
+	if vote_type in inact_per:
+		inactivity_days = int(inact_per[vote_type])
+	else:
+		inactivity_days = int(_vote_settings.get("inactivity_days", 0))
 	if inactivity_days <= 0:
 		var total := 0
 		for u: Dictionary in all_users:
@@ -4385,42 +4390,17 @@ func _apply_vote_effects(vote: Dictionary) -> void:
 	var vtype: String = vote.get("type", "")
 	var result: String = vote.get("result", "")
 	match vtype:
-		"vault_archive":
+		"change_inactivity_days":
 			if result != "yes":
 				return
-			var target: String = vote.get("pending_target", "") as String
-			if target.is_empty() or _vault_cache.is_empty():
-				return
-			var dt := Time.get_datetime_dict_from_system()
-			var dest: String = "_archive/%04d/%02d/%s" % [dt.year, dt.month, target.get_file()]
-			_vault_thread = Thread.new()
-			var cache2 := _vault_cache
-			var cap_target := target
-			_vault_thread.start(func():
-				var log_fn2 := func(_m): pass
-				Ops.vault_move_file(cap_target, dest, log_fn2)
-				Ops.vault_refresh(cache2, log_fn2)
-				call_deferred("_vault_after_manage_named", "asset_deleted", 'Vote-approved archive: "%s"' % cap_target.get_file())
-			)
-		"vault_delete_folder":
-			if result != "yes":
-				return
-			var folder2: String = vote.get("pending_folder", "") as String
-			if folder2.is_empty() or _vault_cache.is_empty():
-				return
-			_vault_thread = Thread.new()
-			var cache3 := _vault_cache
-			var cap_folder2 := folder2
-			_vault_thread.start(func():
-				var log_fn3 := func(_m): pass
-				var all_files := Ops.vault_list_files(cache3)
-				var prefix3 := cap_folder2.rstrip("/") + "/"
-				for f3: String in all_files:
-					if f3.begins_with(prefix3):
-						Ops.vault_delete_file(f3, log_fn3)
-				Ops.vault_refresh(cache3, log_fn3)
-				call_deferred("_vault_after_manage_named", "folder_deleted", 'Vote-approved delete folder: "%s"' % cap_folder2)
-			)
+			var target_type2: String = vote.get("target_type", "") as String
+			var new_days2: int = int(vote.get("new_days", 0))
+			if not ("inactivity_per_type" in _vote_settings):
+				_vote_settings["inactivity_per_type"] = {}
+			(_vote_settings["inactivity_per_type"] as Dictionary)[target_type2] = new_days2
+			_save_vote_settings()
+			if is_instance_valid(_perm_list) and _perm_sel_category == "Vote Settings":
+				_perm_refresh_list()
 		"change_permission":
 			# Only apply if the vote passed (result == "yes")
 			if result != "yes":
@@ -4509,10 +4489,11 @@ func _cast_vote(vote_idx: int, option: String) -> void:
 	if _vote_thread and _vote_thread.is_started():
 		return
 	var cap_idx := vote_idx
+	var cap_vtype: String = (_vote_items[vote_idx] as Dictionary).get("type", "general") as String
 	_vote_thread = Thread.new()
 	_vote_thread.start(func():
 		var all_users := Ops.auth_fetch_all(Callable())
-		var member_count := _vote_active_member_count(all_users)
+		var member_count := _vote_active_member_count(all_users, cap_vtype)
 		call_deferred("_on_vote_member_count", cap_idx, member_count)
 	)
 
@@ -4542,32 +4523,10 @@ func _on_vote_member_count(vote_idx: int, member_count: int) -> void:
 			_refresh_vote_list()
 
 
-func _build_vote_settings_tab(tabs: TabContainer) -> void:
-	var root := _vbox("Vote Settings", tabs)
-
-	var intro := Label.new()
-	intro.text = "Configure who is eligible to vote on each vote type, and how long a member can be inactive before their vote is no longer needed for quorum."
-	intro.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-	intro.add_theme_font_size_override("font_size", 11)
-	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	root.add_child(intro)
-	root.add_child(HSeparator.new())
-
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_vote_settings_list = VBoxContainer.new()
-	_vote_settings_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_vote_settings_list.add_theme_constant_override("separation", 12)
-	scroll.add_child(_vote_settings_list)
-	root.add_child(scroll)
-
-	call_deferred("_vote_settings_refresh")
-
 func _vote_settings_refresh() -> void:
-	if not is_instance_valid(_vote_settings_list):
+	if not is_instance_valid(_perm_list):
 		return
-	for c in _vote_settings_list.get_children():
+	for c in _perm_list.get_children():
 		c.queue_free()
 
 	var can_configure: bool = _perm_has("vote.configure")
@@ -4576,14 +4535,14 @@ func _vote_settings_refresh() -> void:
 	var elig_hdr := Label.new()
 	elig_hdr.text = "Voter Eligibility"
 	elig_hdr.add_theme_font_size_override("font_size", 13)
-	_vote_settings_list.add_child(elig_hdr)
+	_perm_list.add_child(elig_hdr)
 
 	var elig_hint := Label.new()
 	elig_hint.text = "Set which roles can cast votes for each category. 'Anyone' means all signed-in members."
 	elig_hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
 	elig_hint.add_theme_font_size_override("font_size", 11)
 	elig_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_vote_settings_list.add_child(elig_hint)
+	_perm_list.add_child(elig_hint)
 
 	var vote_types: Array = [
 		{"id": "general",           "label": "General team votes"},
@@ -4624,56 +4583,108 @@ func _vote_settings_refresh() -> void:
 			edit_btn.pressed.connect(func(): _vote_elig_open_dialog(cap_id, cap_label))
 			top.add_child(edit_btn)
 		vb.add_child(top)
-		_vote_settings_list.add_child(row)
+		_perm_list.add_child(row)
 
-	_vote_settings_list.add_child(HSeparator.new())
+	_perm_list.add_child(HSeparator.new())
 
 	# ── Inactivity timeout ────────────────────────────────────────────────────
 	var inact_hdr := Label.new()
 	inact_hdr.text = "Inactivity Timeout"
 	inact_hdr.add_theme_font_size_override("font_size", 13)
-	_vote_settings_list.add_child(inact_hdr)
+	_perm_list.add_child(inact_hdr)
 
 	var inact_hint := Label.new()
-	inact_hint.text = "Members who haven't been active for this many days are excluded from the quorum count. Set to 0 to disable (everyone always counts)."
+	inact_hint.text = "Days without activity before a member is excluded from the quorum count (0 = always count). Each vote category can have its own threshold."
 	inact_hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
 	inact_hint.add_theme_font_size_override("font_size", 11)
 	inact_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_vote_settings_list.add_child(inact_hint)
+	_perm_list.add_child(inact_hint)
 
-	var inact_row := HBoxContainer.new()
-	var days_lbl := Label.new()
-	days_lbl.text = "Days before inactive:"
-	days_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	inact_row.add_child(days_lbl)
+	var inact_per: Dictionary = _vote_settings.get("inactivity_per_type", {}) as Dictionary
+	var inact_locked: bool = _vote_settings.get("inactivity_change_requires_vote", false)
 
-	var current_days: int = int(_vote_settings.get("inactivity_days", 0))
+	for vt2: Dictionary in vote_types:
+		var itype_id: String = vt2["id"] as String
+		var itype_label: String = vt2["label"] as String
+		var cur_days: int
+		if itype_id in inact_per:
+			cur_days = int(inact_per[itype_id])
+		else:
+			cur_days = int(_vote_settings.get("inactivity_days", 0))
+
+		var irow := HBoxContainer.new()
+		var ilbl := Label.new()
+		ilbl.text = itype_label
+		ilbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		irow.add_child(ilbl)
+
+		if inact_locked:
+			var days_badge := Label.new()
+			days_badge.text = ("Off" if cur_days == 0 else "%d days" % cur_days)
+			days_badge.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+			irow.add_child(days_badge)
+			if can_configure:
+				var prop_btn := Button.new()
+				prop_btn.text = "🗳 Propose Change"
+				prop_btn.flat = false
+				var cap_iid := itype_id
+				var cap_ilbl := itype_label
+				var cap_days := cur_days
+				prop_btn.pressed.connect(func(): _vote_propose_inactivity_change(cap_iid, cap_ilbl, cap_days))
+				irow.add_child(prop_btn)
+		elif can_configure:
+			var spin2 := SpinBox.new()
+			spin2.min_value = 0
+			spin2.max_value = 365
+			spin2.step = 1
+			spin2.value = cur_days
+			spin2.suffix = "days (0 = off)"
+			spin2.custom_minimum_size = Vector2(180, 0)
+			var cap_iid2 := itype_id
+			spin2.value_changed.connect(func(v2: float):
+				if not ("inactivity_per_type" in _vote_settings):
+					_vote_settings["inactivity_per_type"] = {}
+				(_vote_settings["inactivity_per_type"] as Dictionary)[cap_iid2] = int(v2)
+				_save_vote_settings()
+			)
+			irow.add_child(spin2)
+		else:
+			var val_lbl2 := Label.new()
+			val_lbl2.text = ("Off" if cur_days == 0 else "%d days" % cur_days)
+			val_lbl2.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+			irow.add_child(val_lbl2)
+		_perm_list.add_child(irow)
+
+	_perm_list.add_child(HSeparator.new())
+
+	# ── Require vote to change inactivity ─────────────────────────────────────
+	var req_row := HBoxContainer.new()
+	var req_lbl := Label.new()
+	req_lbl.text = "Require a vote to change inactivity thresholds"
+	req_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	req_row.add_child(req_lbl)
 	if can_configure:
-		var spin := SpinBox.new()
-		spin.min_value = 0
-		spin.max_value = 365
-		spin.step = 1
-		spin.value = current_days
-		spin.suffix = "days (0 = off)"
-		spin.custom_minimum_size = Vector2(180, 0)
-		spin.value_changed.connect(func(v: float):
-			_vote_settings["inactivity_days"] = int(v)
+		var req_chk := CheckBox.new()
+		req_chk.button_pressed = inact_locked
+		req_chk.pressed.connect(func():
+			_vote_settings["inactivity_change_requires_vote"] = req_chk.button_pressed
 			_save_vote_settings()
+			_vote_settings_refresh()
 		)
-		inact_row.add_child(spin)
+		req_row.add_child(req_chk)
 	else:
-		var val_lbl := Label.new()
-		val_lbl.text = ("Off" if current_days == 0 else "%d days" % current_days)
-		val_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
-		inact_row.add_child(val_lbl)
-	_vote_settings_list.add_child(inact_row)
+		var req_val := Label.new()
+		req_val.text = "Yes" if inact_locked else "No"
+		req_val.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+		req_row.add_child(req_val)
+	_perm_list.add_child(req_row)
 
 	if not can_configure:
 		var lock_lbl := Label.new()
 		lock_lbl.text = "You don't have permission to change vote settings."
 		lock_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
 		lock_lbl.add_theme_font_size_override("font_size", 11)
-		_vote_settings_list.add_child(lock_lbl)
+		_perm_list.add_child(lock_lbl)
 
 func _vote_elig_open_dialog(type_id: String, type_label: String) -> void:
 	var elig: Dictionary = _vote_settings.get("voter_eligibility", {}) as Dictionary
@@ -4744,6 +4755,70 @@ func _vote_elig_open_dialog(type_id: String, type_label: String) -> void:
 		(_vote_settings["voter_eligibility"] as Dictionary)[type_id] = {"mode": new_mode, "roles": new_roles}
 		_save_vote_settings()
 		_vote_settings_refresh()
+		_refresh_vote_list()
+		dlg.queue_free()
+	)
+	dlg.canceled.connect(func(): dlg.queue_free())
+	add_child(dlg)
+	dlg.popup_centered()
+
+func _vote_propose_inactivity_change(type_id: String, type_label: String, current_days: int) -> void:
+	var dlg := AcceptDialog.new()
+	dlg.exclusive = false
+	dlg.title = "Propose inactivity change: " + type_label
+	dlg.size = Vector2i(340, 180)
+	var vb := VBoxContainer.new()
+	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vb.add_theme_constant_override("separation", 8)
+	dlg.add_child(vb)
+
+	var hint := Label.new()
+	hint.text = "Propose a new inactivity threshold for %s. A vote will open for the team to approve it." % type_label
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	hint.add_theme_font_size_override("font_size", 11)
+	vb.add_child(hint)
+
+	var row := HBoxContainer.new()
+	var lbl := Label.new()
+	lbl.text = "New threshold (days, 0 = off):"
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(lbl)
+	var spin := SpinBox.new()
+	spin.min_value = 0
+	spin.max_value = 365
+	spin.step = 1
+	spin.value = current_days
+	spin.custom_minimum_size = Vector2(120, 0)
+	row.add_child(spin)
+	vb.add_child(row)
+
+	dlg.confirmed.connect(func():
+		if not _perm_has("vote.configure"):
+			dlg.queue_free()
+			return
+		var new_days: int = int(spin.value)
+		var vote_title: String = "Change inactivity threshold: %s → %s" % [
+			type_label,
+			("off" if new_days == 0 else "%d days" % new_days)
+		]
+		var vote: Dictionary = {
+			"id": str(int(Time.get_unix_time_from_system())),
+			"title": vote_title,
+			"description": "Proposed change to the inactivity timeout for '%s' votes. Approve to apply." % type_label,
+			"type": "change_inactivity_days",
+			"target_type": type_id,
+			"new_days": new_days,
+			"created_by": _current_user.get("username", "?"),
+			"created_at": Time.get_datetime_string_from_system(),
+			"deadline": "",
+			"options": ["yes", "no"],
+			"votes": {},
+			"closed": false
+		}
+		_vote_items.insert(0, vote)
+		_save_votes()
+		_log_activity("vote_created", 'Vote opened: "%s"' % vote_title)
 		_refresh_vote_list()
 		dlg.queue_free()
 	)
@@ -5735,11 +5810,17 @@ func _build_schedule_tab(tabs: TabContainer) -> void:
 	title_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	grid.add_child(title_lbl); grid.add_child(title_field)
 
-	var date_lbl := Label.new(); date_lbl.text = "Date *"
+	var date_lbl := Label.new(); date_lbl.text = "Start Date *"
 	var date_field := LineEdit.new()
 	date_field.placeholder_text = "YYYY-MM-DD"
 	date_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	grid.add_child(date_lbl); grid.add_child(date_field)
+
+	var end_date_lbl := Label.new(); end_date_lbl.text = "End Date"
+	var end_date_field := LineEdit.new()
+	end_date_field.placeholder_text = "YYYY-MM-DD (optional)"
+	end_date_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_child(end_date_lbl); grid.add_child(end_date_field)
 
 	var time_lbl := Label.new(); time_lbl.text = "Time"
 	var time_field := LineEdit.new()
@@ -5765,7 +5846,8 @@ func _build_schedule_tab(tabs: TabContainer) -> void:
 			_schedule_status_lbl.text = "⚠ Title and date are required."
 			return
 		var user: String = _current_user.get("username", "?")
-		_schedule_items.append({
+		var end_date_val: String = end_date_field.text.strip_edges()
+		var new_ev: Dictionary = {
 			"title": title,
 			"date": date,
 			"time": time_field.text.strip_edges(),
@@ -5773,13 +5855,17 @@ func _build_schedule_tab(tabs: TabContainer) -> void:
 			"created_by": user,
 			"created_at": Time.get_datetime_string_from_system(),
 			"rsvp": {}
-		})
+		}
+		if not end_date_val.is_empty():
+			new_ev["end_date"] = end_date_val
+		_schedule_items.append(new_ev)
 		_schedule_items.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 			return (a.get("date", "") + "T" + a.get("time", "")) < (b.get("date", "") + "T" + b.get("time", ""))
 		)
 		_save_schedule()
-		_log_activity("event_created", '%s added event: "%s" on %s' % [user, title, date])
-		title_field.text = ""; date_field.text = ""; time_field.text = ""; desc_field.text = ""
+		var log_date: String = date + ("–" + end_date_val if not end_date_val.is_empty() else "")
+		_log_activity("event_created", '%s added event: "%s" on %s' % [user, title, log_date])
+		title_field.text = ""; date_field.text = ""; end_date_field.text = ""; time_field.text = ""; desc_field.text = ""
 		_schedule_create_box.visible = false
 		_refresh_schedule_list()
 	)
@@ -5801,7 +5887,7 @@ func _build_schedule_tab(tabs: TabContainer) -> void:
 	_schedule_edit_dialog = AcceptDialog.new()
 	_schedule_edit_dialog.exclusive = false
 	_schedule_edit_dialog.title = "Edit Event"
-	_schedule_edit_dialog.size = Vector2i(440, 240)
+	_schedule_edit_dialog.size = Vector2i(440, 280)
 	var edit_vbox := VBoxContainer.new()
 	edit_vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	edit_vbox.add_theme_constant_override("separation", 4)
@@ -5814,11 +5900,16 @@ func _build_schedule_tab(tabs: TabContainer) -> void:
 	_schedule_edit_title = LineEdit.new()
 	_schedule_edit_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	edit_grid.add_child(et_lbl); edit_grid.add_child(_schedule_edit_title)
-	var ed_lbl := Label.new(); ed_lbl.text = "Date *"
+	var ed_lbl := Label.new(); ed_lbl.text = "Start Date *"
 	_schedule_edit_date = LineEdit.new()
 	_schedule_edit_date.placeholder_text = "YYYY-MM-DD"
 	_schedule_edit_date.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	edit_grid.add_child(ed_lbl); edit_grid.add_child(_schedule_edit_date)
+	var eed_lbl := Label.new(); eed_lbl.text = "End Date"
+	_schedule_edit_end_date = LineEdit.new()
+	_schedule_edit_end_date.placeholder_text = "YYYY-MM-DD (optional)"
+	_schedule_edit_end_date.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	edit_grid.add_child(eed_lbl); edit_grid.add_child(_schedule_edit_end_date)
 	var etm_lbl := Label.new(); etm_lbl.text = "Time"
 	_schedule_edit_time = LineEdit.new()
 	_schedule_edit_time.placeholder_text = "HH:MM (optional)"
@@ -5840,6 +5931,11 @@ func _build_schedule_tab(tabs: TabContainer) -> void:
 		var ev: Dictionary = _schedule_items[_schedule_edit_idx]
 		ev["title"] = t
 		ev["date"] = d
+		var ed := _schedule_edit_end_date.text.strip_edges()
+		if ed.is_empty():
+			ev.erase("end_date")
+		else:
+			ev["end_date"] = ed
 		ev["time"] = _schedule_edit_time.text.strip_edges()
 		ev["description"] = _schedule_edit_desc.text.strip_edges()
 		_schedule_items.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
@@ -5904,8 +6000,9 @@ func _refresh_schedule_list() -> void:
 	for i in range(_schedule_items.size()):
 		var ev: Dictionary = _schedule_items[i]
 		var ev_date: String = ev.get("date", "")
+		var ev_end_date: String = ev.get("end_date", "")
 		var ev_time: String = ev.get("time", "")
-		var is_past := ev_date < today
+		var is_past: bool = (ev_end_date.is_empty() and ev_date < today) or (not ev_end_date.is_empty() and ev_end_date < today)
 
 		var card := PanelContainer.new()
 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -5927,7 +6024,11 @@ func _refresh_schedule_list() -> void:
 
 		# Date/time chip
 		var dt_str := ev_date
-		if not ev_time.is_empty():
+		if not ev_end_date.is_empty():
+			dt_str += " – " + ev_end_date
+		elif not ev_time.is_empty():
+			dt_str += "  " + ev_time
+		if not ev_time.is_empty() and not ev_end_date.is_empty():
 			dt_str += "  " + ev_time
 		var dt_lbl := Label.new()
 		dt_lbl.text = dt_str
@@ -5945,6 +6046,7 @@ func _refresh_schedule_list() -> void:
 			_schedule_edit_idx = cap_i
 			_schedule_edit_title.text = _schedule_items[cap_i].get("title", "")
 			_schedule_edit_date.text = _schedule_items[cap_i].get("date", "")
+			_schedule_edit_end_date.text = _schedule_items[cap_i].get("end_date", "")
 			_schedule_edit_time.text = _schedule_items[cap_i].get("time", "")
 			_schedule_edit_desc.text = _schedule_items[cap_i].get("description", "")
 			_schedule_edit_dialog.popup_centered()
@@ -6956,8 +7058,6 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 			var p: Dictionary = parsed as Dictionary
 			if "perms" in p and p["perms"] is Dictionary:
 				_role_permissions = p["perms"] as Dictionary
-			if "vault_folders" in p and p["vault_folders"] is Dictionary:
-				_vault_folder_perms = p["vault_folders"] as Dictionary
 			_save_role_permissions()
 			if is_instance_valid(_perm_list):
 				_perm_refresh_list()
@@ -6980,8 +7080,8 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 		if parsed is Dictionary:
 			_vote_settings = parsed as Dictionary
 			_save_vote_settings()
-			if is_instance_valid(_vote_settings_list):
-				_vote_settings_refresh()
+			if is_instance_valid(_perm_list) and _perm_sel_category == "Vote Settings":
+				_perm_refresh_list()
 
 	if "asset_meta.json" in data:
 		var parsed: Variant = JSON.parse_string(data["asset_meta.json"])
@@ -7122,80 +7222,37 @@ func _vault_navigate(rel: String) -> void:
 		folder_row.add_child(ren_folder_btn)
 
 		# Delete folder button
-		var del_folder_check := _vault_folder_check(cap_folder, "delete_folder")
-		if del_folder_check != "denied":
-			var del_folder_btn := Button.new()
-			del_folder_btn.text = "🗑"
-			del_folder_btn.tooltip_text = "Delete folder" + (" (requires vote)" if del_folder_check == "vote_required" else "")
-			del_folder_btn.flat = true
-			del_folder_btn.custom_minimum_size = Vector2(26, 0)
-			del_folder_btn.pressed.connect(func():
-				var chk2 := _vault_folder_check(cap_folder, "delete_folder")
-				if chk2 == "denied":
-					OS.alert("⛔ You don't have permission to delete this folder.", "Permission denied")
-					return
-				if chk2 == "vote_required":
-					_vault_propose_vote("delete_folder", cap_folder, "")
-					return
-				var confirm := ConfirmationDialog.new()
-				confirm.exclusive = false
-				confirm.dialog_text = 'Delete folder "%s" and all its contents?' % cap_folder
-				confirm.confirmed.connect(func():
-					_vault_status_lbl.text = "Deleting folder…"
-					_vault_thread = Thread.new()
-					var cache2 := _vault_cache
-					var cap_folder_del := cap_folder
-					_vault_thread.start(func():
-						var log_del := func(_m): pass
-						var all_files2 := Ops.vault_list_files(cache2)
-						var prefix2 := cap_folder_del.rstrip("/") + "/"
-						for f2: String in all_files2:
-							if f2.begins_with(prefix2):
-								Ops.vault_delete_file(f2, log_del)
-						Ops.vault_refresh(cache2, log_del)
-						call_deferred("_vault_after_manage_named", "folder_deleted", 'Deleted folder "%s"' % cap_folder_del)
-					)
-					confirm.queue_free()
+		var del_folder_btn := Button.new()
+		del_folder_btn.text = "🗑"
+		del_folder_btn.tooltip_text = "Delete folder and all its contents"
+		del_folder_btn.flat = true
+		del_folder_btn.custom_minimum_size = Vector2(26, 0)
+		del_folder_btn.pressed.connect(func():
+			var confirm := ConfirmationDialog.new()
+			confirm.exclusive = false
+			confirm.dialog_text = 'Delete folder "%s" and all its contents?' % cap_folder
+			confirm.confirmed.connect(func():
+				_vault_status_lbl.text = "Deleting folder…"
+				_vault_thread = Thread.new()
+				var cache2 := _vault_cache
+				var cap_folder_del := cap_folder
+				_vault_thread.start(func():
+					var log_del := func(_m): pass
+					var all_files2 := Ops.vault_list_files(cache2)
+					var prefix2 := cap_folder_del.rstrip("/") + "/"
+					for f2: String in all_files2:
+						if f2.begins_with(prefix2):
+							Ops.vault_delete_file(f2, log_del)
+					Ops.vault_refresh(cache2, log_del)
+					call_deferred("_vault_after_manage_named", "folder_deleted", 'Deleted folder "%s"' % cap_folder_del)
 				)
-				confirm.canceled.connect(func(): confirm.queue_free())
-				add_child(confirm)
-				confirm.popup_centered()
+				confirm.queue_free()
 			)
-			folder_row.add_child(del_folder_btn)
-
-		# Per-folder permission button
-		var folder_key := cap_folder + "/"
-		var has_own_rule: bool = folder_key in _vault_folder_perms
-		var effective_perm: Dictionary = {}
-		var inherited_from := ""
-		if has_own_rule:
-			effective_perm = _vault_folder_perms[folder_key] as Dictionary
-		else:
-			var longest := ""
-			for fk: String in _vault_folder_perms:
-				if folder_key.begins_with(fk) and fk.length() > longest.length():
-					longest = fk
-			if not longest.is_empty():
-				effective_perm = _vault_folder_perms[longest] as Dictionary
-				inherited_from = longest
-		var lock_btn := Button.new()
-		lock_btn.flat = true
-		lock_btn.custom_minimum_size = Vector2(26, 0)
-		if has_own_rule:
-			lock_btn.text = "🔒"
-			lock_btn.add_theme_color_override("font_color", Color(0.4, 0.75, 1.0))
-			lock_btn.tooltip_text = "Permission: " + _perm_folder_summary(effective_perm) + "\nClick to edit or remove"
-		elif not effective_perm.is_empty():
-			lock_btn.text = "🔒"
-			lock_btn.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
-			lock_btn.tooltip_text = "Inherited from: " + inherited_from + "\n(" + _perm_folder_summary(effective_perm) + ")\nClick to set an override"
-		else:
-			lock_btn.text = "🔓"
-			lock_btn.add_theme_color_override("font_color", Color(0.35, 0.35, 0.35))
-			lock_btn.tooltip_text = "No restriction (anyone). Click to add a rule."
-		var cap_fkey := folder_key
-		lock_btn.pressed.connect(func(): _vault_folder_perm_dialog(cap_fkey))
-		folder_row.add_child(lock_btn)
+			confirm.canceled.connect(func(): confirm.queue_free())
+			add_child(confirm)
+			confirm.popup_centered()
+		)
+		folder_row.add_child(del_folder_btn)
 
 		_vault_browser.add_child(folder_row)
 
@@ -7305,56 +7362,8 @@ func _vault_file_icon(filename: String) -> String:
 		return "📄"
 	return "📎"
 
-func _vault_propose_vote(op: String, folder: String, target: String) -> void:
-	var me: String = _current_user.get("username", "?")
-	var op_labels: Dictionary = {"upload": "Upload to", "archive": "Archive file in", "delete_folder": "Delete folder"}
-	var op_label: String = op_labels.get(op, op) as String
-	var title: String
-	var vtype: String
-	if op == "archive":
-		title = 'Archive "%s"?' % target.get_file()
-		vtype = "vault_archive"
-	elif op == "delete_folder":
-		title = 'Delete folder "%s"?' % folder
-		vtype = "vault_delete_folder"
-	else:
-		title = '%s "%s"' % [op_label, folder]
-		vtype = "vault_upload_request"
-	var deadline_7d := Time.get_date_string_from_unix_time(int(Time.get_unix_time_from_system()) + 7 * 24 * 3600)
-	var vote: Dictionary = {
-		"id": str(int(Time.get_unix_time_from_system())),
-		"type": vtype,
-		"title": title,
-		"description": "Requested by @%s. Vote yes to approve, no to deny." % me,
-		"created_by": me,
-		"created_at": Time.get_datetime_string_from_system(),
-		"deadline": deadline_7d,
-		"options": ["yes", "no"],
-		"votes": {},
-		"closed": false,
-		"pending_folder": folder,
-		"pending_target": target,
-	}
-	_vote_items.insert(0, vote)
-	_save_votes()
-	_log_activity("vote_created", 'Vote-gated %s request by %s: "%s"' % [op, me, title])
-	_refresh_vote_list()
-	_refresh_dashboard()
-	if is_instance_valid(_vote_status_lbl):
-		_vote_status_lbl.text = "⚡ Vote proposed — see Votes tab"
-		get_tree().create_timer(4.0).timeout.connect(func():
-			if is_instance_valid(_vote_status_lbl): _vote_status_lbl.text = "")
-
 func _vault_open_picker() -> void:
 	if not _perm_gate("vault.upload"):
-		return
-	var cur_rel: String = _vault_current_dir
-	var check := _vault_folder_check(cur_rel, "upload")
-	if check == "denied":
-		OS.alert("⛔ You don't have upload access to this folder.", "Permission denied")
-		return
-	if check == "vote_required":
-		_vault_propose_vote("upload", cur_rel, "")
 		return
 	_vault_file_dialog.popup_centered_ratio(0.7)
 
@@ -7683,14 +7692,6 @@ func _vault_confirm_delete(rel_path: String) -> void:
 
 func _vault_do_archive() -> void:
 	if not _perm_gate("vault.delete"):
-		return
-	var check := _vault_folder_check(_vault_current_dir, "archive")
-	if check == "denied":
-		OS.alert("⛔ You don't have archive access to this folder.", "Permission denied")
-		return
-	if check == "vote_required":
-		_vault_propose_vote("archive", _vault_current_dir, _vault_pending_delete)
-		_vault_pending_delete = ""
 		return
 	if _vault_pending_delete.is_empty():
 		return
@@ -12897,6 +12898,42 @@ func _election_role_requires_candidacy(role: String) -> bool:
 	var role_data: Dictionary = ((_election_data.get("roles", {}) as Dictionary).get(role, {}) as Dictionary)
 	return role_data.get("requires_candidacy", false) as bool
 
+func _election_role_exclusive_with(role: String) -> Array:
+	var role_data: Dictionary = ((_election_data.get("roles", {}) as Dictionary).get(role, {}) as Dictionary)
+	return role_data.get("exclusive_with", []) as Array
+
+func _election_roles_conflict(role_a: String, role_b: String) -> bool:
+	var roles_dict: Dictionary = _election_data.get("roles", {}) as Dictionary
+	var excl_a: Array = (roles_dict.get(role_a, {}) as Dictionary).get("exclusive_with", []) as Array
+	if role_b in excl_a:
+		return true
+	var excl_b: Array = (roles_dict.get(role_b, {}) as Dictionary).get("exclusive_with", []) as Array
+	return role_a in excl_b
+
+func _election_has_role_conflict(role: String, username: String) -> bool:
+	var holders_dict: Dictionary = _election_data.get("holders", {}) as Dictionary
+	for other_role: String in _election_sorted_roles():
+		if other_role == role:
+			continue
+		if not _election_roles_conflict(role, other_role):
+			continue
+		var other_holders: Array = holders_dict.get(other_role, []) as Array
+		if username in other_holders:
+			return true
+	return false
+
+func _election_conflict_role_name(role: String, username: String) -> String:
+	var holders_dict: Dictionary = _election_data.get("holders", {}) as Dictionary
+	for other_role: String in _election_sorted_roles():
+		if other_role == role:
+			continue
+		if not _election_roles_conflict(role, other_role):
+			continue
+		var other_holders: Array = holders_dict.get(other_role, []) as Array
+		if username in other_holders:
+			return other_role
+	return ""
+
 func _election_eval_takeovers(role: String) -> void:
 	# Roles with an appointer are manually managed — skip score-based evaluation.
 	if not _election_role_appointer(role).is_empty():
@@ -12918,6 +12955,8 @@ func _election_eval_takeovers(role: String) -> void:
 			if req_cand and not _election_is_candidate(role, uname):
 				continue
 			if not _election_meets_threshold(role, uname):
+				continue
+			if _election_has_role_conflict(role, uname):
 				continue
 			if _election_avg(role, uname) >= star_thresh:
 				new_holders.append(uname)
@@ -12959,6 +12998,7 @@ func _election_eval_takeovers(role: String) -> void:
 			if uname.is_empty(): continue
 			if req_cand and not _election_is_candidate(role, uname): continue
 			if not _election_meets_threshold(role, uname): continue
+			if _election_has_role_conflict(role, uname): continue
 			scored.append({"username": uname, "avg": _election_avg(role, uname)})
 		scored.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 			return float(a["avg"]) > float(b["avg"])
@@ -13009,6 +13049,8 @@ func _election_eval_takeovers(role: String) -> void:
 			if uname.is_empty() or uname == holder or _election_is_holder(role, uname):
 				continue
 			if (req_cand and not _election_is_candidate(role, uname)) or not _election_meets_threshold(role, uname):
+				continue
+			if _election_has_role_conflict(role, uname):
 				continue
 			var candidate_avg: float = _election_avg(role, uname)
 			if candidate_avg > best_avg:
@@ -13394,6 +13436,34 @@ func _election_refresh_roles_summary() -> void:
 		holder_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		holder_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		entry.add_child(holder_lbl)
+		# ── Selection method ──────────────────────────────────────────────────
+		var appointer_s: String = role_data.get("appointer_role", "") as String
+		var sel_text: String
+		if not appointer_s.is_empty():
+			sel_text = "Appointed by: " + appointer_s
+		elif max_h == -1:
+			var thresh_s: float = float(role_data.get("star_threshold", 3.5))
+			sel_text = "Auto: score ≥ %.1f★" % thresh_s
+		elif max_h > 1:
+			sel_text = "Score-based: top %d" % max_h
+		else:
+			sel_text = "Score-based election"
+		var sel_lbl := Label.new()
+		sel_lbl.text = "  ✦ " + sel_text
+		sel_lbl.add_theme_font_size_override("font_size", 10)
+		sel_lbl.add_theme_color_override("font_color", Color(0.5, 0.6, 0.85))
+		sel_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		entry.add_child(sel_lbl)
+		# ── Exclusivity ───────────────────────────────────────────────────────
+		var excl_s: Array = _election_role_exclusive_with(role)
+		if not excl_s.is_empty():
+			var excl_lbl := Label.new()
+			excl_lbl.text = "  ⊘ excl: " + ", ".join(PackedStringArray(excl_s))
+			excl_lbl.add_theme_font_size_override("font_size", 10)
+			excl_lbl.add_theme_color_override("font_color", Color(0.85, 0.5, 0.5))
+			excl_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			excl_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			entry.add_child(excl_lbl)
 		_election_roles_summary.add_child(entry)
 
 func _election_refresh_help() -> void:
@@ -14125,11 +14195,15 @@ func _election_configure_role() -> void:
 	var dlg := AcceptDialog.new()
 	dlg.exclusive = false
 	dlg.title = "Configure role: " + role
-	dlg.size = Vector2i(440, 440)
+	dlg.size = Vector2i(440, 520)
+	var scroll_root := ScrollContainer.new()
+	scroll_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	scroll_root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	dlg.add_child(scroll_root)
 	var vb := VBoxContainer.new()
-	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vb.add_theme_constant_override("separation", 6)
-	dlg.add_child(vb)
+	scroll_root.add_child(vb)
 
 	# ── Max holders ──────────────────────────────────────────────────────────
 	var mh_lbl := Label.new()
@@ -14220,6 +14294,32 @@ func _election_configure_role() -> void:
 	cand_desc_lbl.add_theme_font_size_override("font_size", 11)
 	vb.add_child(cand_desc_lbl)
 
+	vb.add_child(HSeparator.new())
+
+	# ── Mutually exclusive with ───────────────────────────────────────────────
+	var excl_hdr := Label.new()
+	excl_hdr.text = "Cannot be held simultaneously with:"
+	excl_hdr.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	vb.add_child(excl_hdr)
+	var excl_hint := Label.new()
+	excl_hint.text = "Holding any of the checked roles will block appointment to this one (and vice-versa in score-based elections)."
+	excl_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	excl_hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+	excl_hint.add_theme_font_size_override("font_size", 11)
+	vb.add_child(excl_hint)
+	var cur_exclusive: Array = role_data.get("exclusive_with", []) as Array
+	var excl_checks: Array[CheckBox] = []
+	var excl_role_names: Array[String] = []
+	for rn3: String in all_roles:
+		if rn3 == role:
+			continue
+		var echk := CheckBox.new()
+		echk.text = rn3
+		echk.button_pressed = rn3 in cur_exclusive
+		vb.add_child(echk)
+		excl_checks.append(echk)
+		excl_role_names.append(rn3)
+
 	add_child(dlg)
 	dlg.confirmed.connect(func():
 		var roles_dict: Dictionary = _election_data.get("roles", {}) as Dictionary
@@ -14239,6 +14339,11 @@ func _election_configure_role() -> void:
 			var role_ap_idx := ap_idx - 1
 			if role_ap_idx >= 0 and role_ap_idx < ap_roles.size():
 				rd["appointer_role"] = ap_roles[role_ap_idx]
+		var new_excl: Array = []
+		for ei: int in range(excl_checks.size()):
+			if (excl_checks[ei] as CheckBox).button_pressed:
+				new_excl.append(excl_role_names[ei])
+		rd["exclusive_with"] = new_excl
 		roles_dict[role] = rd
 		_election_data["roles"] = roles_dict
 		_save_elections()
@@ -14253,6 +14358,10 @@ func _election_appoint_holder(role: String, username: String) -> void:
 	var holders_dict: Dictionary = _election_data.get("holders", {}) as Dictionary
 	var holder_list: Array = holders_dict.get(role, []) as Array
 	if username in holder_list:
+		return
+	var conflict_role := _election_conflict_role_name(role, username)
+	if not conflict_role.is_empty():
+		OS.alert('Cannot appoint %s to "%s" — they already hold "%s", which cannot be held at the same time.\n\nRemove them from "%s" first.' % [username, role, conflict_role, conflict_role])
 		return
 	holder_list.append(username)
 	holders_dict[role] = holder_list
@@ -14292,7 +14401,6 @@ func _perm_file() -> String:
 
 func _load_role_permissions() -> void:
 	_role_permissions = {}
-	_vault_folder_perms = {}
 	var path := _perm_file()
 	if not FileAccess.file_exists(path):
 		return
@@ -14305,13 +14413,11 @@ func _load_role_permissions() -> void:
 		var d: Dictionary = parsed as Dictionary
 		if "perms" in d and d["perms"] is Dictionary:
 			_role_permissions = d["perms"] as Dictionary
-		if "vault_folders" in d and d["vault_folders"] is Dictionary:
-			_vault_folder_perms = d["vault_folders"] as Dictionary
 
 func _save_role_permissions() -> void:
 	var fw := FileAccess.open(_perm_file(), FileAccess.WRITE)
 	if fw:
-		fw.store_string(JSON.stringify({"perms": _role_permissions, "vault_folders": _vault_folder_perms}, "\t") + "\n")
+		fw.store_string(JSON.stringify({"perms": _role_permissions}, "\t") + "\n")
 		fw.close()
 	_activity_auto_push()
 
@@ -14371,59 +14477,6 @@ func _perm_can_change(key: String) -> bool:
 					return true
 			return false
 	return false
-
-## Returns the effective folder rule dict for vault_rel_path (longest-prefix match).
-## Migrates legacy format {"allowed_by", "allowed_roles"} to the new multi-op format.
-func _vault_folder_effective(vault_rel_path: String) -> Dictionary:
-	var check_path := vault_rel_path
-	if not check_path.ends_with("/"):
-		check_path = check_path + "/"
-	var longest_match := ""
-	for folder: String in _vault_folder_perms:
-		if check_path.begins_with(folder) and folder.length() > longest_match.length():
-			longest_match = folder
-	if longest_match.is_empty():
-		return {}
-	var raw: Dictionary = _vault_folder_perms[longest_match] as Dictionary
-	# Migrate legacy format
-	if "allowed_by" in raw:
-		var by: String = raw.get("allowed_by", "anyone") as String
-		var roles: Array = raw.get("allowed_roles", []) as Array
-		var op := {"by": by, "roles": roles}
-		return {"upload": op, "archive": op, "delete_folder": {"by": "leader", "roles": []}, "change": {"by": "leader", "roles": []}}
-	return raw
-
-## Check if current user can perform op ("upload"|"archive"|"delete_folder"|"change") in path.
-## Returns "ok", "denied", or "vote_required".
-func _vault_folder_check(vault_rel_path: String, op: String) -> String:
-	if _election_is_leader():
-		return "ok"
-	var rule := _vault_folder_effective(vault_rel_path)
-	if rule.is_empty():
-		return "ok"
-	var defaults: Dictionary = {"upload": "anyone", "archive": "anyone", "delete_folder": "leader", "change": "leader"}
-	var operm: Dictionary = rule.get(op, {}) as Dictionary
-	var by: String = (operm.get("by", defaults.get(op, "anyone")) as String)
-	if by == "anyone":
-		return "ok"
-	if by == "vote":
-		return "vote_required"
-	if by == "leader":
-		return "denied"
-	if by == "role":
-		var roles: Array = operm.get("roles", []) as Array
-		if roles.is_empty():
-			return "ok"
-		var me: String = _current_user.get("username", "")
-		for rn: String in roles:
-			if _election_is_holder(rn, me):
-				return "ok"
-		return "denied"
-	return "ok"
-
-## Legacy shim — kept so call sites outside upload/archive still compile.
-func _perm_has_vault_folder(vault_rel_path: String) -> bool:
-	return _vault_folder_check(vault_rel_path, "upload") == "ok"
 
 ## Show a toast-style status message when a permission check fails.
 func _perm_gate(key: String, status_lbl: Label = null) -> bool:
@@ -14558,6 +14611,7 @@ func _build_permissions_tab(tabs: TabContainer) -> void:
 		var cat: String = def.get("category", "Other")
 		if cat not in categories:
 			categories.append(cat)
+	categories.append("Vote Settings")
 	# vault folder rules live in the Assets tab, not here
 
 	var cat_scroll := ScrollContainer.new()
@@ -14605,6 +14659,9 @@ func _perm_refresh_list() -> void:
 	for c in _perm_list.get_children():
 		c.queue_free()
 
+	if _perm_sel_category == "Vote Settings":
+		_vote_settings_refresh()
+		return
 
 	var me_can_see: bool = _election_is_leader() or not _current_user.is_empty()
 	if not me_can_see:
@@ -14686,258 +14743,6 @@ func _perm_badge(text: String, col: Color) -> Label:
 	lbl.add_theme_font_size_override("font_size", 10)
 	lbl.add_theme_color_override("font_color", col)
 	return lbl
-
-func _perm_build_vault_folder_section() -> void:
-	pass  # folder rules moved to Assets > Asset Permissions tab
-
-func _perm_folder_summary(fperm: Dictionary) -> String:
-	if "allowed_by" in fperm:
-		var by: String = fperm.get("allowed_by", "anyone") as String
-		match by:
-			"anyone": return "🌐 Anyone"
-			"leader": return "👑 Leader only"
-			"role":
-				var roles: Array = fperm.get("allowed_roles", []) as Array
-				if roles.is_empty(): return "🌐 Anyone"
-				return "🏅 " + ", ".join(PackedStringArray(roles))
-		return "?"
-	var parts: Array[String] = []
-	for op_key: String in ["upload", "archive", "delete_folder"]:
-		var operm: Dictionary = fperm.get(op_key, {}) as Dictionary
-		var by: String = operm.get("by", "anyone") as String
-		var short: String = ({"upload": "⬆", "archive": "📦", "delete_folder": "🗑"} as Dictionary)[op_key] as String
-		match by:
-			"anyone":       parts.append(short + " all")
-			"leader":       parts.append(short + " leader")
-			"vote":         parts.append(short + " vote")
-			"role":
-				var roles: Array = operm.get("roles", []) as Array
-				parts.append(short + " " + (", ".join(PackedStringArray(roles)) if not roles.is_empty() else "all"))
-	return "  ".join(parts) if not parts.is_empty() else "🌐 Anyone"
-
-func _vault_folder_perm_dialog(folder_key: String) -> void:
-	var has_own: bool = folder_key in _vault_folder_perms
-	var display_name := folder_key.rstrip("/")
-	var all_roles := _election_sorted_roles()
-
-	# Resolve current working permissions, migrating legacy format
-	var working_perm: Dictionary = {}
-	if has_own:
-		working_perm = _vault_folder_effective(folder_key.rstrip("/")).duplicate(true)
-	else:
-		var inherited := _vault_folder_effective(folder_key.rstrip("/"))
-		if not inherited.is_empty():
-			working_perm = inherited.duplicate(true)
-
-	# Inheritance info label
-	var inherited_from := ""
-	if not has_own:
-		var longest := ""
-		for fk: String in _vault_folder_perms:
-			if folder_key.begins_with(fk) and fk.length() > longest.length():
-				longest = fk
-		inherited_from = longest
-
-	var dlg := AcceptDialog.new()
-	dlg.exclusive = false
-	dlg.title = "Folder permissions: " + (display_name if not display_name.is_empty() else "/")
-	dlg.size = Vector2i(480, 560)
-
-	var outer_scroll := ScrollContainer.new()
-	outer_scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	outer_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	var vb := VBoxContainer.new()
-	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	vb.add_theme_constant_override("separation", 10)
-	outer_scroll.add_child(vb)
-	dlg.add_child(outer_scroll)
-
-	if not inherited_from.is_empty() and not has_own:
-		var info_lbl := Label.new()
-		info_lbl.text = "Inheriting from: " + inherited_from
-		info_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
-		info_lbl.add_theme_font_size_override("font_size", 11)
-		vb.add_child(info_lbl)
-
-	# Check global permission AND the folder's own "change" rule
-	var change_check := _vault_folder_check(folder_key.rstrip("/"), "change")
-	var can_edit: bool = _perm_has("vault.manage_folder_rules") and change_check == "ok"
-
-	if not can_edit:
-		var lock_lbl := Label.new()
-		if change_check == "vote_required":
-			lock_lbl.text = "Changing this folder's rules requires a team vote."
-			var propose_btn := Button.new()
-			propose_btn.text = "⚡ Propose vote to change rules"
-			propose_btn.pressed.connect(func():
-				_vault_propose_vote("change", folder_key.rstrip("/"), "")
-				dlg.queue_free()
-			)
-			vb.add_child(lock_lbl)
-			vb.add_child(propose_btn)
-		elif not _perm_has("vault.manage_folder_rules"):
-			lock_lbl.text = "You don't have permission to change folder rules."
-			vb.add_child(lock_lbl)
-		else:
-			lock_lbl.text = "You don't have access to change this folder's rules."
-			vb.add_child(lock_lbl)
-		lock_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
-		dlg.get_ok_button().text = "Close"
-		add_child(dlg)
-		dlg.popup_centered()
-		dlg.confirmed.connect(func(): dlg.queue_free())
-		return
-
-	# ── Per-operation section builder ─────────────────────────────────────────
-	# ops: [id, label, default_by, include_vote]
-	var ops: Array = [
-		["upload",        "⬆ Upload",       "anyone", true],
-		["archive",       "📦 Archive files", "anyone", true],
-		["delete_folder", "🗑 Delete folder", "leader", true],
-		["change",        "🔧 Change rules",  "leader", true],
-	]
-	# op_id -> {mode_btns: {by: Button}, role_checks: {role: CheckBox}}
-	var op_state: Dictionary = {}
-
-	for op_info: Array in ops:
-		var op_id: String   = op_info[0] as String
-		var op_label: String = op_info[1] as String
-		var op_default: String = op_info[2] as String
-
-		var operm: Dictionary = (working_perm.get(op_id, {}) as Dictionary)
-		var cur_by: String = operm.get("by", op_default) as String
-		var cur_roles: Array = operm.get("roles", []) as Array
-
-		var section := VBoxContainer.new()
-		section.add_theme_constant_override("separation", 4)
-
-		var hdr := Label.new()
-		hdr.text = op_label
-		hdr.add_theme_font_size_override("font_size", 12)
-		section.add_child(hdr)
-
-		var mode_row := HBoxContainer.new()
-		mode_row.add_theme_constant_override("separation", 4)
-		var modes: Array[String] = ["anyone", "leader", "role", "vote"]
-		var mode_labels: Dictionary = {"anyone": "Anyone", "leader": "Leader", "role": "Roles…", "vote": "Vote"}
-		var mode_btns: Dictionary = {}
-		for m: String in modes:
-			var mb := Button.new()
-			mb.text = mode_labels[m] as String
-			mb.toggle_mode = true
-			mb.button_pressed = (cur_by == m)
-			mb.add_theme_font_size_override("font_size", 11)
-			mode_btns[m] = mb
-			mode_row.add_child(mb)
-		section.add_child(mode_row)
-
-		# Wire mutual exclusion
-		for m: String in modes:
-			var cap_m := m
-			(mode_btns[m] as Button).pressed.connect(func():
-				for mm: String in modes:
-					(mode_btns[mm] as Button).button_pressed = (mm == cap_m)
-			)
-
-		# Role checkboxes (only shown when "role" is active)
-		var roles_box := VBoxContainer.new()
-		roles_box.add_theme_constant_override("separation", 2)
-		roles_box.visible = (cur_by == "role")
-		var role_checks: Dictionary = {}
-		if all_roles.is_empty():
-			var no_roles_lbl := Label.new()
-			no_roles_lbl.text = "No roles defined."
-			no_roles_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
-			no_roles_lbl.add_theme_font_size_override("font_size", 11)
-			roles_box.add_child(no_roles_lbl)
-		else:
-			for rn: String in all_roles:
-				var chk := CheckBox.new()
-				chk.text = rn
-				chk.button_pressed = (rn in cur_roles)
-				chk.add_theme_font_size_override("font_size", 11)
-				role_checks[rn] = chk
-				roles_box.add_child(chk)
-		section.add_child(roles_box)
-
-		(mode_btns["role"] as Button).toggled.connect(func(on: bool):
-			roles_box.visible = on
-		)
-
-		# Vote hint
-		var vote_hint := Label.new()
-		vote_hint.text = "Actions will require a team vote to proceed."
-		vote_hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
-		vote_hint.add_theme_font_size_override("font_size", 10)
-		vote_hint.visible = (cur_by == "vote")
-		vote_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		section.add_child(vote_hint)
-		(mode_btns["vote"] as Button).toggled.connect(func(on: bool):
-			vote_hint.visible = on
-		)
-
-		vb.add_child(section)
-		vb.add_child(HSeparator.new())
-		op_state[op_id] = {"mode_btns": mode_btns, "role_checks": role_checks}
-
-	# Remove override button
-	if has_own:
-		var remove_btn := Button.new()
-		remove_btn.text = "🗑 Remove override (inherit from parent)"
-		remove_btn.add_theme_color_override("font_color", Color(0.9, 0.45, 0.45))
-		remove_btn.pressed.connect(func():
-			_vault_folder_perms.erase(folder_key)
-			_save_role_permissions()
-			_vault_navigate(_vault_current_dir)
-			dlg.queue_free()
-		)
-		vb.add_child(remove_btn)
-
-	dlg.confirmed.connect(func():
-		if not _perm_has("vault.manage_folder_rules") or _vault_folder_check(folder_key.rstrip("/"), "change") != "ok":
-			dlg.queue_free()
-			return
-		var new_rule: Dictionary = {}
-		for op_id2: String in op_state:
-			var st: Dictionary = op_state[op_id2] as Dictionary
-			var mbs: Dictionary = st["mode_btns"] as Dictionary
-			var chosen_by := "anyone"
-			for m2: String in mbs:
-				if (mbs[m2] as Button).button_pressed:
-					chosen_by = m2
-					break
-			var chosen_roles: Array = []
-			if chosen_by == "role":
-				var rcs: Dictionary = st["role_checks"] as Dictionary
-				for rn2: String in rcs:
-					if (rcs[rn2] as CheckBox).button_pressed:
-						chosen_roles.append(rn2)
-			new_rule[op_id2] = {"by": chosen_by, "roles": chosen_roles}
-		_vault_folder_perms[folder_key] = new_rule
-		_save_role_permissions()
-		_vault_navigate(_vault_current_dir)
-		dlg.queue_free()
-	)
-	dlg.canceled.connect(func(): dlg.queue_free())
-	add_child(dlg)
-	dlg.popup_centered()
-
-func _perm_open_folder_dialog(folder: String) -> void:
-	var fperm: Dictionary = (_vault_folder_perms.get(folder, {"allowed_by": "anyone", "allowed_roles": []}) as Dictionary).duplicate(true)
-	_perm_open_access_dialog(
-		"Folder: " + folder,
-		fperm,
-		func(new_perm: Dictionary):
-			_vault_folder_perms[folder] = new_perm
-			_save_role_permissions()
-			_vault_navigate(_vault_current_dir)
-	)
-
-func _build_asset_perms_tab(_unused: TabContainer) -> void:
-	pass  # permissions moved to per-folder buttons in the browser
-
-func _asset_perm_refresh() -> void:
-	pass  # permissions refreshed by _vault_navigate
 
 func _perm_open_edit_dialog(key: String, def: Dictionary) -> void:
 	var cur := _perm_get(key).duplicate(true)
