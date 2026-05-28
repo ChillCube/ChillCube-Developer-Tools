@@ -4397,7 +4397,9 @@ func _apply_vote_effects(vote: Dictionary) -> void:
 			var cache2 := _vault_cache
 			var cap_target := target
 			_vault_thread.start(func():
-				Ops.vault_move(cache2, cap_target, dest, Callable())
+				var log_fn2 := func(_m): pass
+				Ops.vault_move_file(cap_target, dest, log_fn2)
+				Ops.vault_refresh(cache2, log_fn2)
 				call_deferred("_vault_after_manage_named", "asset_deleted", 'Vote-approved archive: "%s"' % cap_target.get_file())
 			)
 		"vault_delete_folder":
@@ -4410,7 +4412,13 @@ func _apply_vote_effects(vote: Dictionary) -> void:
 			var cache3 := _vault_cache
 			var cap_folder2 := folder2
 			_vault_thread.start(func():
-				Ops.vault_delete_folder(cache3, cap_folder2, Callable())
+				var log_fn3 := func(_m): pass
+				var all_files := Ops.vault_list_files(cache3)
+				var prefix3 := cap_folder2.rstrip("/") + "/"
+				for f3: String in all_files:
+					if f3.begins_with(prefix3):
+						Ops.vault_delete_file(f3, log_fn3)
+				Ops.vault_refresh(cache3, log_fn3)
 				call_deferred("_vault_after_manage_named", "folder_deleted", 'Vote-approved delete folder: "%s"' % cap_folder2)
 			)
 		"change_permission":
@@ -7136,9 +7144,16 @@ func _vault_navigate(rel: String) -> void:
 					_vault_status_lbl.text = "Deleting folder…"
 					_vault_thread = Thread.new()
 					var cache2 := _vault_cache
+					var cap_folder_del := cap_folder
 					_vault_thread.start(func():
-						Ops.vault_delete_folder(cache2, cap_folder, Callable())
-						call_deferred("_vault_after_manage_named", "folder_deleted", 'Deleted folder "%s"' % cap_folder)
+						var log_del := func(_m): pass
+						var all_files2 := Ops.vault_list_files(cache2)
+						var prefix2 := cap_folder_del.rstrip("/") + "/"
+						for f2: String in all_files2:
+							if f2.begins_with(prefix2):
+								Ops.vault_delete_file(f2, log_del)
+						Ops.vault_refresh(cache2, log_del)
+						call_deferred("_vault_after_manage_named", "folder_deleted", 'Deleted folder "%s"' % cap_folder_del)
 					)
 					confirm.queue_free()
 				)
@@ -14690,7 +14705,7 @@ func _perm_folder_summary(fperm: Dictionary) -> String:
 	for op_key: String in ["upload", "archive", "delete_folder"]:
 		var operm: Dictionary = fperm.get(op_key, {}) as Dictionary
 		var by: String = operm.get("by", "anyone") as String
-		var short := {"upload": "⬆", "archive": "📦", "delete_folder": "🗑"}[op_key]
+		var short: String = ({"upload": "⬆", "archive": "📦", "delete_folder": "🗑"} as Dictionary)[op_key] as String
 		match by:
 			"anyone":       parts.append(short + " all")
 			"leader":       parts.append(short + " leader")
