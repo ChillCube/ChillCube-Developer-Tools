@@ -14370,13 +14370,37 @@ func _perm_propose_vote(key: String) -> void:
 			{"allowed_by": current.get("change_by", "leader"), "allowed_roles": current.get("change_roles", [])},
 			func(change_perm: Dictionary):
 				# Route into _vote_items so _apply_vote_effects can apply the change when the vote passes
+				# Build human-readable summaries of current and proposed values
+				var _access_str := func(by: String, roles: Array) -> String:
+					if by == "anyone": return "Anyone"
+					if by == "leader": return "Leader only"
+					if by == "role": return "Anyone" if roles.is_empty() else "Roles: " + ", ".join(PackedStringArray(roles))
+					return by
+				var _change_str := func(by: String, roles: Array) -> String:
+					if by == "leader": return "Leader"
+					if by == "anyone": return "Anyone"
+					if by == "vote": return "Team vote"
+					if by == "role": return "Anyone" if roles.is_empty() else "Roles: " + ", ".join(PackedStringArray(roles))
+					return by
+				var cur_access: String = _access_str.call(current.get("allowed_by", "anyone") as String, current.get("allowed_roles", []) as Array) as String
+				var new_access: String = _access_str.call(new_perm.get("allowed_by", "anyone") as String, new_perm.get("allowed_roles", []) as Array) as String
+				var cur_change: String = _change_str.call(current.get("change_by", "leader") as String, current.get("change_roles", []) as Array) as String
+				var new_change: String = _change_str.call(change_perm.get("allowed_by", "leader") as String, change_perm.get("allowed_roles", []) as Array) as String
+				var desc_lines: Array[String] = []
+				if cur_access != new_access:
+					desc_lines.append("Access:      %s  →  %s" % [cur_access, new_access])
+				if cur_change != new_change:
+					desc_lines.append("Change rule: %s  →  %s" % [cur_change, new_change])
+				if desc_lines.is_empty():
+					desc_lines.append("(no changes to access or change rule)")
+				var vote_desc: String = "\n".join(desc_lines)
 				var deadline_7d := Time.get_date_string_from_unix_time(int(Time.get_unix_time_from_system()) + 7 * 24 * 3600)
 				var vote: Dictionary = {
 					"id": str(int(Time.get_unix_time_from_system())),
 					"type": "change_permission",
 					"perm_key": key,
 					"title": "Change permission: " + def_display,
-					"description": "Proposes updating the \"%s\" permission rule. Vote yes to approve. Closes in 7 days." % def_display,
+					"description": vote_desc,
 					"created_by": _current_user.get("username", "?"),
 					"created_at": Time.get_datetime_string_from_system(),
 					"deadline": deadline_7d,
