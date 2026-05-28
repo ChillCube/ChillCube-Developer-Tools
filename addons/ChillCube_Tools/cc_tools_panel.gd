@@ -206,6 +206,7 @@ var _gd_status_lbl: Label
 var _gd_thread: Thread = null
 var _gd_editing: bool = false      # false = view mode, true = edit mode
 var _gd_field_mode: String = "guide"  # "guide" or "markdown"
+var _gd_custom_fields: Array = []  # empty = use GD_FIELDS defaults
 const GD_GENRES: Array = ["Action", "Adventure", "Horror", "Platformer", "Puzzle",
 	"Racing", "RPG", "Shooter", "Simulation", "Sports", "Strategy", "Other"]
 const GD_FIELDS: Array = [
@@ -218,7 +219,7 @@ const GD_FIELDS: Array = [
 	{"key": "unique_selling_pt", "label": "Unique Selling Point","type": "text",    "hint": "What makes this game stand out?",         "height": 60},
 	{"key": "art_style",         "label": "Art Style",           "type": "line",    "hint": "e.g. Pixel art, 3D realistic, Hand-drawn"},
 	{"key": "target_audience",   "label": "Target Audience",     "type": "line",    "hint": "e.g. Casual players, Kids 8+, Hardcore"},
-	{"key": "monetisation",      "label": "Monetisation",        "type": "option",  "options": ["—", "Free-to-play", "Premium", "Freemium", "Subscription", "Premium + DLC"]},
+	{"key": "monetisation",      "label": "Monetisation",        "type": "option",  "options": ["—", "Free-to-play", "Premium", "Pay Once (Upfront)", "Freemium", "Subscription", "Premium + DLC"]},
 	{"key": "inspirations",      "label": "Inspirations",        "type": "text",    "hint": "Games or media that inspired this.",      "height": 60},
 	{"key": "notes",             "label": "Additional Notes",    "type": "text",    "hint": "",                                        "height": 100},
 ]
@@ -367,8 +368,9 @@ const PERM_DEFS: Array = [
 	# Docs & GDD
 	{"key": "docs.create",    "display": "Create documents",    "desc": "Can create new documents directly. Others must submit a proposal for approval.", "category": "Docs & GDD", "default_allowed": "anyone", "default_change": "leader"},
 	{"key": "docs.comment",   "display": "Comment on documents","desc": "Can post comments on documents.",                                   "category": "Docs & GDD", "default_allowed": "anyone", "default_change": "leader"},
-	{"key": "gdd.create",     "display": "Create GDD entries",  "desc": "Can create new Game Design Documents directly. Others must submit for approval.", "category": "Docs & GDD", "default_allowed": "anyone", "default_change": "leader"},
-	{"key": "gdd.edit",       "display": "Edit GDD entries",    "desc": "Can edit existing Game Design Documents.",                         "category": "Docs & GDD", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "gdd.create",       "display": "Create GDD entries",       "desc": "Can create new Game Design Documents directly. Others must submit for approval.", "category": "Docs & GDD", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "gdd.edit",         "display": "Edit GDD entries",         "desc": "Can edit existing Game Design Documents.",                         "category": "Docs & GDD", "default_allowed": "anyone", "default_change": "leader"},
+	{"key": "gdd.edit_fields",  "display": "Configure GDD fields",     "desc": "Can add, remove, or edit the field definitions used in GDD entries.", "category": "Docs & GDD", "default_allowed": "leader", "default_change": "leader"},
 	# Vault & Assets
 	{"key": "vault.upload",  "display": "Upload vault files",   "desc": "Can upload files to the shared vault.",                           "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
 	{"key": "vault.delete",  "display": "Delete vault files",   "desc": "Can delete files from the shared vault.",                         "category": "Vault & Assets", "default_allowed": "anyone", "default_change": "leader"},
@@ -883,6 +885,7 @@ func _ready() -> void:
 	_load_elections()
 	_load_forum_last_seen()
 	_load_role_permissions()
+	_gd_load_config()
 
 	_login_overlay = _build_login_overlay()
 	_login_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -4023,7 +4026,8 @@ func _cc_data_bundle() -> Dictionary:
 		"doc_suggestions.json": JSON.stringify(_docs_suggestions, "\t") + "\n",
 		"doc_comments.json": JSON.stringify(_docs_comments, "\t") + "\n",
 		"elections.json": JSON.stringify(_election_data, "\t") + "\n",
-		"role_permissions.json": JSON.stringify({"perms": _role_permissions, "vault_folders": _vault_folder_perms}, "\t") + "\n"
+		"role_permissions.json": JSON.stringify({"perms": _role_permissions, "vault_folders": _vault_folder_perms}, "\t") + "\n",
+		"gdd_config.json": JSON.stringify({"fields": _gd_custom_fields}, "\t") + "\n"
 	}
 
 func _todo_on_pushed(msg: String = "✅ Pushed!") -> void:
@@ -6518,6 +6522,16 @@ func _on_cc_data_pulled(data: Dictionary) -> void:
 			if is_instance_valid(_perm_list):
 				_perm_refresh_list()
 			_apply_tab_permissions()
+
+	if "gdd_config.json" in data:
+		var parsed: Variant = JSON.parse_string(data["gdd_config.json"])
+		if parsed is Dictionary:
+			var p: Dictionary = parsed as Dictionary
+			if "fields" in p and p["fields"] is Array:
+				_gd_custom_fields = p["fields"] as Array
+				_gd_save_config()
+				if _gd_selected >= 0 and is_instance_valid(_gd_detail):
+					_gd_show_detail(_gd_selected)
 
 	if "asset_meta.json" in data:
 		var parsed: Variant = JSON.parse_string(data["asset_meta.json"])
@@ -12297,11 +12311,16 @@ func _election_role_appointer(role: String) -> String:
 	var role_data: Dictionary = ((_election_data.get("roles", {}) as Dictionary).get(role, {}) as Dictionary)
 	return role_data.get("appointer_role", "") as String
 
+func _election_role_requires_candidacy(role: String) -> bool:
+	var role_data: Dictionary = ((_election_data.get("roles", {}) as Dictionary).get(role, {}) as Dictionary)
+	return role_data.get("requires_candidacy", false) as bool
+
 func _election_eval_takeovers(role: String) -> void:
 	# Roles with an appointer are manually managed — skip score-based evaluation.
 	if not _election_role_appointer(role).is_empty():
 		return
 
+	var req_cand := _election_role_requires_candidacy(role)
 	var max_h: int = _election_role_max_holders(role)
 	var holders: Array = ((_election_data.get("holders", {}) as Dictionary).get(role, []) as Array)
 
@@ -12312,6 +12331,9 @@ func _election_eval_takeovers(role: String) -> void:
 		for u: Dictionary in _election_members:
 			var uname: String = u.get("username", "") as String
 			if uname.is_empty():
+				continue
+			# When candidacy is required, only declared candidates are eligible
+			if req_cand and not _election_is_candidate(role, uname):
 				continue
 			if not _election_meets_threshold(role, uname):
 				continue
@@ -12353,7 +12375,7 @@ func _election_eval_takeovers(role: String) -> void:
 		for u: Dictionary in _election_members:
 			var uname: String = u.get("username", "") as String
 			if uname.is_empty(): continue
-			if not _election_is_candidate(role, uname): continue
+			if req_cand and not _election_is_candidate(role, uname): continue
 			if not _election_meets_threshold(role, uname): continue
 			scored.append({"username": uname, "avg": _election_avg(role, uname)})
 		scored.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
@@ -12404,7 +12426,7 @@ func _election_eval_takeovers(role: String) -> void:
 			var uname: String = u.get("username", "") as String
 			if uname.is_empty() or uname == holder or _election_is_holder(role, uname):
 				continue
-			if not _election_is_candidate(role, uname) or not _election_meets_threshold(role, uname):
+			if (req_cand and not _election_is_candidate(role, uname)) or not _election_meets_threshold(role, uname):
 				continue
 			var candidate_avg: float = _election_avg(role, uname)
 			if candidate_avg > best_avg:
@@ -12441,8 +12463,8 @@ func _election_eval_takeovers(role: String) -> void:
 					best_challenger, holder, role, weeks_to_replace - weeks_ahead])
 		updated_takeovers.append(pt)
 
-	if holders.is_empty():
-		# Vacant role — first come first served
+	if holders.is_empty() and req_cand:
+		# Vacant role — first come first served (only when candidacy is required)
 		var candidates_d: Dictionary = _election_data.get("candidates", {}) as Dictionary
 		var role_candidates: Array = candidates_d.get(role, []) as Array
 		if role_candidates.size() == 1:
@@ -12455,7 +12477,7 @@ func _election_eval_takeovers(role: String) -> void:
 			var best_first_avg := 0.0
 			for u: Dictionary in _election_members:
 				var uname: String = u.get("username", "") as String
-				if uname.is_empty() or not _election_is_candidate(role, uname) or not _election_meets_threshold(role, uname):
+				if uname.is_empty() or (req_cand and not _election_is_candidate(role, uname)) or not _election_meets_threshold(role, uname):
 					continue
 				var avg := _election_avg(role, uname)
 				if avg > best_first_avg:
@@ -12592,6 +12614,11 @@ func _build_elections_tab(tabs: TabContainer) -> void:
 	del_role_btn.tooltip_text = "Delete current role"
 	del_role_btn.pressed.connect(_election_delete_selected_role)
 	toolbar.add_child(del_role_btn)
+	var ren_role_btn := Button.new()
+	ren_role_btn.text = "✏ Role"
+	ren_role_btn.tooltip_text = "Rename selected role"
+	ren_role_btn.pressed.connect(_election_rename_selected_role)
+	toolbar.add_child(ren_role_btn)
 	var cfg_role_btn := Button.new()
 	cfg_role_btn.text = "⚙ Role"
 	cfg_role_btn.tooltip_text = "Configure selected role (leader only)"
@@ -12846,11 +12873,11 @@ func _election_refresh() -> void:
 		c.queue_free()
 	var role := _election_sel_role
 	var me: String = _current_user.get("username", "")
+	var role_data: Dictionary = ((_election_data.get("roles", {}) as Dictionary).get(role, {}) as Dictionary)
 
 	# Description area
 	if is_instance_valid(_election_desc_rtl):
 		if not role.is_empty():
-			var role_data: Dictionary = ((_election_data.get("roles", {}) as Dictionary).get(role, {}) as Dictionary)
 			var desc: String = role_data.get("description", "") as String
 			_election_desc_rtl.text = desc if not desc.is_empty() else "[color=#888]No description.[/color]"
 			var desc_locked: bool = role_data.get("desc_locked", false)
@@ -12864,10 +12891,10 @@ func _election_refresh() -> void:
 			if is_instance_valid(_election_edit_desc_btn):
 				_election_edit_desc_btn.visible = false
 
-	# Candidate button — hidden for appointed roles
+	# Candidate button — shown only when role requires candidacy declaration
 	if is_instance_valid(_election_candidate_btn):
-		var appointer_r := _election_role_appointer(role)
-		if not role.is_empty() and not me.is_empty() and appointer_r.is_empty():
+		var req_cand: bool = role_data.get("requires_candidacy", false) as bool
+		if not role.is_empty() and not me.is_empty() and req_cand:
 			_election_candidate_btn.visible = true
 			if _election_is_candidate(role, me):
 				_election_candidate_btn.text = "❌ Withdraw candidacy for \"%s\"" % role
@@ -12932,6 +12959,7 @@ func _election_refresh() -> void:
 
 	var role_scores: Dictionary = ((_election_data.get("scores", {}) as Dictionary).get(role, {}) as Dictionary)
 	var appointer_role := _election_role_appointer(role)
+	var req_cand: bool = role_data.get("requires_candidacy", false) as bool
 	# Appoint/remove buttons only appear on appointed roles (not score-based).
 	# Visible to: holders of the appointer role, OR the leader (who can always appoint).
 	var i_can_appoint: bool = not appointer_role.is_empty() and (
@@ -12953,6 +12981,8 @@ func _election_refresh() -> void:
 			mh_info.text = "Holders: %d / %d" % [holder_count, max_h]
 		if not appointer_role.is_empty():
 			mh_info.text += "   (appointed by: %s)" % appointer_role
+		if req_cand:
+			mh_info.text += "   (candidacy required)"
 		_election_member_list.add_child(mh_info)
 
 	for entry: Dictionary in rows:
@@ -12963,9 +12993,13 @@ func _election_refresh() -> void:
 		var is_cand: bool = entry["is_candidate"]
 		var meets: bool = entry["meets"]
 		var my_score: int = int((role_scores.get(uname, {}) as Dictionary).get(me, 0))
+		# When candidacy is required, non-holders who haven't declared are ineligible
+		var ineligible: bool = req_cand and not is_hld and not is_cand
 
 		var panel := PanelContainer.new()
 		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		if ineligible:
+			panel.modulate = Color(1.0, 1.0, 1.0, 0.5)
 		var vb := VBoxContainer.new()
 		panel.add_child(vb)
 
@@ -12979,6 +13013,8 @@ func _election_refresh() -> void:
 			badges += " [color=#ffd700][b]🏆 Holder[/b][/color]"
 		if is_cand:
 			badges += " [color=#88ccff]👤 Candidate[/color]"
+		elif ineligible:
+			badges += " [color=#666666]— no candidacy[/color]"
 		name_lbl.text = "[b]%s[/b]%s" % [uname, badges]
 		hdr.add_child(name_lbl)
 		var score_lbl := Label.new()
@@ -13003,11 +13039,13 @@ func _election_refresh() -> void:
 				rem_btn.pressed.connect(func(): _election_remove_holder(cap_r, cap_u))
 				hdr.add_child(rem_btn)
 			else:
-				var can_add: bool = max_h == -1 or holder_count < max_h
+				# When candidacy is required, only declared candidates can be appointed
+				var can_add: bool = (max_h == -1 or holder_count < max_h) and (not req_cand or is_cand)
 				var appt_btn := Button.new()
 				appt_btn.text = "✚ Appoint"
 				appt_btn.flat = true
 				appt_btn.disabled = not can_add
+				appt_btn.tooltip_text = "Member must declare candidacy first" if (not can_add and req_cand and not is_cand) else ""
 				appt_btn.add_theme_color_override("font_color", Color(0.4, 0.9, 0.5))
 				appt_btn.pressed.connect(func(): _election_appoint_holder(cap_r, cap_u))
 				hdr.add_child(appt_btn)
@@ -13171,6 +13209,67 @@ func _election_do_delete_role(role: String) -> void:
 	_save_elections()
 	_election_rebuild_role_opt()
 	_log_activity("election_role", '"%s" deleted role: "%s"' % [_current_user.get("username", "?"), role])
+
+func _election_rename_selected_role() -> void:
+	if not _perm_gate("election.configure_role", _election_status_lbl):
+		return
+	var old_name := _election_sel_role
+	if old_name.is_empty():
+		return
+	var dlg := AcceptDialog.new()
+	dlg.exclusive = false
+	dlg.title = "Rename role: " + old_name
+	dlg.size = Vector2i(340, 120)
+	var vb := VBoxContainer.new()
+	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vb.add_theme_constant_override("separation", 6)
+	dlg.add_child(vb)
+	var lbl := Label.new()
+	lbl.text = "New name:"
+	lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	vb.add_child(lbl)
+	var le := LineEdit.new()
+	le.text = old_name
+	le.select_all()
+	le.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vb.add_child(le)
+	add_child(dlg)
+	dlg.confirmed.connect(func():
+		var new_name: String = le.text.strip_edges()
+		if new_name.is_empty() or new_name == old_name:
+			dlg.queue_free()
+			return
+		var roles_dict: Dictionary = _election_data.get("roles", {}) as Dictionary
+		if roles_dict.has(new_name):
+			if is_instance_valid(_election_status_lbl):
+				_election_status_lbl.text = "⚠ A role named \"%s\" already exists" % new_name
+			dlg.queue_free()
+			return
+		# Migrate all data dictionaries keyed by role name
+		for dkey: String in ["roles", "holders", "holder_since", "candidates", "scores", "snapshots", "pending_takeovers"]:
+			var d: Dictionary = _election_data.get(dkey, {}) as Dictionary
+			if d.has(old_name):
+				d[new_name] = d[old_name]
+				d.erase(old_name)
+				_election_data[dkey] = d
+		# Update appointer_role references in other roles
+		var all_roles: Dictionary = _election_data.get("roles", {}) as Dictionary
+		for rn: String in all_roles:
+			var rd: Dictionary = all_roles[rn] as Dictionary
+			if rd.get("appointer_role", "") == old_name:
+				rd["appointer_role"] = new_name
+				all_roles[rn] = rd
+		_election_data["roles"] = all_roles
+		_election_sel_role = new_name
+		_save_elections()
+		_election_rebuild_role_opt()
+		_election_refresh()
+		_log_activity("election_role", '"%s" renamed role "%s" → "%s"' % [_current_user.get("username", "?"), old_name, new_name])
+		dlg.queue_free()
+	)
+	dlg.canceled.connect(func(): dlg.queue_free())
+	dlg.popup_centered()
+	le.grab_focus()
 
 func _election_start_edit_desc() -> void:
 	if _election_sel_role.is_empty() or not is_instance_valid(_election_desc_edit):
@@ -13444,7 +13543,7 @@ func _election_configure_role() -> void:
 	var dlg := AcceptDialog.new()
 	dlg.exclusive = false
 	dlg.title = "Configure role: " + role
-	dlg.size = Vector2i(420, 340)
+	dlg.size = Vector2i(440, 440)
 	var vb := VBoxContainer.new()
 	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	vb.add_theme_constant_override("separation", 6)
@@ -13476,25 +13575,6 @@ func _election_configure_role() -> void:
 	mh_row.add_child(mh_inf_chk)
 	vb.add_child(mh_row)
 
-	# ── Star threshold (only for unlimited) ──────────────────────────────────
-	var st_section := VBoxContainer.new()
-	st_section.visible = cur_mh == -1
-	vb.add_child(st_section)
-	var st_lbl := Label.new()
-	st_lbl.text = "Min average score to earn role (1–5):"
-	st_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
-	st_section.add_child(st_lbl)
-	var st_spin := SpinBox.new()
-	st_spin.min_value = 1.0
-	st_spin.max_value = 5.0
-	st_spin.step = 0.5
-	st_spin.value = float(role_data.get("star_threshold", 3.5))
-	st_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	st_section.add_child(st_spin)
-	mh_inf_chk.toggled.connect(func(on: bool):
-		st_section.visible = on
-	)
-
 	vb.add_child(HSeparator.new())
 
 	# ── Appointer role ────────────────────────────────────────────────────────
@@ -13519,12 +13599,52 @@ func _election_configure_role() -> void:
 	ap_opt.select(ap_sel_idx)
 	vb.add_child(ap_opt)
 
+	vb.add_child(HSeparator.new())
+
+	# ── Star threshold (only for unlimited score-based roles) ─────────────────
+	# Hidden when: Unlimited is unchecked  OR  an appointer role is selected
+	# (appointed roles have no scoring at all — the appointer decides everything)
+	var st_section := VBoxContainer.new()
+	var _update_st_vis := func():
+		st_section.visible = mh_inf_chk.button_pressed and ap_opt.selected == 0
+	st_section.visible = cur_mh == -1 and cur_appointer.is_empty()
+	vb.add_child(st_section)
+	var st_lbl := Label.new()
+	st_lbl.text = "Min average score to earn role (1–5):"
+	st_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	st_section.add_child(st_lbl)
+	var st_spin := SpinBox.new()
+	st_spin.min_value = 1.0
+	st_spin.max_value = 5.0
+	st_spin.step = 0.5
+	st_spin.value = float(role_data.get("star_threshold", 3.5))
+	st_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	st_section.add_child(st_spin)
+	mh_inf_chk.toggled.connect(func(_on: bool): _update_st_vis.call())
+	ap_opt.item_selected.connect(func(_idx: int): _update_st_vis.call())
+
+	vb.add_child(HSeparator.new())
+
+	# ── Candidacy ─────────────────────────────────────────────────────────────
+	var cand_chk := CheckBox.new()
+	cand_chk.text = "Require candidacy declaration"
+	cand_chk.tooltip_text = "Members must explicitly opt in before they can be appointed or elected to this role"
+	cand_chk.button_pressed = role_data.get("requires_candidacy", false) as bool
+	vb.add_child(cand_chk)
+	var cand_desc_lbl := Label.new()
+	cand_desc_lbl.text = "If off, the role is given automatically based on scores or appointer — no opt-in needed."
+	cand_desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	cand_desc_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	cand_desc_lbl.add_theme_font_size_override("font_size", 11)
+	vb.add_child(cand_desc_lbl)
+
 	add_child(dlg)
 	dlg.confirmed.connect(func():
 		var roles_dict: Dictionary = _election_data.get("roles", {}) as Dictionary
 		var rd: Dictionary = roles_dict.get(role, {}) as Dictionary
 		rd["max_holders"] = -1 if mh_inf_chk.button_pressed else int(mh_spin.value)
 		rd["star_threshold"] = st_spin.value
+		rd["requires_candidacy"] = cand_chk.button_pressed
 		var ap_idx := ap_opt.selected
 		if ap_idx == 0:
 			rd["appointer_role"] = ""
@@ -13649,10 +13769,15 @@ func _perm_has(key: String) -> bool:
 	return true
 
 func _perm_can_change(key: String) -> bool:
-	if _election_is_leader():
-		return true
 	var perm := _perm_get(key)
 	var change_by: String = perm.get("change_by", "leader")
+	# Vote-required permissions cannot be directly edited by anyone (including the leader).
+	# The whole point of setting change_by = "vote" is to prevent any single person from
+	# bypassing it — everyone, including the leader, must go through the vote proposal flow.
+	if change_by == "vote":
+		return false
+	if _election_is_leader():
+		return true
 	var me: String = _current_user.get("username", "")
 	match change_by:
 		"leader": return false
@@ -13663,7 +13788,6 @@ func _perm_can_change(key: String) -> bool:
 				if _election_is_holder(rn, me):
 					return true
 			return false
-		"vote": return false   # changing requires a vote, not direct edit
 	return false
 
 func _perm_has_vault_folder(vault_rel_path: String) -> bool:
@@ -14136,6 +14260,9 @@ func _perm_open_edit_dialog(key: String, def: Dictionary) -> void:
 
 	add_child(dlg)
 	dlg.confirmed.connect(func():
+		if not _perm_can_change(key):
+			dlg.queue_free()
+			return
 		var new_perm: Dictionary = {}
 		var ai := access_opt.selected
 		new_perm["allowed_by"] = (["anyone", "role", "leader"])[clamp(ai, 0, 2)]
@@ -14240,18 +14367,31 @@ func _perm_propose_vote(key: String) -> void:
 	# Ask user to specify desired new settings
 	_perm_open_access_dialog("Propose: who should be allowed?", current.duplicate(true), func(new_perm: Dictionary):
 		_perm_open_access_dialog("Propose: who can change this permission?",
-			{"allowed_by": new_perm.get("change_by", "leader"), "allowed_roles": new_perm.get("change_roles", [])},
+			{"allowed_by": current.get("change_by", "leader"), "allowed_roles": current.get("change_roles", [])},
 			func(change_perm: Dictionary):
-				_election_submit_pending_vote({
+				# Route into _vote_items so _apply_vote_effects can apply the change when the vote passes
+				var deadline_7d := Time.get_date_string_from_unix_time(int(Time.get_unix_time_from_system()) + 7 * 24 * 3600)
+				var vote: Dictionary = {
+					"id": str(int(Time.get_unix_time_from_system())),
 					"type": "change_permission",
 					"perm_key": key,
 					"title": "Change permission: " + def_display,
-					"description": "Proposes updating the \"%s\" permission rule. Vote to approve the change." % def_display,
+					"description": "Proposes updating the \"%s\" permission rule. Vote yes to approve. Closes in 7 days." % def_display,
+					"created_by": _current_user.get("username", "?"),
+					"created_at": Time.get_datetime_string_from_system(),
+					"deadline": deadline_7d,
+					"options": ["yes", "no"],
+					"votes": {},
+					"closed": false,
 					"new_allowed_by": new_perm.get("allowed_by", "anyone"),
 					"new_allowed_roles": new_perm.get("allowed_roles", []),
 					"new_change_by": change_perm.get("allowed_by", "leader"),
 					"new_change_roles": change_perm.get("allowed_roles", [])
-				})
+				}
+				_vote_items.insert(0, vote)
+				_save_votes()
+				_log_activity("vote_created", 'Permission change vote proposed: "%s"' % def_display)
+				_refresh_vote_list()
 				if is_instance_valid(_perm_status_lbl):
 					_perm_status_lbl.text = "⚡ Vote proposed — see Votes tab"
 		)
@@ -14645,9 +14785,14 @@ func _build_game_design_tab(tabs: TabContainer) -> void:
 	var new_btn := Button.new()
 	new_btn.text = "+ New"
 	new_btn.pressed.connect(_gd_new_doc)
+	var fields_btn := Button.new()
+	fields_btn.text = "⚙ Fields"
+	fields_btn.tooltip_text = "Configure GDD field definitions"
+	fields_btn.pressed.connect(_gd_open_field_editor)
 	toolbar.add_child(title_lbl)
 	toolbar.add_child(_gd_status_lbl)
 	toolbar.add_child(new_btn)
+	toolbar.add_child(fields_btn)
 	root.add_child(toolbar)
 
 	# ── genre tag filter bar ──────────────────────────────────────────────────
@@ -14865,70 +15010,7 @@ func _gd_show_detail(idx: int) -> void:
 
 	# ── VIEW mode ─────────────────────────────────────────────────────────────
 	if not _gd_editing:
-		# genres
-		var genres: Array = doc.get("genres", [])
-		if not genres.is_empty():
-			var gr := HBoxContainer.new()
-			gr.add_theme_constant_override("separation", 4)
-			for g: String in genres:
-				var gl := Label.new()
-				gl.text = g
-				gl.add_theme_color_override("font_color", Color(0.5, 0.8, 1.0))
-				gr.add_child(gl)
-			_gd_detail.add_child(gr)
-
-		# render content
-		var edit_mode_pref: String = doc.get("edit_mode", "guide")
-		if edit_mode_pref == "markdown":
-			var md: String = doc.get("markdown", "")
-			var rtl := RichTextLabel.new()
-			rtl.bbcode_enabled = true
-			rtl.fit_content = false
-			rtl.scroll_active = true
-			rtl.size_flags_vertical = Control.SIZE_EXPAND_FILL
-			rtl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			rtl.text = md
-			_gd_detail.add_child(rtl)
-		else:
-			var fields: Dictionary = doc.get("fields", {})
-			var view_vb := VBoxContainer.new()
-			view_vb.add_theme_constant_override("separation", 8)
-			view_vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			for field_def: Dictionary in GD_FIELDS:
-				var key: String = field_def["key"]
-				var ftype: String = field_def.get("type", "text")
-				var val: Variant = fields.get(key, null)
-				var display := ""
-				if ftype == "chips":
-					var chips: Array = val if val is Array else []
-					if chips.is_empty():
-						continue
-					display = ", ".join(chips)
-				elif ftype == "number":
-					if val == null:
-						continue
-					display = str(int(val as float))
-				else:
-					display = str(val) if val != null else ""
-					if display.is_empty() or display == "—":
-						continue
-				var field_box := VBoxContainer.new()
-				field_box.add_theme_constant_override("separation", 2)
-				var fl := Label.new()
-				fl.text = field_def["label"]
-				fl.add_theme_color_override("font_color", Color(0.6, 0.75, 1.0))
-				fl.add_theme_font_size_override("font_size", 11)
-				field_box.add_child(fl)
-				var vl := Label.new()
-				vl.text = display
-				vl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-				field_box.add_child(vl)
-				view_vb.add_child(field_box)
-			_gd_detail.add_child(view_vb)
-
-		_gd_detail.add_child(HSeparator.new())
-
-		# star rating
+		# star rating — shown first so it's the most visible prompt
 		var rating_row := HBoxContainer.new()
 		rating_row.add_theme_constant_override("separation", 2)
 		var rate_lbl := Label.new()
@@ -14972,6 +15054,68 @@ func _gd_show_detail(idx: int) -> void:
 			avg_lbl.add_theme_font_size_override("font_size", 11)
 			rating_row.add_child(avg_lbl)
 		_gd_detail.add_child(rating_row)
+		_gd_detail.add_child(HSeparator.new())
+
+		# genres
+		var genres: Array = doc.get("genres", [])
+		if not genres.is_empty():
+			var gr := HBoxContainer.new()
+			gr.add_theme_constant_override("separation", 4)
+			for g: String in genres:
+				var gl := Label.new()
+				gl.text = g
+				gl.add_theme_color_override("font_color", Color(0.5, 0.8, 1.0))
+				gr.add_child(gl)
+			_gd_detail.add_child(gr)
+
+		# render content
+		var edit_mode_pref: String = doc.get("edit_mode", "guide")
+		if edit_mode_pref == "markdown":
+			var md: String = doc.get("markdown", "")
+			var rtl := RichTextLabel.new()
+			rtl.bbcode_enabled = true
+			rtl.fit_content = false
+			rtl.scroll_active = true
+			rtl.size_flags_vertical = Control.SIZE_EXPAND_FILL
+			rtl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			rtl.text = md
+			_gd_detail.add_child(rtl)
+		else:
+			var fields: Dictionary = doc.get("fields", {})
+			var view_vb := VBoxContainer.new()
+			view_vb.add_theme_constant_override("separation", 8)
+			view_vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			for field_def: Dictionary in _gd_effective_fields():
+				var key: String = field_def["key"]
+				var ftype: String = field_def.get("type", "text")
+				var val: Variant = fields.get(key, null)
+				var display := ""
+				if ftype == "chips":
+					var chips: Array = val if val is Array else []
+					if chips.is_empty():
+						continue
+					display = ", ".join(chips)
+				elif ftype == "number":
+					if val == null:
+						continue
+					display = str(int(val as float))
+				else:
+					display = str(val) if val != null else ""
+					if display.is_empty() or display == "—":
+						continue
+				var field_box := VBoxContainer.new()
+				field_box.add_theme_constant_override("separation", 2)
+				var fl := Label.new()
+				fl.text = field_def["label"]
+				fl.add_theme_color_override("font_color", Color(0.6, 0.75, 1.0))
+				fl.add_theme_font_size_override("font_size", 11)
+				field_box.add_child(fl)
+				var vl := Label.new()
+				vl.text = display
+				vl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				field_box.add_child(vl)
+				view_vb.add_child(field_box)
+			_gd_detail.add_child(view_vb)
 		return
 
 	# ── EDIT mode ─────────────────────────────────────────────────────────────
@@ -15073,7 +15217,7 @@ func _gd_show_detail(idx: int) -> void:
 		_gd_detail.add_child(HSeparator.new())
 
 		var fields: Dictionary = doc.get("fields", {})
-		for field_def: Dictionary in GD_FIELDS:
+		for field_def: Dictionary in _gd_effective_fields():
 			var key: String = field_def["key"]
 			var ftype: String = field_def.get("type", "text")
 			var lbl := Label.new()
@@ -15190,3 +15334,204 @@ func _gd_new_doc() -> void:
 	_gd_selected = _gd_docs.size() - 1
 	_gd_editing = true
 	_gd_show_detail(_gd_selected)
+
+func _gd_effective_fields() -> Array:
+	return _gd_custom_fields if not _gd_custom_fields.is_empty() else GD_FIELDS.duplicate(true)
+
+func _gd_config_file() -> String:
+	return ProjectSettings.globalize_path("user://cc_gdd_config.json")
+
+func _gd_load_config() -> void:
+	var path := _gd_config_file()
+	if not FileAccess.file_exists(path):
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if not f:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if parsed is Dictionary:
+		var d: Dictionary = parsed as Dictionary
+		if "fields" in d and d["fields"] is Array:
+			_gd_custom_fields = d["fields"] as Array
+
+func _gd_save_config() -> void:
+	var fw := FileAccess.open(_gd_config_file(), FileAccess.WRITE)
+	if fw:
+		fw.store_string(JSON.stringify({"fields": _gd_custom_fields}, "\t") + "\n")
+		fw.close()
+	_activity_auto_push()
+
+func _gd_open_field_editor() -> void:
+	if not _perm_gate("gdd.edit_fields", _gd_status_lbl):
+		return
+	# Start from current effective fields so the editor shows the real state
+	var working: Array = _gd_effective_fields().duplicate(true)
+
+	var dlg := AcceptDialog.new()
+	dlg.exclusive = false
+	dlg.title = "Configure GDD Fields"
+	dlg.size = Vector2i(520, 520)
+	var outer := VBoxContainer.new()
+	outer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	outer.add_theme_constant_override("separation", 6)
+	dlg.add_child(outer)
+
+	var hint := Label.new()
+	hint.text = "Edit field labels and options. Add new fields or delete existing ones. Changes apply to all GDD entries."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	hint.add_theme_font_size_override("font_size", 11)
+	outer.add_child(hint)
+	outer.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var field_list := VBoxContainer.new()
+	field_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	field_list.add_theme_constant_override("separation", 4)
+	scroll.add_child(field_list)
+	outer.add_child(scroll)
+
+	var _rebuild_field_list: Callable
+	_rebuild_field_list = func():
+		for c in field_list.get_children():
+			c.queue_free()
+		for fi: int in range(working.size()):
+			var fd: Dictionary = working[fi] as Dictionary
+			var fkey: String = fd.get("key", "") as String
+			var ftype: String = fd.get("type", "text") as String
+			var row := VBoxContainer.new()
+			row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var hdr := HBoxContainer.new()
+			hdr.add_theme_constant_override("separation", 6)
+			# Type badge
+			var type_lbl := Label.new()
+			type_lbl.text = "[%s]" % ftype
+			type_lbl.custom_minimum_size = Vector2(60, 0)
+			type_lbl.add_theme_color_override("font_color", Color(0.4, 0.7, 1.0))
+			type_lbl.add_theme_font_size_override("font_size", 10)
+			hdr.add_child(type_lbl)
+			# Label edit
+			var label_edit := LineEdit.new()
+			label_edit.text = fd.get("label", fkey) as String
+			label_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			label_edit.placeholder_text = "Field label"
+			var cap_fi := fi
+			label_edit.text_changed.connect(func(v: String):
+				(working[cap_fi] as Dictionary)["label"] = v
+			)
+			hdr.add_child(label_edit)
+			# Up / Down
+			var up_btn := Button.new()
+			up_btn.text = "▲"
+			up_btn.flat = true
+			up_btn.disabled = fi == 0
+			up_btn.pressed.connect(func():
+				var tmp: Dictionary = working[cap_fi - 1]
+				working[cap_fi - 1] = working[cap_fi]
+				working[cap_fi] = tmp
+				_rebuild_field_list.call()
+			)
+			hdr.add_child(up_btn)
+			var dn_btn := Button.new()
+			dn_btn.text = "▼"
+			dn_btn.flat = true
+			dn_btn.disabled = fi == working.size() - 1
+			dn_btn.pressed.connect(func():
+				var tmp2: Dictionary = working[cap_fi + 1]
+				working[cap_fi + 1] = working[cap_fi]
+				working[cap_fi] = tmp2
+				_rebuild_field_list.call()
+			)
+			hdr.add_child(dn_btn)
+			# Delete
+			var del_btn := Button.new()
+			del_btn.text = "🗑"
+			del_btn.flat = true
+			del_btn.pressed.connect(func():
+				working.remove_at(cap_fi)
+				_rebuild_field_list.call()
+			)
+			hdr.add_child(del_btn)
+			row.add_child(hdr)
+			# Options editor for option/chips types
+			if ftype in ["option", "chips"]:
+				var opts_lbl := Label.new()
+				opts_lbl.text = "Options (one per line):"
+				opts_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+				opts_lbl.add_theme_font_size_override("font_size", 10)
+				row.add_child(opts_lbl)
+				var opts_te := TextEdit.new()
+				opts_te.custom_minimum_size = Vector2(0, 60)
+				opts_te.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				var cur_opts: Array = fd.get("options", []) as Array
+				opts_te.text = "\n".join(cur_opts)
+				opts_te.text_changed.connect(func():
+					var lines: Array = []
+					for ln: String in opts_te.text.split("\n"):
+						var s: String = ln.strip_edges()
+						if not s.is_empty():
+							lines.append(s)
+					(working[cap_fi] as Dictionary)["options"] = lines
+				)
+				row.add_child(opts_te)
+			field_list.add_child(row)
+			field_list.add_child(HSeparator.new())
+	_rebuild_field_list.call()
+
+	# ── Add new field ─────────────────────────────────────────────────────────
+	outer.add_child(HSeparator.new())
+	var add_hdr := Label.new()
+	add_hdr.text = "Add field:"
+	add_hdr.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+	outer.add_child(add_hdr)
+	var add_row := HBoxContainer.new()
+	add_row.add_theme_constant_override("separation", 6)
+	var add_label_edit := LineEdit.new()
+	add_label_edit.placeholder_text = "Label"
+	add_label_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	add_row.add_child(add_label_edit)
+	var add_type_opt := OptionButton.new()
+	for t: String in ["text", "line", "option", "chips"]:
+		add_type_opt.add_item(t)
+	add_row.add_child(add_type_opt)
+	var add_btn := Button.new()
+	add_btn.text = "Add"
+	add_btn.pressed.connect(func():
+		var lbl: String = add_label_edit.text.strip_edges()
+		if lbl.is_empty():
+			return
+		var key: String = lbl.to_lower().replace(" ", "_")
+		var new_fd: Dictionary = {"key": key, "label": lbl, "type": add_type_opt.get_item_text(add_type_opt.selected)}
+		if new_fd["type"] in ["option", "chips"]:
+			new_fd["options"] = ["—", "Option A", "Option B"]
+		elif new_fd["type"] == "text":
+			new_fd["height"] = 80
+			new_fd["hint"] = ""
+		elif new_fd["type"] == "line":
+			new_fd["hint"] = ""
+		working.append(new_fd)
+		add_label_edit.text = ""
+		_rebuild_field_list.call()
+		scroll.scroll_vertical = scroll.get_v_scroll_bar().max_value
+	)
+	add_row.add_child(add_btn)
+	outer.add_child(add_row)
+
+	add_child(dlg)
+	dlg.confirmed.connect(func():
+		_gd_custom_fields = working.duplicate(true)
+		_gd_save_config()
+		if is_instance_valid(_gd_status_lbl):
+			_gd_status_lbl.text = "✅ GDD fields saved"
+			get_tree().create_timer(2.5).timeout.connect(func():
+				if is_instance_valid(_gd_status_lbl): _gd_status_lbl.text = "")
+		# Refresh detail if open
+		if _gd_selected >= 0:
+			_gd_show_detail(_gd_selected)
+		dlg.queue_free()
+	)
+	dlg.canceled.connect(func(): dlg.queue_free())
+	dlg.popup_centered()
